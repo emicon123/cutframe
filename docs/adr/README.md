@@ -8,3 +8,8 @@ Sections: Status, Date, Context, Decision, Rationale (incl. rejected options), C
 | ADR | Title | Status |
 |---|---|---|
 | [0001](0001-tech-stack.md) | Tech stack: Rust + Tauri 2 + React 19 + wgpu | Accepted |
+| [0002](0002-project-file-format.md) | Project file format and schema migrations | Proposed |
+| [0003](0003-ipc-conventions.md) | IPC conventions | Proposed |
+| [0004](0004-threading-and-model-ownership.md) | Threading and model ownership | Proposed |
+| [0005](0005-preview-presentation-per-platform.md) | Preview presentation per platform | Proposed |
+| [0006](0006-edit-transactions.md) | Edit transactions for gestures and compound edits | Proposed |
