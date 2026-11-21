@@ -30,6 +30,12 @@ audit what already exists and to pick the next work items.
     a product/legal decision, not just code.
   - *ADR:* cross-cutting; starts with the `architect` agent.
 
+## Audit log
+
+| Date | Commit | Scope | Result |
+|---|---|---|---|
+| 2026-11-21 | `2c0c2f7` | Tiers 0–1 | Tier 0: 6 done, 10 partial, 19 missing. Tier 1: 4 done, 9 partial, 86 missing (no media, clip editing, playback or export yet). |
+
 ## Tiers
 
 | Tier | Name | Meaning |
@@ -49,56 +55,56 @@ audit what already exists and to pick the next work items.
 
 | ID | Feature | Notes | Status |
 |---|---|---|---|
-| F0.01 | App starts into a main editor window with the standard layout: media/library panel, preview, inspector (properties), timeline | | ? |
-| F0.02 | Resizable, collapsible panels; layout persisted between sessions | | ? |
-| F0.03 | Window size/position/maximised state persisted | | ? |
-| F0.04 | Dark theme (default), consistent design system | | ? |
-| F0.05 | Main menu / command bar (File, Edit, View, Help) with shortcuts shown | | ? |
-| F0.06 | Default keyboard shortcuts for all common actions | | ? |
-| F0.07 | Keyboard shortcut reference panel | | ? |
-| F0.08 | Non-blocking notifications (toasts) and readable error dialogs | | ? |
-| F0.09 | Logging to a file in app data; "open logs folder" | | ? |
-| F0.10 | About dialog with version and third-party licence notices (FFmpeg LGPL notice, source offer) | LGPL compliance requirement | ? |
-| F0.11 | Per-user NSIS installer, no admin rights | Hard constraint | ? |
-| F0.12 | Automatic updates (check, download, install, restart) | Hard constraint | ? |
-| F0.13 | GPU / hardware-acceleration capability detection with graceful fallback | | ? |
-| F0.14 | Single-instance handling (opening a project file focuses the running app) | | ? |
-| F0.15 | File association for the project file extension | devops | ? |
+| F0.01 | App starts into a main editor window with the standard layout: media/library panel, preview, inspector (properties), timeline | `EditorLayout.tsx`: top bar, media bin, preview, inspector, timeline, status bar | done |
+| F0.02 | Resizable, collapsible panels; layout persisted between sessions | Resizable via `ResizablePanelGroup`; not collapsible, sizes not persisted | partial |
+| F0.03 | Window size/position/maximised state persisted | | missing |
+| F0.04 | Dark theme (default), consistent design system | `index.html` `class="dark"`, Tailwind tokens + shadcn/ui | done |
+| F0.05 | Main menu / command bar (File, Edit, View, Help) with shortcuts shown | Top bar has only undo/redo and a disabled Export | missing |
+| F0.06 | Default keyboard shortcuts for all common actions | Only undo/redo (`shortcuts.ts`); registry is ready for more | partial |
+| F0.07 | Keyboard shortcut reference panel | | missing |
+| F0.08 | Non-blocking notifications (toasts) and readable error dialogs | Last error shown in the status bar; no toasts or dialogs | partial |
+| F0.09 | Logging to a file in app data; "open logs folder" | `tracing` logs to stdout only; no file, no "open logs folder" | partial |
+| F0.10 | About dialog with version and third-party licence notices (FFmpeg LGPL notice, source offer) | LGPL compliance requirement; Version shown in the status bar only; no licence notices | missing |
+| F0.11 | Per-user NSIS installer, no admin rights | Hard constraint; `tauri.conf.json` `installMode: currentUser`; CI installs silently and smoke-tests | done |
+| F0.12 | Automatic updates (check, download, install, restart) | Hard constraint; No updater plugin or config; no signing (`docs/architecture-review.md`) | missing |
+| F0.13 | GPU / hardware-acceleration capability detection with graceful fallback | Adapter/backend/software (WARP) detected and shown; preview `unavailable` fallback; no hardware decode/encode yet | partial |
+| F0.14 | Single-instance handling (opening a project file focuses the running app) | | missing |
+| F0.15 | File association for the project file extension | devops; Extension not decided (ADR-0002, H5) | missing |
 
 ### Projects
 
 | ID | Feature | Notes | Status |
 |---|---|---|---|
-| F0.16 | Home screen: create project, recent projects (cover thumbnail, name, duration, last modified) | | ? |
-| F0.17 | Create a new project with default settings | | ? |
-| F0.18 | Project settings: canvas resolution, aspect ratio, frame rate | Changing them later must not break the timeline | ? |
-| F0.19 | Save project (explicit save + Save As) | ADR: project-file format | ? |
-| F0.20 | Open project from file and from the recent list | | ? |
-| F0.21 | Autosave at a configurable interval | | ? |
-| F0.22 | Crash recovery: offer to restore the last autosave | | ? |
-| F0.23 | Rename / duplicate / delete project from the home screen | | ? |
-| F0.24 | Project-file schema version and forward migrations | ADR | ? |
-| F0.25 | Detect missing media on open; relink dialog (single file and whole folder) | | ? |
-| F0.26 | Unsaved-changes prompt on close | | ? |
+| F0.16 | Home screen: create project, recent projects (cover thumbnail, name, duration, last modified) | App opens straight into the editor | missing |
+| F0.17 | Create a new project with default settings | One "Untitled project" is created at startup (`lib.rs`); no New Project action | partial |
+| F0.18 | Project settings: canvas resolution, aspect ratio, frame rate | Changing them later must not break the timeline; Model has width/height/frame rate/sample rate, shown read-only in the inspector; no command to change them | partial |
+| F0.19 | Save project (explicit save + Save As) | ADR: project-file format; `serialization::to_json` exists and is tested; no save command or UI | partial |
+| F0.20 | Open project from file and from the recent list | `serialization::from_json` exists and is tested; no open command or UI | partial |
+| F0.21 | Autosave at a configurable interval | | missing |
+| F0.22 | Crash recovery: offer to restore the last autosave | | missing |
+| F0.23 | Rename / duplicate / delete project from the home screen | Rename only (`RenameProject` from the inspector); no home screen | partial |
+| F0.24 | Project-file schema version and forward migrations | ADR; `schemaVersion` + `migrate()` chain, v1 fixture test, rejects newer files; ADR-0002 Proposed | done |
+| F0.25 | Detect missing media on open; relink dialog (single file and whole folder) | No media in the model yet | missing |
+| F0.26 | Unsaved-changes prompt on close | No dirty state tracked | missing |
 
 ### Edit history
 
 | ID | Feature | Notes | Status |
 |---|---|---|---|
-| F0.27 | Undo / redo for every model change (Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y) | Architecture rule 1 | ? |
-| F0.28 | Continuous gestures (drag, slider) coalesce into one undo step | | ? |
-| F0.29 | Multi-step operations are one atomic transaction | | ? |
-| F0.30 | Undo/redo menu items show the action name | | ? |
-| F0.31 | History panel (list of steps, jump back) | | ? |
+| F0.27 | Undo / redo for every model change (Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y) | Architecture rule 1; All 4 commands undoable (`Document`), history cap 500; Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y and top-bar buttons | done |
+| F0.28 | Continuous gestures (drag, slider) coalesce into one undo step | Task 0006 (ADR-0006) | missing |
+| F0.29 | Multi-step operations are one atomic transaction | Task 0006 (ADR-0006) | missing |
+| F0.30 | Undo/redo menu items show the action name | Undo/redo tooltips show `undoLabel`/`redoLabel` | done |
+| F0.31 | History panel (list of steps, jump back) | | missing |
 
 ### Preferences and storage
 
 | ID | Feature | Notes | Status |
 |---|---|---|---|
-| F0.32 | Preferences dialog (general, editing defaults, performance, cache, shortcuts) | | ? |
-| F0.33 | Default image duration, default transition duration | | ? |
-| F0.34 | Cache location and size; "clear cache" | Thumbnails, waveforms, proxies | ? |
-| F0.35 | UI language setting (English first, Polish later) | | ? |
+| F0.32 | Preferences dialog (general, editing defaults, performance, cache, shortcuts) | | missing |
+| F0.33 | Default image duration, default transition duration | | missing |
+| F0.34 | Cache location and size; "clear cache" | Thumbnails, waveforms, proxies; No cache exists yet | missing |
+| F0.35 | UI language setting (English first, Polish later) | Strings centralised in `i18n/en.ts`, so a locale switch is easy to add | missing |
 
 ---
 
@@ -108,130 +114,130 @@ audit what already exists and to pick the next work items.
 
 | ID | Feature | Notes | Status |
 |---|---|---|---|
-| F1.01 | Import video, audio and images via file dialog (multi-select) | | ? |
-| F1.02 | Drag and drop files from the OS into the media panel | | ? |
-| F1.03 | Drag and drop files from the OS directly onto the timeline | | ? |
-| F1.04 | Video containers: MP4, MOV, MKV, WebM, AVI, M4V | | ? |
-| F1.05 | Video codecs (decode): H.264, HEVC, VP8/VP9, AV1, ProRes, MPEG-2/4, MJPEG | Decoders are LGPL-safe | ? |
-| F1.06 | Audio formats: MP3, WAV, AAC/M4A, FLAC, OGG/Opus | | ? |
-| F1.07 | Image formats: JPG, PNG, WebP, BMP, TIFF, GIF (animated) | | ? |
-| F1.08 | HEIC/HEIF photos (phone pictures) | Check FFmpeg 7.x support | ? |
-| F1.09 | Media probing: duration, resolution, frame rate, codec, audio channels/sample rate | | ? |
-| F1.10 | Rotation metadata honoured (portrait phone videos) | | ? |
-| F1.11 | Variable frame rate sources play and cut correctly | | ? |
-| F1.12 | Non-square pixel aspect ratio and anamorphic sources displayed correctly | | ? |
-| F1.13 | Corrupt / unsupported files rejected with a clear message | | ? |
+| F1.01 | Import video, audio and images via file dialog (multi-select) | | missing |
+| F1.02 | Drag and drop files from the OS into the media panel | | missing |
+| F1.03 | Drag and drop files from the OS directly onto the timeline | | missing |
+| F1.04 | Video containers: MP4, MOV, MKV, WebM, AVI, M4V | | missing |
+| F1.05 | Video codecs (decode): H.264, HEVC, VP8/VP9, AV1, ProRes, MPEG-2/4, MJPEG | Decoders are LGPL-safe | missing |
+| F1.06 | Audio formats: MP3, WAV, AAC/M4A, FLAC, OGG/Opus | | missing |
+| F1.07 | Image formats: JPG, PNG, WebP, BMP, TIFF, GIF (animated) | | missing |
+| F1.08 | HEIC/HEIF photos (phone pictures) | Check FFmpeg 7.x support | missing |
+| F1.09 | Media probing: duration, resolution, frame rate, codec, audio channels/sample rate | | missing |
+| F1.10 | Rotation metadata honoured (portrait phone videos) | | missing |
+| F1.11 | Variable frame rate sources play and cut correctly | | missing |
+| F1.12 | Non-square pixel aspect ratio and anamorphic sources displayed correctly | | missing |
+| F1.13 | Corrupt / unsupported files rejected with a clear message | | missing |
 
 ### Media panel
 
 | ID | Feature | Notes | Status |
 |---|---|---|---|
-| F1.14 | Grid of media with thumbnail, name, duration, type icon | `media://` | ? |
-| F1.15 | List view alternative | | ? |
-| F1.16 | Hover-scrub thumbnail preview (skimming) | | ? |
-| F1.17 | Preview a media item in the player before adding it | | ? |
-| F1.18 | "Used in timeline" badge | | ? |
-| F1.19 | Sort and filter (type, name, date, duration) | | ? |
-| F1.20 | Search by name | | ? |
-| F1.21 | Remove media from project (with warning if used) | | ? |
-| F1.22 | Show in file explorer | | ? |
-| F1.23 | Background thumbnail and waveform generation with progress | | ? |
+| F1.14 | Grid of media with thumbnail, name, duration, type icon | `media://` | missing |
+| F1.15 | List view alternative | | missing |
+| F1.16 | Hover-scrub thumbnail preview (skimming) | | missing |
+| F1.17 | Preview a media item in the player before adding it | | missing |
+| F1.18 | "Used in timeline" badge | | missing |
+| F1.19 | Sort and filter (type, name, date, duration) | | missing |
+| F1.20 | Search by name | | missing |
+| F1.21 | Remove media from project (with warning if used) | | missing |
+| F1.22 | Show in file explorer | | missing |
+| F1.23 | Background thumbnail and waveform generation with progress | | missing |
 
 ### Timeline
 
 | ID | Feature | Notes | Status |
 |---|---|---|---|
-| F1.24 | Timeline with a main video track | | ? |
-| F1.25 | Add media to the timeline (drag, "+" button, append at end, insert at playhead) | | ? |
-| F1.26 | Overlay video tracks above the main track (picture-in-picture) | | ? |
-| F1.27 | Audio tracks below the main track | | ? |
-| F1.28 | Tracks created automatically when dropping onto empty space; empty tracks removed | | ? |
-| F1.29 | Time ruler with adaptive timecode labels | Flicks internally | ? |
-| F1.30 | Playhead; click/drag on ruler and tracks to seek | | ? |
-| F1.31 | Auto-scroll timeline to follow the playhead during playback | | ? |
-| F1.32 | Zoom (Ctrl+wheel, slider, zoom-to-fit) | | ? |
-| F1.33 | Horizontal and vertical scroll | | ? |
-| F1.34 | Filmstrip thumbnails on video clips | `media://` | ? |
-| F1.35 | Waveforms on audio clips and on video clips with audio | `media://` | ? |
-| F1.36 | Clip label (name, duration, speed badge, effect badges) | | ? |
-| F1.37 | Select a clip; multi-select with Ctrl/Shift; marquee (rubber-band) selection | | ? |
-| F1.38 | Select all (Ctrl+A); deselect (Esc) | | ? |
-| F1.39 | Move clips by drag within and between tracks | | ? |
-| F1.40 | Trim start/end by dragging clip edges, limited by source length | | ? |
-| F1.41 | Split at playhead (Ctrl+B) — selected clip or all tracks | | ? |
-| F1.42 | Delete clip (leaves gap on overlay tracks) | | ? |
-| F1.43 | Ripple delete (closes the gap) | | ? |
-| F1.44 | Magnetic main track (no gaps; clips reorder by drag) with on/off toggle | | ? |
-| F1.45 | Snapping to playhead, clip edges, markers, with on/off toggle | | ? |
-| F1.46 | Copy / cut / paste / duplicate clips | | ? |
-| F1.47 | Trim to playhead: delete left / delete right of playhead (Q / W) | | ? |
-| F1.48 | Select and delete a gap | | ? |
-| F1.49 | Linked video + audio of the same source move/trim together; link on/off toggle | | ? |
-| F1.50 | Detach audio from a video clip onto its own track | | ? |
-| F1.51 | Replace clip media while keeping position, duration and effects | | ? |
-| F1.52 | Track controls: mute, hide, lock | | ? |
-| F1.53 | Reorder tracks | | ? |
-| F1.54 | Frame-step (Left/Right), jump to previous/next edit (Up/Down), go to start/end (Home/End) | | ? |
-| F1.55 | Hover preview: skimming the timeline shows that frame in the preview, with on/off toggle | | ? |
-| F1.56 | Right-click context menu on clips and tracks | | ? |
-| F1.57 | Timeline length = end of last clip; project duration shown | | ? |
+| F1.24 | Timeline with a main video track | Video/audio/text track kinds exist; no "main track" concept | partial |
+| F1.25 | Add media to the timeline (drag, "+" button, append at end, insert at playhead) | | missing |
+| F1.26 | Overlay video tracks above the main track (picture-in-picture) | Multiple video tracks can be added by hand; no compositing yet | partial |
+| F1.27 | Audio tracks below the main track | Audio track kind in the model; no audio | partial |
+| F1.28 | Tracks created automatically when dropping onto empty space; empty tracks removed | Manual add/remove track buttons only | partial |
+| F1.29 | Time ruler with adaptive timecode labels | Flicks internally; `renderer.ts` `drawRuler` with adaptive step | done |
+| F1.30 | Playhead; click/drag on ruler and tracks to seek | Click/drag on the timeline canvas seeks; playhead is UI-only (`playheadStore`) | done |
+| F1.31 | Auto-scroll timeline to follow the playhead during playback | | missing |
+| F1.32 | Zoom (Ctrl+wheel, slider, zoom-to-fit) | Ctrl+wheel zoom around the cursor; no slider or zoom-to-fit | partial |
+| F1.33 | Horizontal and vertical scroll | Shift/horizontal wheel scrolls time, vertical wheel scrolls tracks | done |
+| F1.34 | Filmstrip thumbnails on video clips | `media://` | missing |
+| F1.35 | Waveforms on audio clips and on video clips with audio | `media://` | missing |
+| F1.36 | Clip label (name, duration, speed badge, effect badges) | Clips are drawn with their name (`drawClips`); no badges; clips cannot be added yet | partial |
+| F1.37 | Select a clip; multi-select with Ctrl/Shift; marquee (rubber-band) selection | | missing |
+| F1.38 | Select all (Ctrl+A); deselect (Esc) | | missing |
+| F1.39 | Move clips by drag within and between tracks | | missing |
+| F1.40 | Trim start/end by dragging clip edges, limited by source length | | missing |
+| F1.41 | Split at playhead (Ctrl+B) — selected clip or all tracks | | missing |
+| F1.42 | Delete clip (leaves gap on overlay tracks) | | missing |
+| F1.43 | Ripple delete (closes the gap) | | missing |
+| F1.44 | Magnetic main track (no gaps; clips reorder by drag) with on/off toggle | | missing |
+| F1.45 | Snapping to playhead, clip edges, markers, with on/off toggle | | missing |
+| F1.46 | Copy / cut / paste / duplicate clips | | missing |
+| F1.47 | Trim to playhead: delete left / delete right of playhead (Q / W) | | missing |
+| F1.48 | Select and delete a gap | | missing |
+| F1.49 | Linked video + audio of the same source move/trim together; link on/off toggle | | missing |
+| F1.50 | Detach audio from a video clip onto its own track | | missing |
+| F1.51 | Replace clip media while keeping position, duration and effects | | missing |
+| F1.52 | Track controls: mute, hide, lock | `muted`/`hidden` fields in the model; no commands, UI or lock | partial |
+| F1.53 | Reorder tracks | | missing |
+| F1.54 | Frame-step (Left/Right), jump to previous/next edit (Up/Down), go to start/end (Home/End) | | missing |
+| F1.55 | Hover preview: skimming the timeline shows that frame in the preview, with on/off toggle | | missing |
+| F1.56 | Right-click context menu on clips and tracks | | missing |
+| F1.57 | Timeline length = end of last clip; project duration shown | `Project::duration()`, shown in the inspector | done |
 
 ### Preview
 
 | ID | Feature | Notes | Status |
 |---|---|---|---|
-| F1.58 | Real-time playback of the composed timeline with audio/video sync | Architecture rules 2–4 | ? |
-| F1.59 | Play/pause (Space), current/total timecode display | | ? |
-| F1.60 | Dropped-frame handling: audio is the master clock, video skips | | ? |
-| F1.61 | Preview quality setting (full / half / quarter resolution) | | ? |
-| F1.62 | Preview fit/zoom levels | | ? |
-| F1.63 | Full-screen preview | | ? |
-| F1.64 | Direct manipulation in the preview: drag to move, corner handles to scale, handle to rotate | | ? |
-| F1.65 | Selecting an element in the preview selects its clip on the timeline | | ? |
-| F1.66 | Snapping guides in the preview (centre, edges) | | ? |
-| F1.67 | Loop playback | | ? |
-| F1.68 | J/K/L shuttle (reverse / pause / forward, repeated presses speed up) | | ? |
-| F1.69 | Audio scrubbing while dragging the playhead | | ? |
+| F1.58 | Real-time playback of the composed timeline with audio/video sync | Architecture rules 2–4; Native wgpu preview window renders a test pattern only | missing |
+| F1.59 | Play/pause (Space), current/total timecode display | Playhead timecode shown; Play button disabled | partial |
+| F1.60 | Dropped-frame handling: audio is the master clock, video skips | | missing |
+| F1.61 | Preview quality setting (full / half / quarter resolution) | | missing |
+| F1.62 | Preview fit/zoom levels | Preview letterboxes to the canvas aspect; no zoom levels | partial |
+| F1.63 | Full-screen preview | | missing |
+| F1.64 | Direct manipulation in the preview: drag to move, corner handles to scale, handle to rotate | | missing |
+| F1.65 | Selecting an element in the preview selects its clip on the timeline | | missing |
+| F1.66 | Snapping guides in the preview (centre, edges) | | missing |
+| F1.67 | Loop playback | | missing |
+| F1.68 | J/K/L shuttle (reverse / pause / forward, repeated presses speed up) | | missing |
+| F1.69 | Audio scrubbing while dragging the playhead | | missing |
 
 ### Basic clip properties (inspector)
 
 | ID | Feature | Notes | Status |
 |---|---|---|---|
-| F1.70 | Transform: position, scale, rotation | | ? |
-| F1.71 | Non-uniform scale (lock/unlock aspect) | | ? |
-| F1.72 | Opacity | | ? |
-| F1.73 | Flip horizontal / vertical; rotate 90° | | ? |
-| F1.74 | Crop (free and fixed ratios) with crop handles in the preview | | ? |
-| F1.75 | Fit / fill / stretch to canvas | | ? |
-| F1.76 | Canvas background: colour, blur of the clip itself, image | | ? |
-| F1.77 | Clip volume (percent / dB) | | ? |
-| F1.78 | Audio fade in / fade out | | ? |
-| F1.79 | Constant speed change (e.g. 0.1×–100×) with duration updated | | ? |
-| F1.80 | Preserve pitch when changing speed (toggle) | Time-stretch on the audio path | ? |
-| F1.81 | Reverse clip | Needs reverse decode / cached render | ? |
-| F1.82 | Freeze frame (insert a still of the current frame) | | ? |
-| F1.83 | Default duration for still images; image duration change | | ? |
-| F1.84 | Reset a property / reset all | | ? |
-| F1.85 | Numeric entry for every slider (type exact values) | | ? |
+| F1.70 | Transform: position, scale, rotation | | missing |
+| F1.71 | Non-uniform scale (lock/unlock aspect) | | missing |
+| F1.72 | Opacity | | missing |
+| F1.73 | Flip horizontal / vertical; rotate 90° | | missing |
+| F1.74 | Crop (free and fixed ratios) with crop handles in the preview | | missing |
+| F1.75 | Fit / fill / stretch to canvas | | missing |
+| F1.76 | Canvas background: colour, blur of the clip itself, image | | missing |
+| F1.77 | Clip volume (percent / dB) | | missing |
+| F1.78 | Audio fade in / fade out | | missing |
+| F1.79 | Constant speed change (e.g. 0.1×–100×) with duration updated | | missing |
+| F1.80 | Preserve pitch when changing speed (toggle) | Time-stretch on the audio path | missing |
+| F1.81 | Reverse clip | Needs reverse decode / cached render | missing |
+| F1.82 | Freeze frame (insert a still of the current frame) | | missing |
+| F1.83 | Default duration for still images; image duration change | | missing |
+| F1.84 | Reset a property / reset all | | missing |
+| F1.85 | Numeric entry for every slider (type exact values) | | missing |
 
 ### Export
 
 | ID | Feature | Notes | Status |
 |---|---|---|---|
-| F1.86 | Export dialog: file name, destination folder | | ? |
-| F1.87 | Resolution: 480p, 720p, 1080p, 2K, 4K (keeping project aspect) | | ? |
-| F1.88 | Frame rate: 24, 25, 30, 50, 60 fps | | ? |
-| F1.89 | Bitrate: low / recommended / high / custom | | ? |
-| F1.90 | H.264 export in MP4 | LGPL: hardware/OS encoder or OpenH264, never libx264 | ? |
-| F1.91 | HEVC export in MP4/MOV | LGPL: hardware/OS encoder only | ? |
-| F1.92 | AAC audio in the export | | ? |
-| F1.93 | Export uses the same render graph as preview | Architecture rule 3 | ? |
-| F1.94 | Progress with ETA, cancel, background export while editing | Long-running job | ? |
-| F1.95 | Hardware-accelerated encoding with software fallback | | ? |
-| F1.96 | Export audio only (WAV, MP3, AAC) | | ? |
-| F1.97 | Export the current frame as an image (PNG/JPG) | | ? |
-| F1.98 | Open the folder / play the file when the export finishes | | ? |
-| F1.99 | Clear error when export fails (disk full, encoder missing) | | ? |
+| F1.86 | Export dialog: file name, destination folder | Export button disabled | missing |
+| F1.87 | Resolution: 480p, 720p, 1080p, 2K, 4K (keeping project aspect) | | missing |
+| F1.88 | Frame rate: 24, 25, 30, 50, 60 fps | | missing |
+| F1.89 | Bitrate: low / recommended / high / custom | | missing |
+| F1.90 | H.264 export in MP4 | LGPL: hardware/OS encoder or OpenH264, never libx264 | missing |
+| F1.91 | HEVC export in MP4/MOV | LGPL: hardware/OS encoder only | missing |
+| F1.92 | AAC audio in the export | | missing |
+| F1.93 | Export uses the same render graph as preview | Architecture rule 3 | missing |
+| F1.94 | Progress with ETA, cancel, background export while editing | Long-running job | missing |
+| F1.95 | Hardware-accelerated encoding with software fallback | | missing |
+| F1.96 | Export audio only (WAV, MP3, AAC) | | missing |
+| F1.97 | Export the current frame as an image (PNG/JPG) | | missing |
+| F1.98 | Open the folder / play the file when the export finishes | | missing |
+| F1.99 | Clear error when export fails (disk full, encoder missing) | | missing |
 
 ---
 
