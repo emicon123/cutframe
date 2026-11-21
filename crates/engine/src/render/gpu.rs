@@ -29,9 +29,16 @@ pub enum GpuError {
 impl GpuContext {
     /// Picks the high-performance adapter. Falls back to a software adapter (WARP on Windows,
     /// lavapipe/llvmpipe on Linux) so headless CI and GPU-less machines still work.
+    ///
+    /// Windows uses D3D12 only (ADR-0001). With every backend enabled wgpu prefers Vulkan, and on
+    /// hybrid-GPU laptops (Optimus) the Vulkan dGPU adapter cannot present to the preview window.
+    /// `WGPU_BACKEND` still overrides the choice for debugging.
     pub fn new() -> Result<Self, GpuError> {
-        let instance =
-            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
+        if cfg!(windows) {
+            descriptor.backends = wgpu::Backends::DX12;
+        }
+        let instance = wgpu::Instance::new(descriptor.with_env());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             force_fallback_adapter: false,
