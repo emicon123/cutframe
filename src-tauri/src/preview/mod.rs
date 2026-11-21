@@ -8,6 +8,7 @@
 #[cfg(windows)]
 mod windows;
 
+use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use app_core::ProjectSettings;
@@ -23,6 +24,9 @@ const MAX_FRAME_SIZE: (u32, u32) = (1920, 1080);
 #[derive(Debug)]
 pub struct Preview {
     engine: PreviewHandle,
+    /// Held while the resulting show/hide is dispatched, so the window and the engine see the
+    /// changes in the same order as the state.
+    visibility: Mutex<Visibility>,
     #[cfg(windows)]
     child: windows::ChildWindow,
 }
@@ -38,9 +42,12 @@ impl Preview {
                 return None;
             }
         };
+        engine.set_visible(Visibility::INITIAL.shown());
+        let visibility = Mutex::new(Visibility::INITIAL);
 
         #[cfg(windows)]
         {
+            // Created hidden, matching `Visibility::INITIAL`.
             let child = match windows::ChildWindow::create(main) {
                 Ok(child) => child,
                 Err(err) => {
@@ -58,14 +65,17 @@ impl Preview {
                     1,
                 )
             };
-            engine.set_visible(false);
-            Some(Self { engine, child })
+            Some(Self {
+                engine,
+                visibility,
+                child,
+            })
         }
 
         #[cfg(not(windows))]
         {
             let _ = main;
-            Some(Self { engine })
+            Some(Self { engine, visibility })
         }
     }
 
@@ -85,31 +95,50 @@ impl Preview {
         self.engine.set_canvas_aspect(aspect(settings));
     }
 
+    /// Moves the preview over `rect`. Shows it only if the UI has requested it; an empty `rect`
+    /// hides it. Never shows a preview the UI has hidden (ADR-0005 §3).
     pub fn set_rect(&self, app: &AppHandle, rect: PreviewRect) {
+        let mut visibility = self.visibility();
+        let change = visibility.set_rect(rect);
         #[cfg(windows)]
         {
             let child = self.child;
-            if let Err(err) = app.run_on_main_thread(move || child.set_rect(rect)) {
+            // Move first, then show, so the window never flashes at its old position.
+            let result = app.run_on_main_thread(move || {
+                child.set_rect(rect);
+                if let Some(shown) = change {
+                    child.set_visible(shown);
+                }
+            });
+            if let Err(err) = result {
                 tracing::error!(%err, "cannot move the preview window");
             }
             self.engine.resize(rect.width, rect.height);
-            self.engine.set_visible(rect.width > 0 && rect.height > 0);
         }
         #[cfg(not(windows))]
-        let _ = (app, rect);
+        let _ = app;
+        if let Some(shown) = change {
+            self.engine.set_visible(shown);
+        }
     }
 
+    /// The UI's visibility request, e.g. `false` while a dialog overlaps the preview area. The
+    /// preview is shown only once the rectangle is non-empty as well.
     pub fn set_visible(&self, app: &AppHandle, visible: bool) {
+        let mut visibility = self.visibility();
+        let Some(shown) = visibility.request(visible) else {
+            return;
+        };
         #[cfg(windows)]
         {
             let child = self.child;
-            if let Err(err) = app.run_on_main_thread(move || child.set_visible(visible)) {
+            if let Err(err) = app.run_on_main_thread(move || child.set_visible(shown)) {
                 tracing::error!(%err, "cannot show or hide the preview window");
             }
         }
         #[cfg(not(windows))]
         let _ = app;
-        self.engine.set_visible(visible);
+        self.engine.set_visible(shown);
     }
 
     /// One offscreen frame, clamped to [`MAX_FRAME_SIZE`].
@@ -119,8 +148,135 @@ impl Preview {
         self.engine
             .render_frame(width, height, Duration::from_secs(5))
     }
+
+    fn visibility(&self) -> MutexGuard<'_, Visibility> {
+        // `Visibility` is two booleans and always consistent, so a poisoned lock is harmless.
+        self.visibility
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// The two inputs that decide whether the preview is on screen and rendering (ADR-0005 §3): the
+/// UI's request (`set_preview_visible`) and a non-empty rectangle (`set_preview_rect`). Both must
+/// allow it; a rectangle update never overrides a hide request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Visibility {
+    requested: bool,
+    has_area: bool,
+}
+
+impl Visibility {
+    /// Not requested until the UI asks: the preview area requests visible when it mounts and
+    /// hidden when it unmounts. Starting as requested would let the native window cover DOM
+    /// content drawn before the preview area exists (ADR-0005 §4), e.g. a start screen.
+    const INITIAL: Self = Self {
+        requested: false,
+        has_area: false,
+    };
+
+    fn shown(self) -> bool {
+        self.requested && self.has_area
+    }
+
+    /// Records the UI's request. Returns the new shown state if it changed.
+    fn request(&mut self, visible: bool) -> Option<bool> {
+        self.update(Self {
+            requested: visible,
+            ..*self
+        })
+    }
+
+    /// Records the reported rectangle. Returns the new shown state if it changed.
+    fn set_rect(&mut self, rect: PreviewRect) -> Option<bool> {
+        self.update(Self {
+            has_area: rect.width > 0 && rect.height > 0,
+            ..*self
+        })
+    }
+
+    fn update(&mut self, next: Self) -> Option<bool> {
+        let before = self.shown();
+        *self = next;
+        (next.shown() != before).then_some(next.shown())
+    }
 }
 
 fn aspect(settings: &ProjectSettings) -> f32 {
     settings.width.max(1) as f32 / settings.height.max(1) as f32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(width: u32, height: u32) -> PreviewRect {
+        PreviewRect {
+            x: 10,
+            y: 20,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn starts_hidden_until_requested_and_placed() {
+        let mut visibility = Visibility::INITIAL;
+        assert!(!visibility.shown());
+        assert_eq!(visibility.set_rect(rect(640, 360)), None);
+        assert!(!visibility.shown());
+        assert_eq!(visibility.request(true), Some(true));
+        assert!(visibility.shown());
+    }
+
+    #[test]
+    fn shown_only_when_requested_and_rect_is_non_empty() {
+        for requested in [false, true] {
+            for (width, height) in [(0, 0), (0, 360), (640, 0), (640, 360)] {
+                let mut visibility = Visibility::INITIAL;
+                visibility.request(requested);
+                visibility.set_rect(rect(width, height));
+                assert_eq!(
+                    visibility.shown(),
+                    requested && width > 0 && height > 0,
+                    "requested={requested} rect={width}x{height}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rect_updates_never_show_a_hidden_preview() {
+        let mut visibility = Visibility::INITIAL;
+        visibility.request(true);
+        assert_eq!(visibility.set_rect(rect(640, 360)), Some(true));
+        assert_eq!(visibility.request(false), Some(false));
+
+        // e.g. the window is resized while a dialog has the preview hidden
+        for (width, height) in [(800, 450), (0, 0), (1280, 720)] {
+            assert_eq!(visibility.set_rect(rect(width, height)), None);
+            assert!(!visibility.shown());
+        }
+
+        assert_eq!(visibility.request(true), Some(true));
+    }
+
+    #[test]
+    fn empty_rect_hides_and_a_new_area_shows_again() {
+        let mut visibility = Visibility::INITIAL;
+        visibility.request(true);
+        visibility.set_rect(rect(640, 360));
+        assert_eq!(visibility.set_rect(rect(0, 0)), Some(false));
+        assert_eq!(visibility.set_rect(rect(320, 180)), Some(true));
+    }
+
+    #[test]
+    fn repeated_inputs_report_no_change() {
+        let mut visibility = Visibility::INITIAL;
+        assert_eq!(visibility.request(false), None);
+        visibility.request(true);
+        assert_eq!(visibility.request(true), None);
+        visibility.set_rect(rect(640, 360));
+        assert_eq!(visibility.set_rect(rect(700, 400)), None);
+    }
 }

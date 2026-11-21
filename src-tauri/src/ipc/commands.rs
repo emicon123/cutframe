@@ -109,6 +109,8 @@ pub fn get_app_info(app: AppHandle, state: State<'_, AppState>) -> AppInfo {
 }
 
 /// Reports where the preview area is. In `native` mode the GPU window follows this rectangle.
+/// An empty rectangle hides the preview; a non-empty one never shows a preview that
+/// `set_preview_visible(false)` hid.
 #[tauri::command]
 #[specta::specta]
 pub fn set_preview_rect(app: AppHandle, state: State<'_, AppState>, rect: PreviewRect) {
@@ -117,7 +119,9 @@ pub fn set_preview_rect(app: AppHandle, state: State<'_, AppState>, rect: Previe
     }
 }
 
-/// Hides the native preview window, e.g. while a dialog overlaps the preview area.
+/// Requests the preview shown (`true`) or hidden (`false`). The preview starts hidden: request
+/// visible when the preview area mounts and hidden when it unmounts or a dialog overlaps it. It is
+/// on screen only while requested and the last `set_preview_rect` was non-empty.
 #[tauri::command]
 #[specta::specta]
 pub fn set_preview_visible(app: AppHandle, state: State<'_, AppState>, visible: bool) {

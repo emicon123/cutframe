@@ -1,13 +1,15 @@
 //! Data shapes sent to the UI. These are views of the model, not the model itself: they contain
 //! what the UI needs to draw and nothing that would tie the UI to internal structures.
 
+use app_core::command::HistoryLabel;
 use app_core::{ClipId, Document, ProjectId, ProjectSettings, Time, TrackId, TrackKind};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectState {
-    /// Increases on every change. Use it to drop stale events.
+    /// Increases on every change and is never reset during the app session, not even when another
+    /// project is opened or created. Keep the payload with the highest revision.
     pub revision: u64,
     pub project: ProjectView,
     pub history: HistoryState,
@@ -18,9 +20,10 @@ pub struct ProjectState {
 pub struct HistoryState {
     pub can_undo: bool,
     pub can_redo: bool,
-    /// e.g. "Add Track", for "Undo Add Track".
-    pub undo_label: Option<String>,
-    pub redo_label: Option<String>,
+    /// Key of the entry `undo` would revert (e.g. `addTrack`). The UI translates it.
+    pub undo_label: Option<HistoryLabel>,
+    /// Key of the entry `redo` would re-apply. The UI translates it.
+    pub redo_label: Option<HistoryLabel>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -55,11 +58,12 @@ pub struct ClipView {
     pub duration: Time,
 }
 
-impl From<&Document> for ProjectState {
-    fn from(doc: &Document) -> Self {
+impl ProjectState {
+    /// The view of `doc` at the session-wide `revision` (owned by `AppState`).
+    pub fn new(doc: &Document, revision: u64) -> Self {
         let project = doc.project();
         Self {
-            revision: doc.revision(),
+            revision,
             project: ProjectView {
                 id: project.id,
                 name: project.name.clone(),
@@ -90,8 +94,8 @@ impl From<&Document> for ProjectState {
             history: HistoryState {
                 can_undo: doc.can_undo(),
                 can_redo: doc.can_redo(),
-                undo_label: doc.undo_label().map(str::to_owned),
-                redo_label: doc.redo_label().map(str::to_owned),
+                undo_label: doc.undo_label(),
+                redo_label: doc.redo_label(),
             },
         }
     }

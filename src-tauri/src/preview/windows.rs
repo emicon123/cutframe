@@ -14,8 +14,8 @@ use windows::Win32::Graphics::Gdi::{BLACK_BRUSH, GetStockObject, HBRUSH};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, HTTRANSPARENT, HWND_TOP, RegisterClassW, SW_HIDE, SW_SHOWNA,
-    SWP_NOACTIVATE, SWP_SHOWWINDOW, SetWindowPos, ShowWindow, WINDOW_EX_STYLE, WM_ERASEBKGND,
-    WM_NCHITTEST, WNDCLASSW, WS_CHILD, WS_CLIPSIBLINGS,
+    SWP_NOACTIVATE, SetWindowPos, ShowWindow, WINDOW_EX_STYLE, WM_ERASEBKGND, WM_NCHITTEST,
+    WNDCLASSW, WS_CHILD, WS_CLIPSIBLINGS,
 };
 use windows::core::w;
 
@@ -92,7 +92,9 @@ impl ChildWindow {
         RawWindowHandle::Win32(Win32WindowHandle::new(self.hwnd))
     }
 
-    /// Moves the window over `rect` and shows it on top. Call on the main thread.
+    /// Moves the window over `rect` and keeps it on top. Never changes its visibility: only
+    /// [`Self::set_visible`] does, so a resize cannot show a preview the UI has hidden
+    /// (ADR-0005 §3). Call on the main thread.
     pub fn set_rect(self, rect: PreviewRect) {
         let width = i32::try_from(rect.width).unwrap_or(i32::MAX);
         let height = i32::try_from(rect.height).unwrap_or(i32::MAX);
@@ -105,7 +107,7 @@ impl ChildWindow {
                 rect.y,
                 width,
                 height,
-                SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                SWP_NOACTIVATE,
             )
         };
         if let Err(err) = result {

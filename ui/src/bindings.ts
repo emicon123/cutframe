@@ -19,9 +19,17 @@ export const commands = {
 	/**  Returns `false` if there was nothing to redo. */
 	redo: (options?: InvokeOptions) => __TAURI_INVOKE<boolean>("redo", undefined, options),
 	getAppInfo: (options?: InvokeOptions) => __TAURI_INVOKE<AppInfo_Serialize>("get_app_info", undefined, options),
-	/**  Reports where the preview area is. In `native` mode the GPU window follows this rectangle. */
+	/**
+	 *  Reports where the preview area is. In `native` mode the GPU window follows this rectangle.
+	 *  An empty rectangle hides the preview; a non-empty one never shows a preview that
+	 *  `set_preview_visible(false)` hid.
+	 */
 	setPreviewRect: (rect: PreviewRect, options?: InvokeOptions) => __TAURI_INVOKE<void>("set_preview_rect", { rect }, options),
-	/**  Hides the native preview window, e.g. while a dialog overlaps the preview area. */
+	/**
+	 *  Requests the preview shown (`true`) or hidden (`false`). The preview starts hidden: request
+	 *  visible when the preview area mounts and hidden when it unmounts or a dialog overlaps it. It is
+	 *  on screen only while requested and the last `set_preview_rect` was non-empty.
+	 */
 	setPreviewVisible: (visible: boolean, options?: InvokeOptions) => __TAURI_INVOKE<void>("set_preview_visible", { visible }, options),
 };
 
@@ -69,30 +77,48 @@ export type GpuInfoView = {
 	software: boolean,
 };
 
+/**
+ *  Stable key naming an undo/redo history entry, e.g. for an "Undo Add Track" menu item.
+ * 
+ *  This is not display text: the UI translates the key (ADR-0003 §5, ADR-0006 §5). Keys are API,
+ *  so a variant is never renamed or reused for a different action; add a new one instead.
+ */
+export type HistoryLabel = "addTrack" | "removeTrack" | "renameTrack" | "renameProject";
+
 export type HistoryState = HistoryState_Serialize | HistoryState_Deserialize;
 
 export type HistoryState_Deserialize = {
 	canUndo: boolean,
 	canRedo: boolean,
-	/**  e.g. "Add Track", for "Undo Add Track". */
-	undoLabel?: string | null,
-	redoLabel?: string | null,
+	/**  Key of the entry `undo` would revert (e.g. `addTrack`). The UI translates it. */
+	undoLabel?: HistoryLabel | null,
+	/**  Key of the entry `redo` would re-apply. The UI translates it. */
+	redoLabel?: HistoryLabel | null,
 };
 
 export type HistoryState_Serialize = {
 	canUndo: boolean,
 	canRedo: boolean,
-	/**  e.g. "Add Track", for "Undo Add Track". */
-	undoLabel: string | null,
-	redoLabel: string | null,
+	/**  Key of the entry `undo` would revert (e.g. `addTrack`). The UI translates it. */
+	undoLabel: HistoryLabel | null,
+	/**  Key of the entry `redo` would re-apply. The UI translates it. */
+	redoLabel: HistoryLabel | null,
 };
 
-/**  Error returned by every fallible command. Serialized as `{ kind, message }`. */
+/**
+ *  Error returned by every fallible command. Serialized as `{ kind, message }`.
+ * 
+ *  `kind` is the stable key the UI branches on and translates; a variant is never renamed
+ *  (ADR-0003 §4-5). `message` is English diagnostic text for logs only and is never shown to the
+ *  user.
+ */
 export type IpcError = 
 /**  The edit was rejected (e.g. unknown track, empty name). The project is unchanged. */
 { kind: "invalidEdit"; message: string } | 
 /**  A subsystem is not available (e.g. no GPU). */
-{ kind: "unavailable"; message: string } | { kind: "internal"; message: string };
+{ kind: "unavailable"; message: string } | 
+/**  A bug or an unexpected failure in the backend. */
+{ kind: "internal"; message: string };
 
 /**  How the preview reaches the screen on this platform. */
 export type PreviewMode = 
@@ -142,14 +168,20 @@ export type ProjectSettings = {
 export type ProjectState = ProjectState_Serialize | ProjectState_Deserialize;
 
 export type ProjectState_Deserialize = {
-	/**  Increases on every change. Use it to drop stale events. */
+	/**
+	 *  Increases on every change and is never reset during the app session, not even when another
+	 *  project is opened or created. Keep the payload with the highest revision.
+	 */
 	revision: number,
 	project: ProjectView,
 	history: HistoryState_Deserialize,
 };
 
 export type ProjectState_Serialize = {
-	/**  Increases on every change. Use it to drop stale events. */
+	/**
+	 *  Increases on every change and is never reset during the app session, not even when another
+	 *  project is opened or created. Keep the payload with the highest revision.
+	 */
 	revision: number,
 	project: ProjectView,
 	history: HistoryState_Serialize,

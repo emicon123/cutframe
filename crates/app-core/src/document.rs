@@ -1,8 +1,11 @@
-//! An open project: the current state, its undo/redo history and a revision counter.
+//! An open project: the current state and its undo/redo history.
+//!
+//! The revision counter sent to the UI is not kept here: it must stay monotonic across documents
+//! for the whole app session, so the shell owns it (ADR-0003 §6).
 
 use std::sync::Arc;
 
-use crate::command::{Command, CommandError};
+use crate::command::{Command, CommandError, HistoryLabel};
 use crate::model::Project;
 
 /// Maximum number of undo steps kept in memory.
@@ -17,7 +20,6 @@ pub struct Document {
     project: Arc<Project>,
     undo: Vec<Box<dyn Command>>,
     redo: Vec<Box<dyn Command>>,
-    revision: u64,
     history_limit: usize,
 }
 
@@ -27,7 +29,6 @@ impl Document {
             project: Arc::new(project),
             undo: Vec::new(),
             redo: Vec::new(),
-            revision: 0,
             history_limit: DEFAULT_HISTORY_LIMIT,
         }
     }
@@ -41,11 +42,6 @@ impl Document {
         &self.project
     }
 
-    /// Increases by one on every successful change (execute, undo, redo).
-    pub fn revision(&self) -> u64 {
-        self.revision
-    }
-
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
     }
@@ -54,11 +50,13 @@ impl Document {
         !self.redo.is_empty()
     }
 
-    pub fn undo_label(&self) -> Option<&'static str> {
+    /// Key of the entry the next `undo` reverts.
+    pub fn undo_label(&self) -> Option<HistoryLabel> {
         self.undo.last().map(|c| c.label())
     }
 
-    pub fn redo_label(&self) -> Option<&'static str> {
+    /// Key of the entry the next `redo` re-applies.
+    pub fn redo_label(&self) -> Option<HistoryLabel> {
         self.redo.last().map(|c| c.label())
     }
 
@@ -72,7 +70,6 @@ impl Document {
         if self.undo.len() > self.history_limit {
             self.undo.remove(0);
         }
-        self.revision += 1;
         Ok(())
     }
 
@@ -83,7 +80,6 @@ impl Document {
         };
         command.revert(Arc::make_mut(&mut self.project));
         self.redo.push(command);
-        self.revision += 1;
         true
     }
 
@@ -100,7 +96,6 @@ impl Document {
             return false;
         }
         self.undo.push(command);
-        self.revision += 1;
         true
     }
 }
@@ -121,7 +116,6 @@ mod tests {
         doc.execute(Box::new(RenameProject::new("Renamed")))
             .unwrap();
         let edited = doc.snapshot();
-        assert_eq!(doc.revision(), 2);
 
         assert!(doc.undo());
         assert!(doc.undo());
@@ -132,7 +126,23 @@ mod tests {
         assert!(doc.redo());
         assert!(!doc.redo());
         assert_eq!(*doc.snapshot(), *edited);
-        assert_eq!(doc.revision(), 6);
+    }
+
+    #[test]
+    fn history_labels_follow_the_stacks() {
+        let mut doc = Document::new(Project::new("Test"));
+        assert_eq!((doc.undo_label(), doc.redo_label()), (None, None));
+
+        doc.execute(Box::new(AddTrack::new(TrackKind::Text, None)))
+            .unwrap();
+        doc.execute(Box::new(RenameProject::new("Renamed")))
+            .unwrap();
+        assert_eq!(doc.undo_label(), Some(HistoryLabel::RenameProject));
+        assert_eq!(doc.redo_label(), None);
+
+        doc.undo();
+        assert_eq!(doc.undo_label(), Some(HistoryLabel::AddTrack));
+        assert_eq!(doc.redo_label(), Some(HistoryLabel::RenameProject));
     }
 
     #[test]
@@ -144,7 +154,6 @@ mod tests {
                 .is_err()
         );
         assert_eq!(*doc.snapshot(), *before);
-        assert_eq!(doc.revision(), 0);
         assert!(!doc.can_undo());
     }
 

@@ -1,6 +1,22 @@
 //! Edit commands. Every change to a [`Project`] is a command so it can be undone.
 
+use serde::{Deserialize, Serialize};
+
 use crate::model::{Project, Track, TrackId, TrackKind};
+
+/// Stable key naming an undo/redo history entry, e.g. for an "Undo Add Track" menu item.
+///
+/// This is not display text: the UI translates the key (ADR-0003 §5, ADR-0006 §5). Keys are API,
+/// so a variant is never renamed or reused for a different action; add a new one instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub enum HistoryLabel {
+    AddTrack,
+    RemoveTrack,
+    RenameTrack,
+    RenameProject,
+}
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum CommandError {
@@ -16,8 +32,8 @@ pub enum CommandError {
 /// project exactly. `revert` is only called after a successful `apply` on the same project state,
 /// so it cannot fail.
 pub trait Command: Send + Sync + std::fmt::Debug {
-    /// Short human-readable label, e.g. for an "Undo Add Track" menu item.
-    fn label(&self) -> &'static str;
+    /// Key of the history entry this command creates. The UI turns it into text.
+    fn label(&self) -> HistoryLabel;
     fn apply(&mut self, project: &mut Project) -> Result<(), CommandError>;
     fn revert(&mut self, project: &mut Project);
 }
@@ -49,8 +65,8 @@ impl AddTrack {
 }
 
 impl Command for AddTrack {
-    fn label(&self) -> &'static str {
-        "Add Track"
+    fn label(&self) -> HistoryLabel {
+        HistoryLabel::AddTrack
     }
 
     fn apply(&mut self, project: &mut Project) -> Result<(), CommandError> {
@@ -86,8 +102,8 @@ impl RemoveTrack {
 }
 
 impl Command for RemoveTrack {
-    fn label(&self) -> &'static str {
-        "Remove Track"
+    fn label(&self) -> HistoryLabel {
+        HistoryLabel::RemoveTrack
     }
 
     fn apply(&mut self, project: &mut Project) -> Result<(), CommandError> {
@@ -124,8 +140,8 @@ impl RenameTrack {
 }
 
 impl Command for RenameTrack {
-    fn label(&self) -> &'static str {
-        "Rename Track"
+    fn label(&self) -> HistoryLabel {
+        HistoryLabel::RenameTrack
     }
 
     fn apply(&mut self, project: &mut Project) -> Result<(), CommandError> {
@@ -168,8 +184,8 @@ impl RenameProject {
 }
 
 impl Command for RenameProject {
-    fn label(&self) -> &'static str {
-        "Rename Project"
+    fn label(&self) -> HistoryLabel {
+        HistoryLabel::RenameProject
     }
 
     fn apply(&mut self, project: &mut Project) -> Result<(), CommandError> {
@@ -200,14 +216,14 @@ mod tests {
         assert_eq!(
             &edited,
             project,
-            "{} revert must restore the original",
+            "{:?} revert must restore the original",
             command.label()
         );
         command.apply(&mut edited).expect("re-apply");
         assert_eq!(
             edited,
             after_apply,
-            "{} re-apply must reproduce the edit",
+            "{:?} re-apply must reproduce the edit",
             command.label()
         );
         after_apply
@@ -257,6 +273,33 @@ mod tests {
             RenameProject::new("   ").apply(&mut project),
             Err(CommandError::EmptyName)
         );
+    }
+
+    #[test]
+    fn commands_report_their_history_label() {
+        let project = Project::new("Test");
+        let id = project.tracks[0].id;
+        assert_eq!(
+            AddTrack::new(TrackKind::Video, None).label(),
+            HistoryLabel::AddTrack
+        );
+        assert_eq!(RemoveTrack::new(id).label(), HistoryLabel::RemoveTrack);
+        assert_eq!(RenameTrack::new(id, "A").label(), HistoryLabel::RenameTrack);
+        assert_eq!(RenameProject::new("A").label(), HistoryLabel::RenameProject);
+    }
+
+    /// The serialized keys are what the UI translates; renaming one breaks its translations.
+    #[test]
+    fn history_labels_serialize_as_stable_camel_case_keys() {
+        let keys = [
+            (HistoryLabel::AddTrack, "addTrack"),
+            (HistoryLabel::RemoveTrack, "removeTrack"),
+            (HistoryLabel::RenameTrack, "renameTrack"),
+            (HistoryLabel::RenameProject, "renameProject"),
+        ];
+        for (label, key) in keys {
+            assert_eq!(serde_json::to_value(label).unwrap(), key);
+        }
     }
 
     #[test]
