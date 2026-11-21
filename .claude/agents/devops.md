@@ -12,7 +12,9 @@ with one script.
 
 ## Before changing anything
 
-1. Read `CLAUDE.md` and `docs/adr/` (especially `0001-tech-stack.md`).
+1. Read `CLAUDE.md`, `docs/architecture.md` and `docs/adr/` (especially `0001-tech-stack.md` and
+   `0005-preview-presentation-per-platform.md` for the smoke test). Open devops findings (FFmpeg
+   provisioning, updater, signing, Windows lint) are in `docs/architecture-review.md`.
 2. Look up GitHub Actions, `tauri-apps/tauri-action`, the Tauri 2 bundler/updater config and Azure
    Trusted Signing in current documentation (context7 MCP or the official docs). Config keys change
    between Tauri versions, so never guess them.
@@ -21,15 +23,18 @@ with one script.
 
 ## Owned files
 
+Entries marked *(target)* do not exist yet. Today `release.yml` builds an unsigned NSIS draft release
+with no updater (signing and the updater are open review items F31/F32).
+
 ```
 .github/workflows/
 ├── ci.yml                  on PR/push: Linux ARM64 + Windows checks (fmt, clippy, tests, deny, ui gates)
 └── release.yml             on tag v*: Windows build → sign → NSIS → updater artifacts → draft release
 scripts/
 ├── setup-dev-linux.sh      Debian/Pi: apt packages + rustup + pnpm (idempotent)
-├── setup-dev-windows.ps1   winget: Rustup, LLVM, Node, pnpm; then fetch-ffmpeg
-├── fetch-ffmpeg.ps1        downloads a pinned FFmpeg LGPL shared build, verifies SHA-256, sets FFMPEG_DIR
-└── gen-testdata.sh         generates testdata/ media with ffmpeg -f lavfi (used by backend tests)
+├── setup-dev-windows.ps1   (target) winget: Rustup, LLVM, Node, pnpm; then fetch-ffmpeg
+├── fetch-ffmpeg.ps1        (target) downloads a pinned FFmpeg LGPL shared build, verifies SHA-256, sets FFMPEG_DIR
+└── gen-testdata.sh         (target) generates testdata/ media with ffmpeg -f lavfi (used by backend tests)
 package.json                root: @tauri-apps/cli, pnpm scripts (tauri dev/build), workspace
 pnpm-workspace.yaml
 rust-toolchain.toml         pinned stable channel + components (rustfmt, clippy)
@@ -46,7 +51,7 @@ capabilities). Those belong to `backend`. Coordinate when a change spans both.
    `tauri.conf.json` does not duplicate it. A release is triggered by pushing tag `vX.Y.Z`, and the
    workflow fails if the tag and the version differ.
 2. **Build on `windows-latest`:** Rust from `rust-toolchain.toml`, Node 24 + pnpm, `Swatinem/rust-cache`,
-   and FFmpeg via `scripts/fetch-ffmpeg.ps1` (pinned version + SHA-256). LLVM/libclang is needed for
+   and FFmpeg via `scripts/fetch-ffmpeg.ps1` (target; pinned version + SHA-256). LLVM/libclang is needed for
    `rsmpeg` bindgen.
 3. **Bundle with `tauri-action`:** target **NSIS only**.
    - `bundle.windows.nsis.installMode: "currentUser"` (no UAC prompt)
@@ -71,7 +76,8 @@ capabilities). Those belong to `backend`. Coordinate when a change spans both.
   `cargo test --workspace` (wgpu on lavapipe), `cargo deny check`, and the `ui` gates
   (typecheck, lint, test, build).
 - **Windows** (`windows-latest`): `cargo test --workspace` (wgpu on WARP) and a debug `tauri build
-  --no-bundle` to catch Windows-only breakage early.
+  --no-bundle` to catch Windows-only breakage early. It must also run `clippy -D warnings`, because
+  `cfg(windows)` code is not compiled on Linux (missing today, task 0004).
 - **Drift check:** regenerate `ui/src/bindings.ts` and fail if `git diff` is non-empty.
 - Cache Rust and pnpm. Keep a PR run under ~15 minutes, and move slow jobs to `main` or nightly if
   needed.
@@ -81,7 +87,9 @@ capabilities). Those belong to `backend`. Coordinate when a change spans both.
 - `deny.toml` allowlist: MIT, Apache-2.0, Apache-2.0 WITH LLVM-exception, BSD-2-Clause, BSD-3-Clause,
   ISC, Zlib, Unicode-3.0, MPL-2.0, CC0-1.0. Any GPL/AGPL crate fails CI.
 - FFmpeg: only the `lgpl-shared` build variant, never `gpl`. Ship the FFmpeg license and source offer
-  in `bundle.resources` (LGPL obligations).
+  in `bundle.resources` (LGPL obligations). `cargo deny` cannot see FFmpeg, so the licence needs its
+  own CI check. Debian's FFmpeg on the Pi is GPL-configured; it is for development only and never
+  shipped.
 - Run `pnpm licenses list` in CI and fail on GPL/AGPL frontend dependencies.
 - Generate a third-party notices file at release time and bundle it.
 
@@ -93,7 +101,7 @@ capabilities). Those belong to `backend`. Coordinate when a change spans both.
   `libavfilter-dev`, `libavdevice-dev`, `libswscale-dev`, `libswresample-dev`), `clang`, `libclang-dev`,
   `libvulkan-dev`, `mesa-vulkan-drivers`, `libasound2-dev`, then rustup (if missing) and
   `corepack enable`. It must be idempotent and use `sudo` only for apt.
-- `setup-dev-windows.ps1`: `winget` for Rustup, LLVM, Node LTS and Git; enables pnpm; runs
+- `setup-dev-windows.ps1` (target): `winget` for Rustup, LLVM, Node LTS and Git; enables pnpm; runs
   `fetch-ffmpeg.ps1`; sets `FFMPEG_DIR` and `LIBCLANG_PATH` for the user.
 - Both scripts end by printing the versions found and the next command (`pnpm install && pnpm tauri dev`).
 

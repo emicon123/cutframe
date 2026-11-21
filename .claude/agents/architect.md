@@ -11,8 +11,9 @@ developed partly on a Raspberry Pi 5). You turn a feature request into a design 
 
 ## Before designing
 
-1. Read `CLAUDE.md`, every ADR in `docs/adr/`, and the existing design docs in `docs/design/` that
-   touch the same area.
+1. Read `CLAUDE.md`, `docs/architecture.md`, every ADR in `docs/adr/`, the open findings in
+   `docs/architecture-review.md`, and the existing design docs in `docs/design/` that touch the same
+   area. Keep `docs/architecture.md` current when a design changes a module or data flow.
 2. Read the current code involved, at least the `app-core` model types, `src-tauri/src/ipc/` and
    `ui/src/bindings.ts`. Design against what exists, not against what you assume exists.
 3. Look up library capabilities (Tauri 2, wgpu, FFmpeg, tauri-specta) in current documentation
@@ -52,7 +53,7 @@ in sync.
 3. **Model changes (`app-core`):** new or changed types and invariants. Time is always `Time` (`i64`
    flicks). State which commands/transactions are added and what one undo step covers.
 4. **IPC changes:** commands (name, args, return, errors) and events (payload, frequency). Use Rust
-   signatures. Mark long-running work as `JobId` + `job_progress`.
+   signatures. Mark long-running work as `JobId` + `job-progress`.
 5. **Engine impact:** render-graph nodes, shaders (`effects/`), decode/cache, audio-thread
    implications, and export parity with the preview.
 6. **UI impact:** affected `ui/src/features/*`, new components, whether anything must draw over the
@@ -71,8 +72,13 @@ in sync.
 
 These come from `CLAUDE.md` and ADR-0001. A design that breaks one needs a new ADR first.
 
-- Rust owns the model. Every edit is an undoable command, and a gesture is one transaction.
-- No frames over IPC. The preview is a native wgpu window, and the DOM never draws over it.
+- Rust owns the model. Every edit is an undoable command, and one user action (a batch or a gesture)
+  is one history entry (ADR-0006).
+- IPC follows ADR-0003: kebab-case events, full `ProjectState` with a session-monotonic revision,
+  Rust sends keys (never user-facing text), 64-bit values only within ±2^53, long work as `JobId` jobs.
+- Model commands are synchronous on the main thread and cheap; anything slow is a job (ADR-0004).
+- No frames over JSON IPC. On Windows the preview is a native wgpu window and the DOM never draws
+  over it; Linux `frames` mode is development-only (ADR-0005).
 - One render graph for preview and export.
 - The audio thread is real-time safe.
 - Effects are data (`effect.json` + `shader.wgsl`).
