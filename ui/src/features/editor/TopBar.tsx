@@ -3,7 +3,7 @@ import { Download, Redo2, Undo2 } from "lucide-react";
 import { commands } from "@/bindings";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { t } from "@/i18n";
+import { historyLabelText, t } from "@/i18n";
 import { run } from "@/stores/appStore";
 import { useProjectStore } from "@/stores/projectStore";
 
@@ -11,8 +11,12 @@ export function TopBar() {
   const name = useProjectStore((s) => s.state?.project.name);
   const history = useProjectStore((s) => s.state?.history);
 
-  const undoTip = history?.undoLabel ? t.topBar.undoAction(history.undoLabel) : t.topBar.nothingToUndo;
-  const redoTip = history?.redoLabel ? t.topBar.redoAction(history.redoLabel) : t.topBar.nothingToRedo;
+  const undoTip = history?.undoLabel
+    ? t.topBar.undoAction(historyLabelText(history.undoLabel))
+    : t.topBar.nothingToUndo;
+  const redoTip = history?.redoLabel
+    ? t.topBar.redoAction(historyLabelText(history.redoLabel))
+    : t.topBar.nothingToRedo;
 
   return (
     <header className="flex h-11 shrink-0 items-center gap-2 border-b bg-panel px-3">

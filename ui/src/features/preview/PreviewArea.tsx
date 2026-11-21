@@ -35,7 +35,9 @@ function PreviewMessage({ text }: { text: string }) {
 
 /**
  * Windows: an empty slot. A native GPU window sits on top of it, so nothing in the DOM may be
- * drawn here. We only report where the slot is, in physical pixels.
+ * drawn here. We report where the slot is, in physical pixels, and request visibility. The native
+ * preview starts hidden and shows only while visibility is requested and the rect is non-empty
+ * (ADR-0005 §3), so mounting reports the rect first, then requests visible; unmounting hides it.
  */
 function NativePreviewSlot() {
   const ref = useRef<HTMLDivElement>(null);
@@ -58,6 +60,7 @@ function NativePreviewSlot() {
     // Panel resizes move the slot without changing its size; window resizes change DPR or layout.
     window.addEventListener("resize", report);
     report();
+    void commands.setPreviewVisible(true);
     return () => {
       observer.disconnect();
       window.removeEventListener("resize", report);

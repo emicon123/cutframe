@@ -1,11 +1,11 @@
 import { create } from "zustand";
 
 import type { AppInfo_Serialize } from "@/bindings";
-import { describeError } from "@/ipc/errors";
+import { describeError, logError } from "@/ipc/errors";
 
 type AppStore = {
   info: AppInfo_Serialize | null;
-  /** Last failed command, shown in the status bar. */
+  /** Translated text for the last failed command, shown in the status bar. */
   lastError: string | null;
   setInfo: (info: AppInfo_Serialize) => void;
   reportError: (error: unknown) => void;
@@ -16,7 +16,10 @@ export const useAppStore = create<AppStore>()((set) => ({
   info: null,
   lastError: null,
   setInfo: (info) => set({ info }),
-  reportError: (error) => set({ lastError: describeError(error) }),
+  reportError: (error) => {
+    logError(error);
+    set({ lastError: describeError(error) });
+  },
   clearError: () => set({ lastError: null }),
 }));
 
