@@ -1,0 +1,50 @@
+/** All UI strings. Add a key here instead of writing text in JSX. */
+export const en = {
+  app: { name: "Cutframe" },
+  topBar: {
+    undo: "Undo",
+    redo: "Redo",
+    undoAction: (label: string) => `Undo ${label}`,
+    redoAction: (label: string) => `Redo ${label}`,
+    nothingToUndo: "Nothing to undo",
+    nothingToRedo: "Nothing to redo",
+    export: "Export",
+    exportSoon: "Export arrives in a later stage",
+  },
+  mediaBin: {
+    title: "Media",
+    empty: "No media yet",
+    emptyHint: "Importing video, audio and images arrives in stage 1.",
+    import: "Import",
+  },
+  preview: {
+    unavailable: "Preview unavailable: no GPU adapter found",
+    loading: "Starting preview…",
+    play: "Play",
+    playSoon: "Playback arrives with media import",
+  },
+  inspector: {
+    title: "Project",
+    name: "Name",
+    resolution: "Resolution",
+    frameRate: "Frame rate",
+    sampleRate: "Sample rate",
+    duration: "Duration",
+    tracks: "Tracks",
+  },
+  timeline: {
+    addVideoTrack: "Add video track",
+    addAudioTrack: "Add audio track",
+    addTextTrack: "Add text track",
+    removeTrack: (name: string) => `Remove ${name}`,
+    zoomHint: "Ctrl + wheel to zoom, wheel to scroll",
+    kinds: { video: "Video", audio: "Audio", text: "Text" },
+  },
+  status: {
+    gpu: (adapter: string, backend: string) => `${adapter} · ${backend}`,
+    software: "software rendering",
+    noGpu: "No GPU",
+    previewMode: { native: "native preview", frames: "frame preview (dev)", unavailable: "no preview" },
+    version: (v: string) => `v${v}`,
+  },
+} as const;

@@ -1,0 +1,10 @@
+/target/
+node_modules/
+/ui/dist/
+/src-tauri/gen/schemas/
+*.log
+.DS_Store
+.env
+.env.*
+# Local Claude Code settings
+.claude/settings.local.json

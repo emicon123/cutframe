@@ -1,0 +1,268 @@
+//! Edit commands. Every change to a [`Project`] is a command so it can be undone.
+
+use crate::model::{Project, Track, TrackId, TrackKind};
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum CommandError {
+    #[error("track {0:?} does not exist")]
+    TrackNotFound(TrackId),
+    #[error("name must not be empty")]
+    EmptyName,
+}
+
+/// A reversible edit.
+///
+/// `apply` may record whatever it needs (e.g. the removed track) so that `revert` restores the
+/// project exactly. `revert` is only called after a successful `apply` on the same project state,
+/// so it cannot fail.
+pub trait Command: Send + Sync + std::fmt::Debug {
+    /// Short human-readable label, e.g. for an "Undo Add Track" menu item.
+    fn label(&self) -> &'static str;
+    fn apply(&mut self, project: &mut Project) -> Result<(), CommandError>;
+    fn revert(&mut self, project: &mut Project);
+}
+
+/// Inserts a new empty track at `index` (or at the bottom).
+#[derive(Debug)]
+pub struct AddTrack {
+    id: TrackId,
+    kind: TrackKind,
+    index: Option<usize>,
+    inserted_at: Option<usize>,
+}
+
+impl AddTrack {
+    /// The track id is fixed here, so the caller knows it before `apply` and redo recreates the
+    /// same id (later commands in the redo stack may refer to it).
+    pub fn new(kind: TrackKind, index: Option<usize>) -> Self {
+        Self {
+            id: TrackId::new(),
+            kind,
+            index,
+            inserted_at: None,
+        }
+    }
+
+    pub fn track_id(&self) -> TrackId {
+        self.id
+    }
+}
+
+impl Command for AddTrack {
+    fn label(&self) -> &'static str {
+        "Add Track"
+    }
+
+    fn apply(&mut self, project: &mut Project) -> Result<(), CommandError> {
+        let mut track = Track::new(self.kind, project.next_track_name(self.kind));
+        track.id = self.id;
+        let index = self
+            .index
+            .unwrap_or(project.tracks.len())
+            .min(project.tracks.len());
+        project.tracks.insert(index, track);
+        self.inserted_at = Some(index);
+        Ok(())
+    }
+
+    fn revert(&mut self, project: &mut Project) {
+        if let Some(index) = self.inserted_at.take() {
+            project.tracks.remove(index);
+        }
+    }
+}
+
+/// Removes a track with all its clips.
+#[derive(Debug)]
+pub struct RemoveTrack {
+    id: TrackId,
+    removed: Option<(usize, Track)>,
+}
+
+impl RemoveTrack {
+    pub fn new(id: TrackId) -> Self {
+        Self { id, removed: None }
+    }
+}
+
+impl Command for RemoveTrack {
+    fn label(&self) -> &'static str {
+        "Remove Track"
+    }
+
+    fn apply(&mut self, project: &mut Project) -> Result<(), CommandError> {
+        let index = project
+            .track_index(self.id)
+            .ok_or(CommandError::TrackNotFound(self.id))?;
+        self.removed = Some((index, project.tracks.remove(index)));
+        Ok(())
+    }
+
+    fn revert(&mut self, project: &mut Project) {
+        if let Some((index, track)) = self.removed.take() {
+            project.tracks.insert(index, track);
+        }
+    }
+}
+
+/// Renames a track.
+#[derive(Debug)]
+pub struct RenameTrack {
+    id: TrackId,
+    name: String,
+    previous: Option<String>,
+}
+
+impl RenameTrack {
+    pub fn new(id: TrackId, name: impl Into<String>) -> Self {
+        Self {
+            id,
+            name: name.into(),
+            previous: None,
+        }
+    }
+}
+
+impl Command for RenameTrack {
+    fn label(&self) -> &'static str {
+        "Rename Track"
+    }
+
+    fn apply(&mut self, project: &mut Project) -> Result<(), CommandError> {
+        let name = self.name.trim();
+        if name.is_empty() {
+            return Err(CommandError::EmptyName);
+        }
+        let index = project
+            .track_index(self.id)
+            .ok_or(CommandError::TrackNotFound(self.id))?;
+        self.previous = Some(std::mem::replace(
+            &mut project.tracks[index].name,
+            name.to_owned(),
+        ));
+        Ok(())
+    }
+
+    fn revert(&mut self, project: &mut Project) {
+        if let (Some(previous), Some(index)) = (self.previous.take(), project.track_index(self.id))
+        {
+            project.tracks[index].name = previous;
+        }
+    }
+}
+
+/// Renames the project.
+#[derive(Debug)]
+pub struct RenameProject {
+    name: String,
+    previous: Option<String>,
+}
+
+impl RenameProject {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            previous: None,
+        }
+    }
+}
+
+impl Command for RenameProject {
+    fn label(&self) -> &'static str {
+        "Rename Project"
+    }
+
+    fn apply(&mut self, project: &mut Project) -> Result<(), CommandError> {
+        let name = self.name.trim();
+        if name.is_empty() {
+            return Err(CommandError::EmptyName);
+        }
+        self.previous = Some(std::mem::replace(&mut project.name, name.to_owned()));
+        Ok(())
+    }
+
+    fn revert(&mut self, project: &mut Project) {
+        if let Some(previous) = self.previous.take() {
+            project.name = previous;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_reversible(mut command: impl Command, project: &Project) -> Project {
+        let mut edited = project.clone();
+        command.apply(&mut edited).expect("apply");
+        let after_apply = edited.clone();
+        command.revert(&mut edited);
+        assert_eq!(
+            &edited,
+            project,
+            "{} revert must restore the original",
+            command.label()
+        );
+        command.apply(&mut edited).expect("re-apply");
+        assert_eq!(
+            edited,
+            after_apply,
+            "{} re-apply must reproduce the edit",
+            command.label()
+        );
+        after_apply
+    }
+
+    #[test]
+    fn add_track_is_reversible_and_keeps_id_on_redo() {
+        let project = Project::new("Test");
+        let command = AddTrack::new(TrackKind::Video, Some(0));
+        let id = command.track_id();
+        let after = assert_reversible(command, &project);
+        assert_eq!(after.tracks.len(), 3);
+        assert_eq!(after.tracks[0].id, id);
+        assert_eq!(after.tracks[0].name, "Video 2");
+    }
+
+    #[test]
+    fn remove_track_is_reversible() {
+        let project = Project::new("Test");
+        let id = project.tracks[0].id;
+        let after = assert_reversible(RemoveTrack::new(id), &project);
+        assert!(after.track(id).is_none());
+    }
+
+    #[test]
+    fn remove_missing_track_fails() {
+        let mut project = Project::new("Test");
+        let missing = TrackId::new();
+        assert_eq!(
+            RemoveTrack::new(missing).apply(&mut project),
+            Err(CommandError::TrackNotFound(missing))
+        );
+    }
+
+    #[test]
+    fn rename_track_is_reversible_and_trims() {
+        let project = Project::new("Test");
+        let id = project.tracks[1].id;
+        let after = assert_reversible(RenameTrack::new(id, "  Music "), &project);
+        assert_eq!(after.track(id).map(|t| t.name.as_str()), Some("Music"));
+    }
+
+    #[test]
+    fn rename_rejects_empty_names() {
+        let mut project = Project::new("Test");
+        assert_eq!(
+            RenameProject::new("   ").apply(&mut project),
+            Err(CommandError::EmptyName)
+        );
+    }
+
+    #[test]
+    fn rename_project_is_reversible() {
+        let project = Project::new("Test");
+        let after = assert_reversible(RenameProject::new("Holiday"), &project);
+        assert_eq!(after.name, "Holiday");
+    }
+}

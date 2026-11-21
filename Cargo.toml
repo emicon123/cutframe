@@ -1,0 +1,54 @@
+[workspace]
+resolver = "3"
+members = ["crates/app-core", "crates/engine", "src-tauri"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+publish = false
+
+[workspace.dependencies]
+app-core = { path = "crates/app-core" }
+engine = { path = "crates/engine" }
+
+arc-swap = "1.9"
+bytemuck = { version = "1.25", features = ["derive"] }
+crossbeam-channel = "0.5"
+pollster = "1.0"
+raw-window-handle = "0.6"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+specta = { version = "=2.0.0-rc.28", features = ["derive", "uuid"] }
+specta-typescript = "=0.0.15"
+tauri = "2.12"
+tauri-build = "2.7"
+tauri-specta = { version = "=2.0.0-rc.29", features = ["derive", "typescript"] }
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1.29", features = ["v7", "serde"] }
+wgpu = "30"
+windows = "0.62"
+
+proptest = "1"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "warn"
+
+[profile.dev]
+# Keep debug builds usable for real-time rendering and decoding.
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

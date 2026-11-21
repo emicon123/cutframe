@@ -1,0 +1,88 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "@fontsource-variable/inter";
+
+@custom-variant dark (&:is(.dark *));
+
+/* Dark-first editor theme. Components use these tokens only; never hard-code colors. */
+:root,
+.dark {
+  --background: oklch(0.16 0.008 285);
+  --foreground: oklch(0.94 0.005 285);
+  --card: oklch(0.2 0.009 285);
+  --card-foreground: oklch(0.94 0.005 285);
+  --popover: oklch(0.21 0.01 285);
+  --popover-foreground: oklch(0.94 0.005 285);
+  --primary: oklch(0.68 0.19 292);
+  --primary-foreground: oklch(0.99 0 0);
+  --secondary: oklch(0.26 0.01 285);
+  --secondary-foreground: oklch(0.94 0.005 285);
+  --muted: oklch(0.24 0.009 285);
+  --muted-foreground: oklch(0.68 0.012 285);
+  --accent: oklch(0.29 0.014 285);
+  --accent-foreground: oklch(0.97 0.005 285);
+  --destructive: oklch(0.64 0.21 25);
+  --border: oklch(0.28 0.01 285);
+  --input: oklch(0.3 0.01 285);
+  --ring: oklch(0.68 0.19 292);
+  --radius: 0.5rem;
+
+  /* Editor-specific */
+  --panel: oklch(0.19 0.008 285);
+  --timeline: oklch(0.17 0.008 285);
+  --track: oklch(0.21 0.009 285);
+  --track-alt: oklch(0.195 0.009 285);
+  --ruler: oklch(0.23 0.01 285);
+  --playhead: oklch(0.72 0.2 15);
+  --clip-video: oklch(0.55 0.15 292);
+  --clip-audio: oklch(0.6 0.13 165);
+  --clip-text: oklch(0.7 0.14 75);
+  --preview-bg: oklch(0.1 0.005 285);
+}
+
+@theme inline {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-panel: var(--panel);
+  --color-timeline: var(--timeline);
+  --color-preview-bg: var(--preview-bg);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html,
+  body,
+  #root {
+    @apply h-full overflow-hidden;
+  }
+  body {
+    @apply bg-background text-foreground font-sans text-[13px] antialiased select-none;
+  }
+  input,
+  textarea {
+    @apply select-text;
+  }
+}

@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux-arm64:
+    name: Linux ARM64 (fmt, clippy, tests, UI, licenses)
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
+            mesa-vulkan-drivers libvulkan1
+
+      - uses: actions-rust-lang/setup-rust-toolchain@v1 # reads rust-toolchain.toml, caches cargo
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: UI checks
+        run: |
+          pnpm --dir ui typecheck
+          pnpm --dir ui lint
+          pnpm --dir ui exec prettier --check .
+          pnpm --dir ui test
+          pnpm --dir ui build
+
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests (GPU tests run on lavapipe)
+        run: cargo test --workspace
+
+      - name: Generated bindings are up to date
+        run: git diff --exit-code -- ui/src/bindings.ts
+
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  windows:
+    name: Windows (tests, installer, smoke test)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Tests (GPU tests run on WARP)
+        run: cargo test --workspace
+
+      - name: Build NSIS installer
+        run: pnpm tauri build
+
+      - name: Install silently and run the smoke test
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait
+          $dir = Join-Path $env:LOCALAPPDATA 'Cutframe'
+          $exe = Get-ChildItem $dir -Filter *.exe | Where-Object { $_.Name -notlike 'uninstall*' } | Select-Object -First 1
+          if (-not $exe) { throw "App not found in $dir" }
+          $p = Start-Process -FilePath $exe.FullName -ArgumentList '--smoke-test' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Smoke test failed with exit code $($p.ExitCode)" }
+          Write-Host "Smoke test passed: $($exe.FullName)"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cutframe-windows-installer
+          path: target/release/bundle/nsis/*-setup.exe
+          if-no-files-found: error
