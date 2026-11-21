@@ -92,12 +92,12 @@ sequenceDiagram
 - **Today:** single commands only (`AddTrack`, `RemoveTrack`, `RenameTrack`, `RenameProject`).
   `undo` / `redo` take the same path. A failed command leaves the project unchanged and returns
   `IpcError { kind: "invalidEdit" }`.
-- **Today:** the revision restarts at 0 for each new `Document`, and undo labels and error messages
-  are English text.
+- **Today:** the revision lives in `AppState` and is monotonic for the app session (ADR-0003 §6).
+  History labels are `HistoryLabel` keys and the UI translates them and `IpcError.kind`;
+  `IpcError.message` is logged, never shown (ADR-0003 §5).
 - **Target:** gestures (an `EditPhase` argument plus `cancel_gesture`) and compound edits (`Batch`)
-  are one history entry each (ADR-0006). The revision is monotonic for the app session, and history
-  labels are keys that the UI translates (ADR-0003). Long operations return a `JobId` and emit
-  `JobProgress` (`job-progress`) (ADR-0003).
+  are one history entry each (ADR-0006). Long operations return a `JobId` and emit `JobProgress`
+  (`job-progress`) (ADR-0003).
 
 ## Flow 2: decode, render graph, preview and export
 
@@ -174,8 +174,9 @@ stateDiagram-v2
   the fallback). The UI reports the slot rectangle in physical pixels. The DOM never draws over it.
 - **Linux (`frames`, development only):** the UI pulls frames over `media://` and paints a canvas.
   The renderer is the same, only presentation differs.
-- **Drift today:** `set_preview_rect` always shows the window, even after `set_preview_visible(false)`.
-  The target in the diagram treats the two inputs independently (ADR-0005).
+- **Visibility:** two independent inputs (ADR-0005 §3). The preview starts hidden, is shown only
+  while the UI requests it (`set_preview_visible(true)` on mount) and the rectangle is non-empty, and
+  `set_preview_rect` never shows a preview the UI hid.
 
 ## Contract and build
 
