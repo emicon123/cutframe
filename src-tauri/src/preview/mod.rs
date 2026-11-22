@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use app_core::ProjectSettings;
 use engine::preview::PreviewHandle;
-use engine::render::{GpuInfo, OffscreenFrame};
+use engine::render::{GpuError, GpuInfo, OffscreenFrame};
 use tauri::{AppHandle, WebviewWindow};
 
 use crate::ipc::types::{PreviewMode, PreviewRect};
@@ -35,19 +35,12 @@ impl Preview {
     /// Starts the preview for `main`. Must run on the main thread (window creation).
     /// Returns `None` when no GPU is available; the app keeps working without a preview.
     pub fn create(main: &WebviewWindow, settings: &ProjectSettings) -> Option<Self> {
-        let engine = match PreviewHandle::spawn(aspect(settings)) {
-            Ok(engine) => engine,
-            Err(err) => {
-                tracing::error!(%err, "preview unavailable");
-                return None;
-            }
-        };
-        engine.set_visible(Visibility::INITIAL.shown());
         let visibility = Mutex::new(Visibility::INITIAL);
 
         #[cfg(windows)]
         {
-            // Created hidden, matching `Visibility::INITIAL`.
+            // Created hidden, matching `Visibility::INITIAL`. It exists before the engine starts,
+            // so the engine picks an adapter that can present to it.
             let child = match windows::ChildWindow::create(main) {
                 Ok(child) => child,
                 Err(err) => {
@@ -57,14 +50,15 @@ impl Preview {
             };
             // SAFETY: the child window lives as long as the main window, which outlives the
             // engine (the app exits when the main window closes).
-            unsafe {
-                engine.attach_window(
+            let engine = unsafe {
+                PreviewHandle::spawn_with_window(
+                    aspect(settings),
                     child.raw_window_handle(),
                     Some(windows::raw_display_handle()),
-                    1,
-                    1,
                 )
             };
+            // If the engine fails, the hidden child window is left behind; it is harmless.
+            let engine = start(engine)?;
             Some(Self {
                 engine,
                 visibility,
@@ -75,8 +69,22 @@ impl Preview {
         #[cfg(not(windows))]
         {
             let _ = main;
+            let engine = start(PreviewHandle::spawn(aspect(settings)))?;
             Some(Self { engine, visibility })
         }
+    }
+
+    /// Whether the engine renders into the native preview window. False when no GPU adapter can
+    /// present to it.
+    #[cfg(windows)]
+    pub fn has_native_window(&self) -> bool {
+        self.engine.has_window()
+    }
+
+    /// Frames presented to the native preview window so far.
+    #[cfg(windows)]
+    pub fn presented_frames(&self) -> u64 {
+        self.engine.presented_frames()
     }
 
     pub fn mode(&self) -> PreviewMode {
@@ -199,6 +207,20 @@ impl Visibility {
         let before = self.shown();
         *self = next;
         (next.shown() != before).then_some(next.shown())
+    }
+}
+
+/// Logs a failed engine start and syncs a started engine with `Visibility::INITIAL`.
+fn start(engine: Result<PreviewHandle, GpuError>) -> Option<PreviewHandle> {
+    match engine {
+        Ok(engine) => {
+            engine.set_visible(Visibility::INITIAL.shown());
+            Some(engine)
+        }
+        Err(err) => {
+            tracing::error!(%err, "preview unavailable");
+            None
+        }
     }
 }
 

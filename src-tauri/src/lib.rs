@@ -3,9 +3,8 @@
 mod ipc;
 mod preview;
 mod protocol;
+mod smoke_test;
 mod state;
-
-use std::time::Duration;
 
 use app_core::Project;
 use tauri::Manager;
@@ -19,10 +18,6 @@ use crate::state::AppState;
 
 /// Where the generated TypeScript bindings live. Committed to the repo.
 pub const BINDINGS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/src/bindings.ts");
-
-/// Command-line flag: start, render one preview frame, exit 0 on success. Used by CI against the
-/// installed build.
-const SMOKE_TEST_FLAG: &str = "--smoke-test";
 
 /// The full IPC surface. Adding a command or event here is all it takes to expose it to the UI.
 pub fn ipc_builder() -> Builder<tauri::Wry> {
@@ -64,7 +59,12 @@ pub fn run() {
         tracing::error!(%err, "failed to export TypeScript bindings");
     }
 
-    let smoke_test = std::env::args().any(|arg| arg == SMOKE_TEST_FLAG);
+    // `--smoke-test`: render offscreen and (Windows) into the preview window, then exit with a
+    // status code; see `smoke_test.rs` for the codes. Used by CI against the installed build.
+    let smoke_test = std::env::args().any(|arg| arg == smoke_test::FLAG);
+    if smoke_test {
+        smoke_test::start_watchdog();
+    }
 
     tauri::Builder::default()
         .invoke_handler(ipc.invoke_handler())
@@ -80,38 +80,12 @@ pub fn run() {
             app.manage(AppState::new(project, preview));
 
             if smoke_test {
-                run_smoke_test(app.handle().clone());
+                smoke_test::run(app.handle().clone());
             }
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running the application");
-}
-
-fn run_smoke_test(app: tauri::AppHandle) {
-    std::thread::spawn(move || {
-        let state = app.state::<AppState>();
-        let code = match &state.preview {
-            Some(preview) => match preview.render_frame(320, 180) {
-                Some(frame) if frame.rgba.len() == 320 * 180 * 4 => {
-                    let gpu = preview.gpu_info();
-                    tracing::info!(adapter = %gpu.adapter, backend = %gpu.backend, "smoke test passed");
-                    0
-                }
-                _ => {
-                    tracing::error!("smoke test: no frame rendered");
-                    1
-                }
-            },
-            None => {
-                tracing::error!("smoke test: no GPU");
-                2
-            }
-        };
-        // Give the log a moment to flush before exiting.
-        std::thread::sleep(Duration::from_millis(200));
-        app.exit(code);
-    });
 }
 
 #[cfg(test)]

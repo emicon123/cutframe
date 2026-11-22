@@ -4,6 +4,8 @@
 //!
 //! All communication goes through a channel, so callers never block on rendering.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -21,17 +23,12 @@ struct NativeWindow {
     display: Option<RawDisplayHandle>,
 }
 
-// SAFETY: raw handles are plain identifiers. The caller of `PreviewHandle::attach_window`
-// guarantees the window outlives the attachment; the render thread only uses them to create a
+// SAFETY: raw handles are plain identifiers. The caller of `PreviewHandle::spawn_with_window`
+// guarantees the window outlives the handle; the render thread only uses them to create a
 // surface, which every wgpu backend allows from any thread.
 unsafe impl Send for NativeWindow {}
 
 enum Message {
-    Attach {
-        window: NativeWindow,
-        width: u32,
-        height: u32,
-    },
     Resize {
         width: u32,
         height: u32,
@@ -51,13 +48,16 @@ enum Message {
 pub struct PreviewHandle {
     tx: Sender<Message>,
     gpu_info: GpuInfo,
+    /// True when the native window has a surface the adapter presents to.
+    has_window: bool,
+    /// Frames presented to the native window so far.
+    presented: Arc<AtomicU64>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for Message {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Message::Attach { .. } => "Attach",
             Message::Resize { .. } => "Resize",
             Message::SetVisible(_) => "SetVisible",
             Message::SetCanvasAspect(_) => "SetCanvasAspect",
@@ -68,28 +68,66 @@ impl std::fmt::Debug for Message {
 }
 
 impl PreviewHandle {
-    /// Starts the preview thread and initializes the GPU on it.
+    /// Starts the preview thread for offscreen rendering and initializes the GPU on it.
     pub fn spawn(canvas_aspect: f32) -> Result<Self, GpuError> {
+        Self::spawn_inner(canvas_aspect, None)
+    }
+
+    /// Starts the preview thread rendering into a native window. The GPU adapter is chosen so
+    /// that it can present to this window (see [`GpuContext::with_window`]). Rendering is paused
+    /// and the window is 1 x 1 pixels until [`Self::resize`] and [`Self::set_visible`] are
+    /// called. [`Self::has_window`] reports whether the window could be attached.
+    ///
+    /// # Safety
+    /// `window` (and `display`, if given) must be valid handles, and the window must stay alive
+    /// until this `PreviewHandle` is dropped.
+    pub unsafe fn spawn_with_window(
+        canvas_aspect: f32,
+        window: RawWindowHandle,
+        display: Option<RawDisplayHandle>,
+    ) -> Result<Self, GpuError> {
+        Self::spawn_inner(canvas_aspect, Some(NativeWindow { window, display }))
+    }
+
+    fn spawn_inner(canvas_aspect: f32, window: Option<NativeWindow>) -> Result<Self, GpuError> {
         let (tx, rx) = unbounded();
         let (ready_tx, ready_rx) = bounded(1);
+        let presented = Arc::new(AtomicU64::new(0));
+        let counter = Arc::clone(&presented);
         let thread = thread::Builder::new()
             .name("preview-render".into())
-            .spawn(move || match GpuContext::new() {
-                Ok(gpu) => {
-                    let _ = ready_tx.send(Ok(gpu.info()));
-                    RenderLoop::new(gpu, canvas_aspect).run(&rx);
-                }
-                Err(err) => {
-                    let _ = ready_tx.send(Err(err));
+            .spawn(move || {
+                let gpu = match window {
+                    // SAFETY: the caller of `spawn_with_window` guarantees the handles are valid
+                    // and outlive the preview thread.
+                    Some(window) => unsafe {
+                        GpuContext::with_window(wgpu::SurfaceTargetUnsafe::RawHandle {
+                            raw_display_handle: window.display,
+                            raw_window_handle: window.window,
+                        })
+                    },
+                    None => GpuContext::new().map(|gpu| (gpu, None)),
+                };
+                match gpu {
+                    Ok((gpu, surface)) => {
+                        let render = RenderLoop::new(gpu, canvas_aspect, surface, counter);
+                        let _ = ready_tx.send(Ok((render.gpu.info(), render.window.is_some())));
+                        render.run(&rx);
+                    }
+                    Err(err) => {
+                        let _ = ready_tx.send(Err(err));
+                    }
                 }
             })
             .expect("failed to spawn the preview thread");
-        let gpu_info = ready_rx
+        let (gpu_info, has_window) = ready_rx
             .recv()
             .expect("preview thread exited during GPU initialization")?;
         Ok(Self {
             tx,
             gpu_info,
+            has_window,
+            presented,
             thread: Some(thread),
         })
     }
@@ -98,23 +136,14 @@ impl PreviewHandle {
         &self.gpu_info
     }
 
-    /// Starts rendering continuously into a native window of `width` x `height` physical pixels.
-    ///
-    /// # Safety
-    /// `window` (and `display`, if given) must be valid handles, and the window must stay alive
-    /// until this `PreviewHandle` is dropped.
-    pub unsafe fn attach_window(
-        &self,
-        window: RawWindowHandle,
-        display: Option<RawDisplayHandle>,
-        width: u32,
-        height: u32,
-    ) {
-        self.send(Message::Attach {
-            window: NativeWindow { window, display },
-            width,
-            height,
-        });
+    /// Whether the native window passed to [`Self::spawn_with_window`] is rendered into.
+    pub fn has_window(&self) -> bool {
+        self.has_window
+    }
+
+    /// Number of frames presented to the native window so far.
+    pub fn presented_frames(&self) -> u64 {
+        self.presented.load(Ordering::Relaxed)
     }
 
     /// New size of the attached window, in physical pixels.
@@ -170,6 +199,43 @@ struct WindowTarget {
     pattern: TestPattern,
 }
 
+impl WindowTarget {
+    /// Configures `surface` for presenting. `None` (logged) if the adapter cannot present to it.
+    fn new(
+        gpu: &GpuContext,
+        surface: wgpu::Surface<'static>,
+        width: u32,
+        height: u32,
+    ) -> Option<Self> {
+        let Some(mut config) =
+            surface.get_default_config(&gpu.adapter, width.max(1), height.max(1))
+        else {
+            tracing::error!("GPU adapter cannot present to the preview window");
+            return None;
+        };
+        let capabilities = surface.get_capabilities(&gpu.adapter);
+        if let Some(srgb) = capabilities
+            .formats
+            .iter()
+            .copied()
+            .find(wgpu::TextureFormat::is_srgb)
+        {
+            config.format = srgb;
+        }
+        config.present_mode = wgpu::PresentMode::AutoVsync;
+        config.desired_maximum_frame_latency = 2;
+        surface.configure(&gpu.device, &config);
+        tracing::info!(width, height, format = ?config.format, "preview window attached");
+
+        let pattern = TestPattern::new(gpu, config.format);
+        Some(Self {
+            surface,
+            config,
+            pattern,
+        })
+    }
+}
+
 struct RenderLoop {
     gpu: GpuContext,
     started: Instant,
@@ -177,17 +243,26 @@ struct RenderLoop {
     offscreen_pattern: Option<TestPattern>,
     window: Option<WindowTarget>,
     visible: bool,
+    presented: Arc<AtomicU64>,
 }
 
 impl RenderLoop {
-    fn new(gpu: GpuContext, canvas_aspect: f32) -> Self {
+    fn new(
+        gpu: GpuContext,
+        canvas_aspect: f32,
+        surface: Option<wgpu::Surface<'static>>,
+        presented: Arc<AtomicU64>,
+    ) -> Self {
+        let window = surface.and_then(|surface| WindowTarget::new(&gpu, surface, 1, 1));
         Self {
             gpu,
             started: Instant::now(),
             canvas_aspect,
             offscreen_pattern: None,
-            window: None,
-            visible: true,
+            window,
+            // Paused until the shell shows the window.
+            visible: false,
+            presented,
         }
     }
 
@@ -226,11 +301,6 @@ impl RenderLoop {
     /// Returns `false` on shutdown.
     fn handle(&mut self, message: Message) -> bool {
         match message {
-            Message::Attach {
-                window,
-                width,
-                height,
-            } => self.attach(window, width, height),
             Message::Resize { width, height } => {
                 if let Some(target) = &mut self.window {
                     target.config.width = width.max(1);
@@ -256,51 +326,6 @@ impl RenderLoop {
             Message::Shutdown => return false,
         }
         true
-    }
-
-    fn attach(&mut self, window: NativeWindow, width: u32, height: u32) {
-        // SAFETY: the caller of `attach_window` guarantees the handles are valid and outlive us.
-        let surface = unsafe {
-            self.gpu
-                .instance
-                .create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
-                    raw_display_handle: window.display,
-                    raw_window_handle: window.window,
-                })
-        };
-        let surface = match surface {
-            Ok(surface) => surface,
-            Err(err) => {
-                tracing::error!(%err, "cannot create preview surface");
-                return;
-            }
-        };
-        let Some(mut config) =
-            surface.get_default_config(&self.gpu.adapter, width.max(1), height.max(1))
-        else {
-            tracing::error!("GPU adapter cannot present to the preview window");
-            return;
-        };
-        let capabilities = surface.get_capabilities(&self.gpu.adapter);
-        if let Some(srgb) = capabilities
-            .formats
-            .iter()
-            .copied()
-            .find(wgpu::TextureFormat::is_srgb)
-        {
-            config.format = srgb;
-        }
-        config.present_mode = wgpu::PresentMode::AutoVsync;
-        config.desired_maximum_frame_latency = 2;
-        surface.configure(&self.gpu.device, &config);
-        tracing::info!(width, height, format = ?config.format, "preview window attached");
-
-        let pattern = TestPattern::new(&self.gpu, config.format);
-        self.window = Some(WindowTarget {
-            surface,
-            config,
-            pattern,
-        });
     }
 
     fn draw_window(&mut self) {
@@ -349,6 +374,7 @@ impl RenderLoop {
         );
         self.gpu.queue.submit([encoder.finish()]);
         self.gpu.queue.present(frame);
+        self.presented.fetch_add(1, Ordering::Relaxed);
 
         if suboptimal {
             target.surface.configure(&self.gpu.device, &target.config);
