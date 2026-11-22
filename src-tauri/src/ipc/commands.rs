@@ -6,9 +6,10 @@ use app_core::command::{AddTrack, RemoveTrack, RenameProject, RenameTrack, SetPr
 use app_core::serialization::{self, CURRENT_SCHEMA_VERSION};
 use app_core::{Project, ProjectSettings, TrackId, TrackKind};
 use tauri::{AppHandle, Manager, State};
+use uuid::Uuid;
 
 use super::IpcError;
-use super::types::{AppInfo, GpuInfoView, PreviewMode, PreviewRect, ProjectState};
+use super::types::{AppInfo, GpuInfoView, PreviewMode, PreviewRect, ProjectState, RecoveryEntry};
 use crate::project_file;
 use crate::state::{AppState, SaveSnapshot};
 
@@ -252,6 +253,46 @@ pub fn set_project_settings(
             .map(Some)
     })?;
     Ok(())
+}
+
+/// Autosaves left by instances that did not exit cleanly and that are newer than their project
+/// file, newest first. Prunes corrupt and stale entries as a side effect. A missing recovery
+/// directory gives an empty list. Call once at startup.
+#[tauri::command]
+#[specta::specta]
+pub async fn list_recovery(state: State<'_, AppState>) -> Result<Vec<RecoveryEntry>, IpcError> {
+    let store = state.recovery().clone();
+    let entries = tauri::async_runtime::spawn_blocking(move || store.list_orphans())
+        .await?
+        .map_err(|err| IpcError::io(&err))?;
+    Ok(entries.into_iter().map(RecoveryEntry::from).collect())
+}
+
+/// Opens recovery entry `id` in place of the open project: the history is empty, the project is
+/// dirty until saved, and `filePath` is the original file (or none). Emits `projectChanged`. Fails
+/// with `fileNotFound` when no such entry can be restored (gone, or owned by a running instance).
+/// Ask about unsaved changes first.
+#[tauri::command]
+#[specta::specta]
+pub async fn restore_recovery(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    id: Uuid,
+) -> Result<(), IpcError> {
+    let store = state.recovery().clone();
+    let restored = tauri::async_runtime::spawn_blocking(move || store.load(id)).await??;
+    state.replace_restored(&app, restored, id)
+}
+
+/// Deletes recovery entry `id`. Unknown or already deleted ids are fine; an entry of a running
+/// instance is never touched.
+#[tauri::command]
+#[specta::specta]
+pub async fn discard_recovery(state: State<'_, AppState>, id: Uuid) -> Result<(), IpcError> {
+    let store = state.recovery().clone();
+    tauri::async_runtime::spawn_blocking(move || store.discard(id))
+        .await?
+        .map_err(|err| IpcError::io(&err))
 }
 
 /// Closes the main window without asking again. Call it after the unsaved-changes prompt that

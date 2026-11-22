@@ -102,7 +102,7 @@ fn rename_with_retry(from: &Path, to: &Path) -> io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::time::Instant;
 
     use app_core::{Clip, ClipId, Project, Time, Track, TrackKind};
@@ -225,9 +225,8 @@ mod tests {
 
     /// Design budget (project-lifecycle §8): save and open of a 1,000-clip, 20-track project take
     /// under 50 ms each. Run with `cargo test --release -p cutframe -- --ignored`.
-    #[test]
-    #[ignore = "timing test; run in release mode"]
-    fn large_project_saves_and_opens_within_budget() {
+    /// A 1,000-clip, 20-track project for timing tests.
+    pub(crate) fn large_project() -> Project {
         let mut project = Project::new("Large");
         project.tracks = (0..20)
             .map(|t| {
@@ -243,6 +242,13 @@ mod tests {
                 track
             })
             .collect();
+        project
+    }
+
+    #[test]
+    #[ignore = "timing test; run in release mode"]
+    fn large_project_saves_and_opens_within_budget() {
+        let project = large_project();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("large.cutframe");
 

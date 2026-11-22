@@ -6,6 +6,7 @@ use std::path::Path;
 use app_core::command::HistoryLabel;
 use app_core::{ClipId, Document, ProjectId, ProjectSettings, Time, TrackId, TrackKind};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -106,6 +107,31 @@ impl ProjectState {
             },
             file_path: file_path.map(|p| p.to_string_lossy().into_owned()),
             dirty,
+        }
+    }
+}
+
+/// An autosave left by an instance that did not exit cleanly, offered for restore at startup.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryEntry {
+    /// Session id of the crashed instance; pass it to `restoreRecovery` / `discardRecovery`.
+    pub id: Uuid,
+    /// The project's name (model data, not translated).
+    pub project_name: String,
+    /// The project's file at the time of the autosave; `None` = never saved.
+    pub file_path: Option<String>,
+    /// When the autosave was taken, in Unix milliseconds. The UI formats it.
+    pub saved_at_ms: i64,
+}
+
+impl From<crate::recovery::Entry> for RecoveryEntry {
+    fn from(entry: crate::recovery::Entry) -> Self {
+        Self {
+            id: entry.id,
+            project_name: entry.project_name,
+            file_path: entry.file_path.map(|p| p.to_string_lossy().into_owned()),
+            saved_at_ms: entry.saved_at_ms,
         }
     }
 }
