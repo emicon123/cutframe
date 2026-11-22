@@ -1,6 +1,7 @@
 import {
   type GpuDeviceType,
   type GpuFallback,
+  type HdrTransfer,
   type HistoryLabel,
   type IpcError,
   type JobStage,
@@ -20,7 +21,7 @@ export const en = {
     windowTitle: (name: string, dirty: boolean) => `${dirty ? "*" : ""}${name} - ${APP_NAME}`,
   },
   /** Key names used to display shortcuts, e.g. "Ctrl+Shift+S". */
-  keys: { ctrl: "Ctrl", shift: "Shift", separator: "+" },
+  keys: { ctrl: "Ctrl", shift: "Shift", separator: "+", delete: "Del" },
   /** Main menu bar titles. */
   menu: {
     bar: "Main menu",
@@ -224,6 +225,7 @@ export const en = {
       renameProject: "Rename Project",
       setProjectSettings: "Change Project Settings",
       importMedia: "Import Media",
+      removeMedia: "Remove Media",
     } satisfies Record<HistoryLabel, string>,
     /** Shown for a key this UI build does not know. */
     unknown: "Last Action",
@@ -259,7 +261,10 @@ export const en = {
     /** Joins the details of a list row, e.g. "Video · 0:42 · 1080×1920". */
     detailSeparator: " · ",
     job: {
-      stages: { probing: "Importing media" } satisfies Record<JobStage, string>,
+      stages: {
+        probing: "Importing media",
+        generatingPreviews: "Generating previews",
+      } satisfies Record<JobStage, string>,
       /** Shown for a stage this UI build does not know. */
       unknownStage: "Working",
       percent: (value: number) => `${value}%`,
@@ -287,6 +292,47 @@ export const en = {
       tooManyFiles: `more than ${MAX_IMPORT_FILES} media files in this folder`,
     } satisfies Record<MediaErrorKind, string>,
     unknownError: "could not be read",
+    layout: {
+      grid: "Grid view",
+      list: "List view",
+    },
+    search: "Search media by name",
+    searchPlaceholder: "Search",
+    clearSearch: "Clear search",
+    sort: {
+      label: "Sort media",
+      keys: { imported: "Date added", name: "Name", duration: "Duration", kind: "Type" },
+      ascending: "Ascending",
+      descending: "Descending",
+    },
+    filter: {
+      label: "Filter by type",
+      active: (n: number) => `Filter by type (${n} selected)`,
+    },
+    noMatches: "No media matches the search or filter",
+    clearFilters: "Clear search and filter",
+    hdr: {
+      badge: { pq: "HDR", hlg: "HDR", dolbyVisionOnly: "DV" } satisfies Record<HdrTransfer, string>,
+      tip: {
+        pq: "HDR (PQ)",
+        hlg: "HDR (HLG)",
+        dolbyVisionOnly: "Dolby Vision without a compatible base layer: colours may look wrong",
+      } satisfies Record<HdrTransfer, string>,
+    },
+    previewUnavailable: "No preview",
+    actions: {
+      reveal: "Show in Explorer",
+      remove: "Remove from project",
+      removeMany: (n: number) => `Remove ${n} items from project`,
+    },
+    remove: {
+      title: (n: number, name: string) => (n === 1 ? `Remove “${name}”?` : `Remove ${n} media items?`),
+      description: "The files stay on disk. Undo (Ctrl+Z) brings them back.",
+      more: (n: number) => `and ${n} more`,
+      confirm: "Remove",
+      cancel: "Cancel",
+    },
+    background: "Generating previews in the background",
   },
   preview: {
     unavailable: "Preview unavailable: no usable GPU",

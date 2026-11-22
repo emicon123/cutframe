@@ -18,6 +18,7 @@ use crate::ipc::types::ProjectState;
 use crate::jobs::JobManager;
 use crate::preferences::{Preferences, Startup};
 use crate::preview::Preview;
+use crate::previews::{self, Previews};
 use crate::recovery::{RecoveryStore, Restored};
 
 #[derive(Debug)]
@@ -32,8 +33,10 @@ pub struct AppState {
     recovery: RecoveryStore,
     /// Set in `setup` once the autosave thread runs; tests run without it.
     autosave: OnceLock<AutosaveHandle>,
-    /// Background work (import now; previews and export later).
+    /// Background work (import, previews; export later).
     pub jobs: JobManager,
+    /// Posters, filmstrips and waveforms for the media panel (`media://`).
+    pub previews: Arc<Previews>,
     preferences: PreferencesState,
     /// Project path from this process's command line, until the UI takes it.
     launch_path: Mutex<Option<PathBuf>>,
@@ -157,6 +160,7 @@ impl AppState {
         preview: Option<Preview>,
         recovery: RecoveryStore,
         jobs: JobManager,
+        previews: Arc<Previews>,
     ) -> Self {
         let session = Session::new(project);
         let snapshot = ArcSwap::new(session.document.snapshot());
@@ -171,6 +175,7 @@ impl AppState {
             recovery,
             autosave: OnceLock::new(),
             jobs,
+            previews,
             preferences: PreferencesState::new(
                 Startup {
                     preferences: Preferences::default(),
@@ -214,6 +219,12 @@ impl AppState {
     /// autosave).
     pub fn set_autosave_interval(&self, interval: Option<Duration>) {
         self.notify_autosave(Msg::SetInterval(interval));
+    }
+
+    /// Starts the background preview job for `ids` (after an import), or for every asset of the
+    /// open project (`None`, after open).
+    pub fn prefetch_previews(&self, ids: Option<Vec<app_core::MediaId>>) {
+        previews::start_prefetch(&self.jobs, Arc::clone(&self.previews), ids);
     }
 
     pub fn recovery(&self) -> &RecoveryStore {
@@ -278,7 +289,6 @@ impl AppState {
         self.lock().state()
     }
 
-    #[allow(dead_code)] // Read by the render graph from stage 1 on.
     pub fn snapshot(&self) -> Arc<Project> {
         self.snapshot.load_full()
     }
@@ -519,6 +529,7 @@ mod tests {
             None,
             recovery,
             crate::jobs::JobManager::for_tests(),
+            std::sync::Arc::new(crate::previews::Previews::new(None)),
         )
     }
 

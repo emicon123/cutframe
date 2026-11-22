@@ -5,10 +5,14 @@
 //! - [`encoders`]: encoder discovery that only ever selects allowlisted, licence-clean encoders.
 //! - [`probe`]: opens a media file, decodes its first frames and describes it as model data.
 //! - [`fingerprint`]: the content identity of a media file (cache key, relink match).
+//! - [`previews`]: poster, filmstrip and waveform generators for the media panel, on top of
+//!   [`picture`] (RGB pictures, JPEG), [`still`] (HEIF tile grids) and [`waveform`].
+//! - [`cache`]: the content-keyed preview cache on disk.
 //!
 //! FFmpeg 4+ registers its codecs and formats on its own, so there is no global init step.
 //! Opening or probing files is I/O: call it from a worker job, never from an IPC handler (ADR-0004).
 
+pub mod cache;
 pub mod decode;
 pub mod encoders;
 mod error;
@@ -16,7 +20,13 @@ pub mod ffmpeg;
 pub mod fingerprint;
 mod heif;
 mod input;
+pub mod picture;
+pub mod previews;
 pub mod probe;
+mod reader;
+pub mod still;
+mod tonemap;
+pub mod waveform;
 
 pub use encoders::{EncoderBackend, EncoderCandidate, EncoderTarget};
 pub use error::{MediaError, MediaErrorKind};

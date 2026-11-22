@@ -257,6 +257,103 @@ impl Rotation {
     }
 }
 
+/// Height of every filmstrip frame in physical pixels (design §4).
+pub const FILMSTRIP_FRAME_HEIGHT: u32 = 96;
+/// Frames side by side in one filmstrip tile (one `media://` request).
+pub const FILMSTRIP_FRAMES_PER_TILE: u32 = 32;
+/// Most frames one filmstrip has; longer media gets a longer interval.
+pub const FILMSTRIP_MAX_FRAMES: u32 = 1200;
+/// Filmstrip frame width limits (physical pixels), whatever the source shape.
+pub const FILMSTRIP_MIN_FRAME_WIDTH: u32 = 54;
+pub const FILMSTRIP_MAX_FRAME_WIDTH: u32 = 171;
+/// Min/max pairs per second of media in a waveform.
+pub const WAVEFORM_BUCKETS_PER_SECOND: u32 = 100;
+/// Long side of a poster in pixels.
+pub const POSTER_LONG_SIDE: u32 = 320;
+
+/// How a video's filmstrip is laid out: frame `i` shows media time `i * interval`, and tile `n`
+/// holds frames `n * frames_per_tile ..` side by side (the last tile holds the rest).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(rename_all = "camelCase")]
+pub struct FilmstripLayout {
+    /// Media time between two frames.
+    pub interval: Time,
+    pub frames: u32,
+    pub frames_per_tile: u32,
+    /// Physical pixels; the height is `FILMSTRIP_FRAME_HEIGHT`.
+    pub frame_width: u32,
+}
+
+impl FilmstripLayout {
+    /// The layout for media of `duration` whose upright picture is `display_width x
+    /// display_height`: one frame per second up to 20 minutes, else `duration / 1200` rounded up
+    /// to a whole millisecond; at most [`FILMSTRIP_MAX_FRAMES`] frames, at least one.
+    pub fn new(duration: Time, display_width: u32, display_height: u32) -> Self {
+        let second = crate::time::FLICKS_PER_SECOND;
+        let millisecond = second / 1000;
+        let duration = duration.flicks().max(0);
+        let max = i64::from(FILMSTRIP_MAX_FRAMES);
+        // Non-negative operands: `(a + b - 1) / b` is the ceiling (`i64::div_ceil` is unstable).
+        let div_ceil = |a: i64, b: i64| (a + b - 1) / b;
+        let interval = if duration <= max * second {
+            second
+        } else {
+            div_ceil(div_ceil(duration, max), millisecond) * millisecond
+        };
+        let frames = div_ceil(duration, interval).clamp(1, max) as u32;
+        let height = u64::from(display_height.max(1));
+        let width = (u64::from(FILMSTRIP_FRAME_HEIGHT) * u64::from(display_width) * 2 + height)
+            / (2 * height);
+        let frame_width = u32::try_from(width)
+            .unwrap_or(u32::MAX)
+            .clamp(FILMSTRIP_MIN_FRAME_WIDTH, FILMSTRIP_MAX_FRAME_WIDTH);
+        Self {
+            interval: Time::from_flicks(interval),
+            frames,
+            frames_per_tile: FILMSTRIP_FRAMES_PER_TILE,
+            frame_width,
+        }
+    }
+
+    /// The layout of `asset`'s filmstrip; `None` unless it is a video.
+    pub fn of(asset: &MediaAsset) -> Option<Self> {
+        let (MediaKind::Video, Some(duration), Some(video)) =
+            (asset.kind, asset.info.duration, asset.info.video.as_ref())
+        else {
+            return None;
+        };
+        let (width, height) = video.display_size();
+        Some(Self::new(duration, width, height))
+    }
+
+    pub fn tiles(&self) -> u32 {
+        self.frames.div_ceil(self.frames_per_tile)
+    }
+
+    /// The frames of tile `tile`, or `None` past the last tile.
+    pub fn tile_frames(&self, tile: u32) -> Option<std::ops::Range<u32>> {
+        let start = tile.checked_mul(self.frames_per_tile)?;
+        (start < self.frames).then(|| start..(start + self.frames_per_tile).min(self.frames))
+    }
+
+    /// Media time of frame `frame`.
+    pub fn frame_time(&self, frame: u32) -> Time {
+        Time::from_flicks(self.interval.flicks() * i64::from(frame))
+    }
+}
+
+/// What the media panel can show for an asset (design §4 routes).
+impl MediaAsset {
+    pub fn has_poster(&self) -> bool {
+        matches!(self.kind, MediaKind::Video | MediaKind::Image)
+    }
+
+    pub fn has_waveform(&self) -> bool {
+        self.kind != MediaKind::Image && !self.info.audio.is_empty()
+    }
+}
+
 impl MediaAsset {
     /// The file name, from the absolute path (either separator).
     pub fn file_name(&self) -> &str {
@@ -716,5 +813,72 @@ mod tests {
             });
         });
         assert_eq!(problem(&a), Some(P::HdrMismatch));
+    }
+
+    #[test]
+    fn filmstrip_interval_and_frame_count() {
+        let layout = |seconds: i64| FilmstripLayout::new(Time::from_seconds(seconds), 1920, 1080);
+        let second = Time::from_seconds(1);
+
+        let zero = FilmstripLayout::new(Time::ZERO, 1920, 1080);
+        assert_eq!((zero.interval, zero.frames), (second, 1));
+        assert_eq!((layout(1).interval, layout(1).frames), (second, 1));
+        let short = FilmstripLayout::new(Time::from_flicks(1_500 * 705_600), 1920, 1080);
+        assert_eq!(short.frames, 2, "1.5 s: frames at 0 s and 1 s");
+
+        let twenty_minutes = layout(20 * 60);
+        assert_eq!(twenty_minutes.interval, second);
+        assert_eq!(twenty_minutes.frames, 1200);
+
+        // 3 h: 10 800 s / 1200 = 9 s per frame.
+        let three_hours = layout(3 * 3600);
+        assert_eq!(three_hours.interval, Time::from_seconds(9));
+        assert_eq!(three_hours.frames, 1200);
+
+        // Just over 20 minutes: rounded up to a whole millisecond, never more than 1200 frames.
+        let odd = layout(20 * 60 + 1);
+        assert_eq!(odd.interval, Time::from_flicks(1_001 * 705_600));
+        assert!(odd.frames <= 1200);
+        assert!(odd.frame_time(odd.frames - 1) < Time::from_seconds(1201));
+    }
+
+    #[test]
+    fn filmstrip_frame_width_follows_the_shape_and_is_clamped() {
+        let width = |w, h| FilmstripLayout::new(Time::from_seconds(5), w, h).frame_width;
+        assert_eq!(width(1920, 1080), 171); // round(170.67)
+        assert_eq!(width(1440, 1080), 128);
+        assert_eq!(width(1080, 1920), 54);
+        assert_eq!(width(1080, 1350), 77);
+        assert_eq!(width(3840, 1080), 171, "clamped");
+        assert_eq!(width(100, 1000), 54, "clamped");
+        assert_eq!(width(64, 64), 96);
+    }
+
+    #[test]
+    fn filmstrip_tiles_split_the_frames() {
+        let layout = FilmstripLayout::new(Time::from_seconds(70), 64, 64);
+        assert_eq!(layout.frames, 70);
+        assert_eq!(layout.tiles(), 3);
+        assert_eq!(layout.tile_frames(0), Some(0..32));
+        assert_eq!(layout.tile_frames(2), Some(64..70));
+        assert_eq!(layout.tile_frames(3), None);
+        assert_eq!(layout.tile_frames(u32::MAX), None);
+        assert_eq!(layout.frame_time(3), Time::from_seconds(3));
+    }
+
+    #[test]
+    fn products_by_kind() {
+        let video = samples::video(1);
+        assert!(video.has_poster() && video.has_waveform());
+        assert!(FilmstripLayout::of(&video).is_some());
+        let audio = samples::audio(2);
+        assert!(!audio.has_poster() && audio.has_waveform());
+        assert!(FilmstripLayout::of(&audio).is_none());
+        let image = samples::image(3);
+        assert!(image.has_poster() && !image.has_waveform());
+        assert!(FilmstripLayout::of(&image).is_none());
+        let mut silent = samples::video(4);
+        silent.info.audio.clear();
+        assert!(!silent.has_waveform());
     }
 }

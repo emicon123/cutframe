@@ -353,6 +353,13 @@ fn finish(ctx: JobContext, planned: &[Planned], mut results: HashMap<usize, File
         }
         std::thread::sleep(GESTURE_RETRY);
     };
+    let added: Vec<MediaId> = decided
+        .iter()
+        .filter_map(|(_, outcome)| match outcome {
+            MediaFileOutcome::Added { media } => Some(*media),
+            _ => None,
+        })
+        .collect();
     for (index, outcome) in decided {
         outcomes[index] = Some(outcome);
     }
@@ -372,6 +379,10 @@ fn finish(ctx: JobContext, planned: &[Planned], mut results: HashMap<usize, File
         job_id: ctx.id(),
         files,
     });
+    // Starts the background preview job; its tasks queue behind all interactive work.
+    if !added.is_empty() {
+        ctx.host().media_added(added);
+    }
     ctx.finish(Ok(()));
 }
 
@@ -471,6 +482,11 @@ mod tests {
             })
             .collect();
         assert_eq!(media_ids(doc.project()), added, "in input order");
+        assert_eq!(
+            *host.added.lock().unwrap(),
+            std::slice::from_ref(&added),
+            "previews start for the new media"
+        );
         assert_eq!(
             doc.undo_label(),
             Some(app_core::command::HistoryLabel::ImportMedia)

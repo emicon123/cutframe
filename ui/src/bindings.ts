@@ -117,6 +117,19 @@ export const commands = {
 	 */
 	cancelJob: (id: JobId, options?: InvokeOptions) => __TAURI_INVOKE<null>("cancel_job", { id }, options),
 	/**
+	 *  Removes media items from the project as one undo step (`removeMedia`). Fails with
+	 *  `invalidEdit` for an empty list, an id that is not in the project, or media that clips still
+	 *  use (`MediaInUse`; clips reference media from task 0260 on, which then removes them in the same
+	 *  step after a warning). Cached previews stay on disk, so undo shows them again at once.
+	 */
+	removeMedia: (ids: MediaId[], options?: InvokeOptions) => __TAURI_INVOKE<null>("remove_media", { ids }, options),
+	/**
+	 *  Opens the file manager (Explorer) at the media file's folder with the file selected. By id, so
+	 *  the webview never hands a path to the shell. Fails with `invalidEdit` for an unknown id and
+	 *  `fileNotFound` when the file is gone.
+	 */
+	revealMedia: (id: MediaId, options?: InvokeOptions) => __TAURI_INVOKE<null>("reveal_media", { id }, options),
+	/**
 	 *  The project path passed on the command line at startup (a double-clicked project file), once;
 	 *  later calls return `None`. Call after the first project state, before the recovery check.
 	 */
@@ -151,11 +164,17 @@ export const events = {
 };
 
 /* Constants */
+export const FILMSTRIP_FRAME_HEIGHT = 96 as const;
+
 export const MAX_IMPORT_FILES = 2000 as const;
 
 export const MEDIA_EXTENSIONS = ["mp4","mov","m4v","mkv","webm","avi","mpg","mpeg","mts","m2ts","3gp","mp3","wav","m4a","aac","flac","ogg","opus","jpg","jpeg","png","webp","bmp","tif","tiff","gif","heic","heif"] as const;
 
+export const POSTER_LONG_SIDE = 320 as const;
+
 export const PROJECT_FILE_EXTENSION = "cutframe" as const;
+
+export const WAVEFORM_BUCKETS_PER_SECOND = 100 as const;
 
 /* Types */
 export type AppInfo = AppInfo_Serialize | AppInfo_Deserialize;
@@ -233,6 +252,19 @@ export type EditPhase =
  *  (keyboard nudge, typed value).
  */
 "commit";
+
+/**
+ *  How a video's filmstrip is laid out: frame `i` shows media time `i * interval`, and tile `n`
+ *  holds frames `n * frames_per_tile ..` side by side (the last tile holds the rest).
+ */
+export type FilmstripLayout = {
+	/**  Media time between two frames. */
+	interval: Time,
+	frames: number,
+	framesPerTile: number,
+	/**  Physical pixels; the height is `FILMSTRIP_FRAME_HEIGHT`. */
+	frameWidth: number,
+};
 
 /**  A frame rate as a rational number of frames per second, e.g. `30000/1001` for 29.97 fps. */
 export type FrameRate = FrameRateRepr;
@@ -317,7 +349,9 @@ export type HistoryEntryView = {
  */
 export type HistoryLabel = "addTrack" | "removeTrack" | "renameTrack" | "renameProject" | "setProjectSettings" | 
 /**  One import job: every file it added. */
-"importMedia";
+"importMedia" | 
+/**  Removing media items from the project (one or several at once). */
+"removeMedia";
 
 export type HistoryState = HistoryState_Serialize | HistoryState_Deserialize;
 
@@ -428,7 +462,9 @@ export type JobProgress_Serialize = {
 /**  What a job is doing; a stable key the UI translates (ADR-0003 §5). */
 export type JobStage = 
 /**  Reading and probing media files (import). */
-"probing";
+"probing" | 
+/**  Making posters, waveforms and filmstrips in the background (after import and open). */
+"generatingPreviews";
 
 /**  Why a file could not be imported; a stable key the UI translates. */
 export type MediaErrorKind = "fileNotFound" | "accessDenied" | 
@@ -518,8 +554,16 @@ export type MediaView_Deserialize = {
 	status: MediaStatus,
 	/**  Clips that reference this media; 0 until clips reference media (design 0250). */
 	usedBy: number,
-	/**  Append as `?v=` to `media://` URLs, so a relinked file never shows stale previews. */
+	/**
+	 *  Append as `?v=` to every `media://` URL of this item, so a relinked or changed file never
+	 *  shows stale previews.
+	 */
 	previewVersion: string,
+	/**
+	 *  The filmstrip of a video (hover-scrub tiles at `media://…/filmstrip/<id>?tile=<n>`);
+	 *  `None` for audio and images.
+	 */
+	filmstrip?: FilmstripLayout | null,
 };
 
 /**
@@ -548,8 +592,16 @@ export type MediaView_Serialize = {
 	status: MediaStatus,
 	/**  Clips that reference this media; 0 until clips reference media (design 0250). */
 	usedBy: number,
-	/**  Append as `?v=` to `media://` URLs, so a relinked file never shows stale previews. */
+	/**
+	 *  Append as `?v=` to every `media://` URL of this item, so a relinked or changed file never
+	 *  shows stale previews.
+	 */
 	previewVersion: string,
+	/**
+	 *  The filmstrip of a video (hover-scrub tiles at `media://…/filmstrip/<id>?tile=<n>`);
+	 *  `None` for audio and images.
+	 */
+	filmstrip: FilmstripLayout | null,
 };
 
 /**
@@ -831,6 +883,8 @@ export type MockCommandHandlers = {
     importMedia: (args: { paths: string[] }) => JobId | Promise<JobId>,
     importMediaDialog: (args: { filterLabel: string }) => JobId | null | Promise<JobId | null>,
     cancelJob: (args: { id: JobId }) => null | Promise<null>,
+    removeMedia: (args: { ids: MediaId[] }) => null | Promise<null>,
+    revealMedia: (args: { id: MediaId }) => null | Promise<null>,
     takeLaunchPath: () => string | null | Promise<string | null>,
     getPreferences: () => Preferences_Serialize | Promise<Preferences_Serialize>,
     setPreferences: (args: { preferences: Preferences_Deserialize }) => Preferences_Serialize | Promise<Preferences_Serialize>,
@@ -886,6 +940,8 @@ export function mockCommands(handlers: Partial<MockCommandHandlers> = {}): void 
             case "import_media": return mockCommandHandler(mockHandlers.importMedia, "import_media", args);
             case "import_media_dialog": return mockCommandHandler(mockHandlers.importMediaDialog, "import_media_dialog", args);
             case "cancel_job": return mockCommandHandler(mockHandlers.cancelJob, "cancel_job", args);
+            case "remove_media": return mockCommandHandler(mockHandlers.removeMedia, "remove_media", args);
+            case "reveal_media": return mockCommandHandler(mockHandlers.revealMedia, "reveal_media", args);
             case "take_launch_path": return mockCommandHandler(mockHandlers.takeLaunchPath, "take_launch_path", args);
             case "get_preferences": return mockCommandHandler(mockHandlers.getPreferences, "get_preferences", args);
             case "set_preferences": return mockCommandHandler(mockHandlers.setPreferences, "set_preferences", args);

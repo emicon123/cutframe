@@ -261,6 +261,7 @@ mod tests {
                 None,
                 store(dir.path()),
                 crate::jobs::JobManager::for_tests(),
+                std::sync::Arc::new(crate::previews::Previews::new(None)),
             );
             Self {
                 dir,
@@ -325,6 +326,7 @@ mod tests {
             None,
             store(&blocked),
             crate::jobs::JobManager::for_tests(),
+            std::sync::Arc::new(crate::previews::Previews::new(None)),
         );
         let mut saver = Autosaver::new(None);
         rename(&state, "A");
@@ -420,6 +422,7 @@ mod tests {
             None,
             store(dir.path()),
             crate::jobs::JobManager::for_tests(),
+            std::sync::Arc::new(crate::previews::Previews::new(None)),
         );
         let lock = state.recovery().acquire_lock().unwrap();
         let mut saver = Autosaver::new(Some(lock));
@@ -454,6 +457,7 @@ mod tests {
                 None,
                 store(Path::new("unused")),
                 crate::jobs::JobManager::for_tests(),
+                std::sync::Arc::new(crate::previews::Previews::new(None)),
             )
             .save_snapshot()
         })
@@ -496,6 +500,7 @@ mod tests {
             None,
             store(dir.path()),
             crate::jobs::JobManager::for_tests(),
+            std::sync::Arc::new(crate::previews::Previews::new(None)),
         );
         rename(&state, "Dirty");
         let snap = state.save_snapshot();
@@ -535,6 +540,7 @@ mod tests {
             None,
             store(dir.path()),
             crate::jobs::JobManager::for_tests(),
+            std::sync::Arc::new(crate::previews::Previews::new(None)),
         );
         state.test_replace(project.clone(), None, CURRENT_SCHEMA_VERSION);
         rename(&state, "Large");

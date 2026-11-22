@@ -65,6 +65,10 @@
   --color-panel: var(--panel);
   --color-timeline: var(--timeline);
   --color-preview-bg: var(--preview-bg);
+  --color-clip-audio: var(--clip-audio);
+  --text-2xs: 0.625rem;
+  /* Smallest width of a media panel grid tile. */
+  --spacing-media-tile: 7.5rem;
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);

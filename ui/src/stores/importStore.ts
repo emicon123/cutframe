@@ -16,7 +16,11 @@ import type {
  * what was imported lives in the project model (Rust) and arrives through `project-changed`.
  */
 
-/** A running import job as the media panel shows it. */
+/**
+ * A running job as the media panel shows it: an import the UI started, or a background job Rust
+ * started by itself (preview generation, see `isBackgroundJob`), which arrives through the same
+ * events.
+ */
 export type ImportJob = {
   id: JobId;
   /** `null` until the first `job-progress` event. */
@@ -28,6 +32,13 @@ export type ImportJob = {
   /** Per-file results, from `media-job-report` (just before `job-finished`). */
   files: MediaFileResult[] | null;
 };
+
+/** Stages of jobs Rust starts by itself; they get no Cancel button and no result toast. */
+const BACKGROUND_STAGES: readonly JobStage[] = ["generatingPreviews"];
+
+export function isBackgroundJob(job: Pick<ImportJob, "stage">): boolean {
+  return job.stage !== null && BACKGROUND_STAGES.includes(job.stage);
+}
 
 export type FailedFile = { path: string; error: MediaErrorKind };
 
@@ -125,7 +136,9 @@ export function importReducer(state: ImportState, action: ImportAction): ImportS
       const finished = [...state.finished, jobId].slice(-FINISHED_MEMORY);
       const jobs = state.jobs.filter((j) => j.id !== jobId);
       let summary = state.summary;
-      if (result.Err) {
+      if (job && isBackgroundJob(job)) {
+        // Background work reports nothing: failed previews show placeholders instead.
+      } else if (result.Err) {
         if (result.Err.kind !== "cancelled") {
           summary = { jobId, added: 0, alreadyImported: 0, failed: [], jobError: result.Err.kind };
         }

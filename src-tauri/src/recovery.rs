@@ -396,6 +396,7 @@ pub(crate) mod tests {
             None,
             store(Path::new("unused")),
             crate::jobs::JobManager::for_tests(),
+            std::sync::Arc::new(crate::previews::Previews::new(None)),
         );
         if let Some(path) = file_path {
             state.test_replace(Project::new(name), Some(path), CURRENT_SCHEMA_VERSION);

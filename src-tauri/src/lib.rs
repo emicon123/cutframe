@@ -8,6 +8,7 @@ mod jobs;
 mod launch;
 mod preferences;
 mod preview;
+mod previews;
 mod project_file;
 mod protocol;
 mod recovery;
@@ -29,8 +30,9 @@ use crate::ipc::events::{
     AppInfoChanged, JobFinished, JobProgress, MediaJobReport, OpenFileRequested, ProjectChanged,
     QuitRequested,
 };
-use crate::jobs::{JobManager, TauriJobHost};
+use crate::jobs::{JobManager, Priority, TauriJobHost};
 use crate::preview::Preview;
+use crate::previews::Previews;
 use crate::recovery::RecoveryStore;
 use crate::state::{AppState, PreferencesState};
 
@@ -68,6 +70,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             commands::import_media,
             commands::import_media_dialog,
             commands::cancel_job,
+            commands::remove_media,
+            commands::reveal_media,
             commands::take_launch_path,
             commands::get_preferences,
             commands::set_preferences,
@@ -88,6 +92,16 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         // Lowercase, without dots: the drop filter of the media panel (design §4).
         .constant("MEDIA_EXTENSIONS", engine::media::MEDIA_EXTENSIONS)
         .constant("MAX_IMPORT_FILES", import::MAX_IMPORT_FILES)
+        // Media panel previews over `media://` (design §4).
+        .constant(
+            "FILMSTRIP_FRAME_HEIGHT",
+            app_core::media::FILMSTRIP_FRAME_HEIGHT,
+        )
+        .constant(
+            "WAVEFORM_BUCKETS_PER_SECOND",
+            app_core::media::WAVEFORM_BUCKETS_PER_SECOND,
+        )
+        .constant("POSTER_LONG_SIDE", app_core::media::POSTER_LONG_SIDE)
         // The phase argument of gesture-capable commands (ADR-0006 §4). Exported on its own so the
         // UI's gesture helper can use it before the first such command lands.
         .typ::<app_core::EditPhase>()
@@ -165,8 +179,20 @@ pub fn run() {
             let interval = preferences.get().autosave_duration();
             let cwd = std::env::current_dir().unwrap_or_default();
             let launch_path = launch::project_path_from_args(&launch::own_args(), &cwd);
+            let previews = Arc::new(Previews::new(crate::previews::open_cache(
+                &preferences.cache_root(),
+            )));
+            let spawner = jobs.spawner();
+            // Delete old cache versions and trim the current one, in the background.
+            let housekeeping = Arc::clone(&previews);
+            spawner.run(Priority::Background, move || housekeeping.clean_up());
+            app.manage(protocol::MediaServer::start(protocol::context(
+                app.handle(),
+                Arc::clone(&previews),
+                spawner,
+            )));
             app.manage(
-                AppState::new(project, preview, recovery.clone(), jobs)
+                AppState::new(project, preview, recovery.clone(), jobs, previews)
                     .with_preferences(preferences)
                     .with_launch_path(launch_path),
             );
