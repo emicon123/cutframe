@@ -5,6 +5,7 @@ mod import;
 mod ipc;
 mod jobs;
 mod preview;
+mod previews;
 mod project_file;
 mod protocol;
 mod smoke_test;
@@ -19,8 +20,9 @@ use tracing_subscriber::EnvFilter;
 
 use crate::ipc::commands;
 use crate::ipc::events::{JobFinished, JobProgress, MediaJobReport, ProjectChanged, QuitRequested};
-use crate::jobs::{JobManager, TauriJobHost};
+use crate::jobs::{JobManager, Priority, TauriJobHost};
 use crate::preview::Preview;
+use crate::previews::Previews;
 use crate::state::AppState;
 
 /// Where the generated TypeScript bindings live. Committed to the repo.
@@ -53,6 +55,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             commands::import_media,
             commands::import_media_dialog,
             commands::cancel_job,
+            commands::remove_media,
+            commands::reveal_media,
         ])
         .events(collect_events![
             ProjectChanged,
@@ -66,6 +70,16 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         // Lowercase, without dots: the drop filter of the media panel (design §4).
         .constant("MEDIA_EXTENSIONS", engine::media::MEDIA_EXTENSIONS)
         .constant("MAX_IMPORT_FILES", import::MAX_IMPORT_FILES)
+        // Media panel previews over `media://` (design §4).
+        .constant(
+            "FILMSTRIP_FRAME_HEIGHT",
+            app_core::media::FILMSTRIP_FRAME_HEIGHT,
+        )
+        .constant(
+            "WAVEFORM_BUCKETS_PER_SECOND",
+            app_core::media::WAVEFORM_BUCKETS_PER_SECOND,
+        )
+        .constant("POSTER_LONG_SIDE", app_core::media::POSTER_LONG_SIDE)
         // The phase argument of gesture-capable commands (ADR-0006 §4). Exported on its own so the
         // UI's gesture helper can use it before the first such command lands.
         .typ::<app_core::EditPhase>()
@@ -117,7 +131,17 @@ pub fn run() {
             let project = Project::new(commands::DEFAULT_PROJECT_NAME);
             let preview = Preview::create(&main, &project.settings);
             let jobs = JobManager::new(Arc::new(TauriJobHost::new(app.handle().clone())));
-            app.manage(AppState::new(project, preview, jobs));
+            let previews = Arc::new(Previews::new(open_preview_cache(app.handle())));
+            let spawner = jobs.spawner();
+            // Delete old cache versions and trim the current one, in the background.
+            let housekeeping = Arc::clone(&previews);
+            spawner.run(Priority::Background, move || housekeeping.clean_up());
+            app.manage(protocol::MediaServer::start(protocol::context(
+                app.handle(),
+                Arc::clone(&previews),
+                spawner,
+            )));
+            app.manage(AppState::new(project, preview, jobs, previews));
 
             if smoke_test {
                 smoke_test::run(app.handle().clone());
@@ -126,6 +150,28 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running the application");
+}
+
+/// The preview cache under `app_local_data_dir()\cache\media` (design §6.4). Without it previews
+/// are generated on every request.
+fn open_preview_cache(app: &tauri::AppHandle) -> Option<engine::media::cache::PreviewCache> {
+    let root = match app.path().app_local_data_dir() {
+        Ok(dir) => dir.join("cache").join("media"),
+        Err(err) => {
+            tracing::error!(%err, "no app-local data folder; previews are not cached");
+            return None;
+        }
+    };
+    match engine::media::cache::PreviewCache::open(&root, engine::media::cache::DEFAULT_CACHE_CAP) {
+        Ok(cache) => {
+            tracing::info!(dir = %cache.dir().display(), "preview cache");
+            Some(cache)
+        }
+        Err(err) => {
+            tracing::error!(%err, root = %root.display(), "cannot open the preview cache");
+            None
+        }
+    }
 }
 
 /// Closing the main window with unsaved changes is stopped and handed to the UI, which asks

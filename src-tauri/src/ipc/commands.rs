@@ -2,9 +2,11 @@
 
 use std::path::PathBuf;
 
-use app_core::command::{AddTrack, RemoveTrack, RenameProject, RenameTrack, SetProjectSettings};
+use app_core::command::{
+    AddTrack, RemoveMedia, RemoveTrack, RenameProject, RenameTrack, SetProjectSettings,
+};
 use app_core::serialization::{self, CURRENT_SCHEMA_VERSION};
-use app_core::{Project, ProjectSettings, TrackId, TrackKind};
+use app_core::{MediaId, Project, ProjectSettings, TrackId, TrackKind};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
@@ -184,7 +186,10 @@ pub async fn open_project(
     })
     .await?;
     let loaded = loaded?;
-    state.replace_project(&app, loaded.project, Some(path), loaded.source_version)
+    state.replace_project(&app, loaded.project, Some(path), loaded.source_version)?;
+    // Previews missing from the cache (another machine, an evicted or cleared cache).
+    state.prefetch_previews(None);
+    Ok(())
 }
 
 /// Saves to the open project's file. Returns `false` if the project has no file yet: nothing was
@@ -327,4 +332,51 @@ pub async fn import_media_dialog(
 pub fn cancel_job(state: State<'_, AppState>, id: JobId) -> Result<(), IpcError> {
     state.jobs.cancel(id);
     Ok(())
+}
+
+/// Removes media items from the project as one undo step (`removeMedia`). Fails with
+/// `invalidEdit` for an empty list, an id that is not in the project, or media that clips still
+/// use (`MediaInUse`; clips reference media from task 0260 on, which then removes them in the same
+/// step after a warning). Cached previews stay on disk, so undo shows them again at once.
+#[tauri::command]
+#[specta::specta]
+pub fn remove_media(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    ids: Vec<MediaId>,
+) -> Result<(), IpcError> {
+    if ids.is_empty() {
+        return Err(IpcError::InvalidEdit("no media to remove".into()));
+    }
+    state.edit(&app, |doc| {
+        doc.execute(Box::new(RemoveMedia::new(ids))).map(Some)
+    })?;
+    Ok(())
+}
+
+/// Opens the file manager (Explorer) at the media file's folder with the file selected. By id, so
+/// the webview never hands a path to the shell. Fails with `invalidEdit` for an unknown id and
+/// `fileNotFound` when the file is gone.
+#[tauri::command]
+#[specta::specta]
+pub async fn reveal_media(state: State<'_, AppState>, id: MediaId) -> Result<(), IpcError> {
+    let project = state.snapshot();
+    let asset = project
+        .media
+        .iter()
+        .find(|m| m.id == id)
+        .ok_or_else(|| IpcError::InvalidEdit(format!("media {id} is not in the project")))?;
+    let path = PathBuf::from(&asset.path.absolute);
+    tauri::async_runtime::spawn_blocking(move || {
+        if !path.exists() {
+            return Err(IpcError::FileNotFound(format!(
+                "{} does not exist",
+                path.display()
+            )));
+        }
+        tauri_plugin_opener::reveal_item_in_dir(&path).map_err(|err| {
+            IpcError::Unavailable(format!("cannot reveal {}: {err}", path.display()))
+        })
+    })
+    .await?
 }

@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use app_core::command::HistoryLabel;
-use app_core::media::{HdrTransfer, MediaAsset};
+use app_core::media::{FilmstripLayout, HdrTransfer, MediaAsset};
 use app_core::{
     ClipId, Document, MediaId, MediaKind, ProjectId, ProjectSettings, Rational, Time, TrackId,
     TrackKind,
@@ -144,8 +144,12 @@ pub struct MediaView {
     pub status: MediaStatus,
     /// Clips that reference this media; 0 until clips reference media (design 0250).
     pub used_by: u32,
-    /// Append as `?v=` to `media://` URLs, so a relinked file never shows stale previews.
+    /// Append as `?v=` to every `media://` URL of this item, so a relinked or changed file never
+    /// shows stale previews.
     pub preview_version: String,
+    /// The filmstrip of a video (hover-scrub tiles at `media://…/filmstrip/<id>?tile=<n>`);
+    /// `None` for audio and images.
+    pub filmstrip: Option<FilmstripLayout>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -192,7 +196,8 @@ impl MediaView {
             }),
             status: MediaStatus::Online,
             used_by: 0,
-            preview_version: asset.fingerprint.hash.chars().take(16).collect(),
+            preview_version: crate::previews::preview_version(asset),
+            filmstrip: FilmstripLayout::of(asset),
         }
     }
 }
@@ -214,6 +219,8 @@ impl JobId {
 pub enum JobStage {
     /// Reading and probing media files (import).
     Probing,
+    /// Making posters, waveforms and filmstrips in the background (after import and open).
+    GeneratingPreviews,
 }
 
 /// The result of one file of a media job, in the order the files were given.

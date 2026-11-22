@@ -15,6 +15,7 @@ use crate::ipc::events::ProjectChanged;
 use crate::ipc::types::ProjectState;
 use crate::jobs::JobManager;
 use crate::preview::Preview;
+use crate::previews::{self, Previews};
 
 #[derive(Debug)]
 pub struct AppState {
@@ -24,8 +25,10 @@ pub struct AppState {
     /// Serializes saves, so two saves never write the same file at once or mark clean out of order.
     save_lock: tauri::async_runtime::Mutex<()>,
     pub preview: Option<Preview>,
-    /// Background work (import now; previews and export later).
+    /// Background work (import, previews; export later).
     pub jobs: JobManager,
+    /// Posters, filmstrips and waveforms for the media panel (`media://`).
+    pub previews: Arc<Previews>,
 }
 
 /// What a save writes, taken under the lock and written without it.
@@ -52,7 +55,12 @@ impl SaveSnapshot {
 }
 
 impl AppState {
-    pub fn new(project: Project, preview: Option<Preview>, jobs: JobManager) -> Self {
+    pub fn new(
+        project: Project,
+        preview: Option<Preview>,
+        jobs: JobManager,
+        previews: Arc<Previews>,
+    ) -> Self {
         let session = Session::new(project);
         let snapshot = ArcSwap::new(session.document.snapshot());
         if let Some(preview) = &preview {
@@ -64,7 +72,14 @@ impl AppState {
             save_lock: tauri::async_runtime::Mutex::new(()),
             preview,
             jobs,
+            previews,
         }
+    }
+
+    /// Starts the background preview job for `ids` (after an import), or for every asset of the
+    /// open project (`None`, after open).
+    pub fn prefetch_previews(&self, ids: Option<Vec<app_core::MediaId>>) {
+        previews::start_prefetch(&self.jobs, Arc::clone(&self.previews), ids);
     }
 
     /// Unsaved changes in the open project.
@@ -105,7 +120,6 @@ impl AppState {
         self.lock().state()
     }
 
-    #[allow(dead_code)] // Read by the render graph from stage 1 on.
     pub fn snapshot(&self) -> Arc<Project> {
         self.snapshot.load_full()
     }

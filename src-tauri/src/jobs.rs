@@ -15,8 +15,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::Duration;
 
-use app_core::Document;
 use app_core::command::CommandError;
+use app_core::{Document, MediaId, Project};
 use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 
@@ -39,6 +39,10 @@ pub trait JobHost: Send + Sync + 'static {
         &self,
         edit: &mut dyn FnMut(&mut Document) -> Result<bool, CommandError>,
     ) -> Result<(), IpcError>;
+    /// The latest published project (lock-free for the real host).
+    fn snapshot(&self) -> Arc<Project>;
+    /// Media was added to the project (an import finished): start generating its previews.
+    fn media_added(&self, ids: Vec<MediaId>);
 }
 
 /// Which queue a task goes to.
@@ -46,8 +50,7 @@ pub trait JobHost: Send + Sync + 'static {
 pub enum Priority {
     /// Work the user waits for: import probes, `media://` misses, relink.
     Interactive,
-    /// Prefetch the user does not wait for: preview generation (task 0230), media checks (0240).
-    #[allow(dead_code)] // First used by preview generation (task 0230).
+    /// Prefetch the user does not wait for: preview generation, media checks (0240).
     Background,
 }
 
@@ -168,6 +171,13 @@ impl JobManager {
         id
     }
 
+    /// A handle that queues tasks that belong to no job (no events), e.g. `media://` misses.
+    pub fn spawner(&self) -> JobSpawner {
+        JobSpawner {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+
     /// Asks job `id` to stop. Idempotent: unknown or finished ids are ignored.
     pub fn cancel(&self, id: JobId) {
         if let Some(job) = lock(&self.inner.jobs).get(&id) {
@@ -186,6 +196,36 @@ impl Drop for JobManager {
         drop(lock(&self.inner.jobs));
         self.inner.jobs_changed.notify_all();
     }
+}
+
+/// Queues tasks on the pool that belong to no job: no progress, no `job-finished`. Cheap to
+/// clone; tasks queued after the manager is dropped never run.
+#[derive(Clone)]
+pub struct JobSpawner {
+    inner: Arc<Inner>,
+}
+
+impl std::fmt::Debug for JobSpawner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JobSpawner").finish_non_exhaustive()
+    }
+}
+
+impl JobSpawner {
+    pub fn run(&self, priority: Priority, task: impl FnOnce() + Send + 'static) {
+        push(&self.inner, priority, Box::new(task));
+    }
+}
+
+fn push(inner: &Inner, priority: Priority, task: Task) {
+    {
+        let mut queues = lock(&inner.queues);
+        match priority {
+            Priority::Interactive => queues.interactive.push_back(task),
+            Priority::Background => queues.background.push_back(task),
+        }
+    }
+    inner.work_available.notify_one();
 }
 
 /// What a job's tasks get: its id, cancel flag and progress, and a way to queue more tasks.
@@ -236,15 +276,7 @@ impl JobContext {
     /// Queues another task of this job.
     pub fn spawn(&self, priority: Priority, task: impl FnOnce(JobContext) + Send + 'static) {
         let context = self.clone();
-        let task: Task = Box::new(move || task(context));
-        {
-            let mut queues = lock(&self.inner.queues);
-            match priority {
-                Priority::Interactive => queues.interactive.push_back(task),
-                Priority::Background => queues.background.push_back(task),
-            }
-        }
-        self.inner.work_available.notify_one();
+        push(&self.inner, priority, Box::new(move || task(context)));
     }
 
     /// Ends the job: unregisters it, then emits `job-finished`. Emit everything else first.
@@ -363,14 +395,20 @@ impl JobHost for TauriJobHost {
         })?;
         Ok(())
     }
+
+    fn snapshot(&self) -> Arc<Project> {
+        self.app.state::<AppState>().snapshot()
+    }
+
+    fn media_added(&self, ids: Vec<MediaId>) {
+        self.app.state::<AppState>().prefetch_previews(Some(ids));
+    }
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use std::sync::mpsc;
     use std::time::Instant;
-
-    use app_core::Project;
 
     use super::*;
 
@@ -380,6 +418,8 @@ pub(crate) mod tests {
         pub document: Mutex<Document>,
         pub events: Mutex<Vec<Recorded>>,
         pub changes: AtomicUsize,
+        /// Ids passed to `media_added`, one entry per call.
+        pub added: Mutex<Vec<Vec<MediaId>>>,
         finished: Mutex<Option<mpsc::Sender<JobId>>>,
     }
 
@@ -397,6 +437,7 @@ pub(crate) mod tests {
                 document: Mutex::new(Document::new(Project::new("Test"))),
                 events: Mutex::default(),
                 changes: AtomicUsize::new(0),
+                added: Mutex::default(),
                 finished: Mutex::new(Some(tx)),
             });
             (host, rx)
@@ -432,6 +473,14 @@ pub(crate) mod tests {
                 self.changes.fetch_add(1, Ordering::Relaxed);
             }
             Ok(())
+        }
+
+        fn snapshot(&self) -> Arc<Project> {
+            lock(&self.document).snapshot()
+        }
+
+        fn media_added(&self, ids: Vec<MediaId>) {
+            lock(&self.added).push(ids);
         }
     }
 

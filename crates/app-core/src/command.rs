@@ -21,6 +21,8 @@ pub enum HistoryLabel {
     SetProjectSettings,
     /// One import job: every file it added.
     ImportMedia,
+    /// Removing media items from the project (one or several at once).
+    RemoveMedia,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -31,6 +33,12 @@ pub enum CommandError {
     EmptyName,
     #[error("media {0} is already in the project")]
     DuplicateMedia(MediaId),
+    #[error("media {0} is not in the project")]
+    MediaNotFound(MediaId),
+    /// Clips still use the media; remove them first (from task 0260 on, the remove-media batch
+    /// does that in the same history entry).
+    #[error("media {0} is used by clips")]
+    MediaInUse(MediaId),
     #[error("media {id} is invalid: {problem}")]
     InvalidMedia { id: MediaId, problem: MediaProblem },
     /// A gesture is open; commit or cancel it before running another edit (ADR-0006 §3).
@@ -349,6 +357,74 @@ impl Command for AddMedia {
     }
 }
 
+/// Removes media assets. Fails with [`CommandError::MediaInUse`] while a clip references one of
+/// them, and with [`CommandError::MediaNotFound`] for an id that is not in the project. Revert
+/// puts every asset back at its original position.
+#[derive(Debug)]
+pub struct RemoveMedia {
+    ids: Vec<MediaId>,
+    /// (index in `project.media` before the removal, asset), ascending by index.
+    removed: Vec<(usize, MediaAsset)>,
+}
+
+impl RemoveMedia {
+    /// Repeated ids count once.
+    pub fn new(ids: Vec<MediaId>) -> Self {
+        let mut unique = Vec::with_capacity(ids.len());
+        for id in ids {
+            if !unique.contains(&id) {
+                unique.push(id);
+            }
+        }
+        Self {
+            ids: unique,
+            removed: Vec::new(),
+        }
+    }
+}
+
+/// How many clips reference media `id`. Clips reference media from design 0250 on; until then
+/// nothing uses media and this is always 0.
+pub fn media_users(project: &Project, id: MediaId) -> usize {
+    let _ = (project, id);
+    0
+}
+
+impl Command for RemoveMedia {
+    fn label(&self) -> HistoryLabel {
+        HistoryLabel::RemoveMedia
+    }
+
+    fn apply(&mut self, project: &mut Project) -> Result<(), CommandError> {
+        let mut indices = Vec::with_capacity(self.ids.len());
+        for &id in &self.ids {
+            let index = project
+                .media
+                .iter()
+                .position(|m| m.id == id)
+                .ok_or(CommandError::MediaNotFound(id))?;
+            if media_users(project, id) > 0 {
+                return Err(CommandError::MediaInUse(id));
+            }
+            indices.push(index);
+        }
+        indices.sort_unstable();
+        self.removed = indices
+            .iter()
+            .rev()
+            .map(|&index| (index, project.media.remove(index)))
+            .collect();
+        self.removed.reverse();
+        Ok(())
+    }
+
+    fn revert(&mut self, project: &mut Project) {
+        for (index, asset) in std::mem::take(&mut self.removed) {
+            project.media.insert(index, asset);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -596,6 +672,50 @@ mod tests {
     }
 
     #[test]
+    fn remove_media_is_reversible_and_restores_positions() {
+        use crate::media::samples;
+        let mut project = Project::new("Test");
+        project.media = vec![
+            samples::video(1),
+            samples::audio(2),
+            samples::image(3),
+            samples::video(4),
+        ];
+        let ids = [project.media[3].id, project.media[1].id];
+        let command = RemoveMedia::new(vec![ids[0], ids[1], ids[0]]);
+        assert_eq!(command.label(), HistoryLabel::RemoveMedia);
+        let after = assert_reversible(command, &project);
+        let left: Vec<_> = after.media.iter().map(|m| m.id).collect();
+        assert_eq!(left, [project.media[0].id, project.media[2].id]);
+    }
+
+    #[test]
+    fn remove_media_rejects_unknown_ids_and_changes_nothing() {
+        use crate::media::samples;
+        let mut project = Project::new("Test");
+        project.media = vec![samples::video(1), samples::audio(2)];
+        let unknown = MediaId::new();
+        let mut doc = crate::Document::new(project.clone());
+        assert_eq!(
+            doc.execute(Box::new(RemoveMedia::new(vec![
+                project.media[0].id,
+                unknown
+            ]))),
+            Err(CommandError::MediaNotFound(unknown))
+        );
+        assert_eq!(*doc.project(), project);
+        assert!(!doc.can_undo());
+    }
+
+    #[test]
+    fn nothing_uses_media_before_clips_reference_it() {
+        use crate::media::samples;
+        let mut project = Project::new("Test");
+        project.media.push(samples::video(1));
+        assert_eq!(media_users(&project, project.media[0].id), 0);
+    }
+
+    #[test]
     fn rename_project_is_reversible() {
         let project = Project::new("Test");
         let after = assert_reversible(RenameProject::new("Holiday"), &project);
@@ -616,6 +736,12 @@ mod tests {
                 count: usize,
                 with_duplicate: bool,
             },
+            /// Remove the assets at these positions (modulo the media count); `with_unknown` adds an
+            /// id that is not in the project, so the removal fails.
+            Remove {
+                picks: Vec<usize>,
+                with_unknown: bool,
+            },
             Undo,
             Redo,
         }
@@ -624,16 +750,18 @@ mod tests {
             prop_oneof![
                 3 => (0usize..4, any::<bool>())
                     .prop_map(|(count, with_duplicate)| Op::Import { count, with_duplicate }),
+                2 => (prop::collection::vec(0usize..8, 1..4), prop::bool::weighted(0.2))
+                    .prop_map(|(picks, with_unknown)| Op::Remove { picks, with_unknown }),
                 2 => Just(Op::Undo),
                 1 => Just(Op::Redo),
             ]
         }
 
         proptest! {
-            /// Random imports with undo/redo keep the media invariants, never lose or reorder
+            /// Random imports and removals with undo/redo keep the media invariants, never lose or reorder
             /// assets, and undoing everything restores the start state.
             #[test]
-            fn imports_with_undo_redo_keep_media_valid(ops in prop::collection::vec(op(), 0..40)) {
+            fn imports_and_removals_with_undo_redo_keep_media_valid(ops in prop::collection::vec(op(), 0..40)) {
                 let start = Project::new("Test");
                 let mut doc = Document::new(start.clone());
                 let mut seed = 0u8;
@@ -661,6 +789,28 @@ mod tests {
                             } else {
                                 prop_assert!(result.is_ok());
                                 prop_assert_eq!(&doc.project().media[before.media.len()..], &assets[..]);
+                            }
+                        }
+                        Op::Remove { picks, with_unknown } => {
+                            if before.media.is_empty() && !with_unknown {
+                                continue;
+                            }
+                            let mut ids: Vec<MediaId> = if before.media.is_empty() {
+                                Vec::new()
+                            } else {
+                                picks.iter().map(|p| before.media[p % before.media.len()].id).collect()
+                            };
+                            if with_unknown {
+                                ids.push(MediaId::new());
+                            }
+                            let result = doc.execute(Box::new(RemoveMedia::new(ids.clone())));
+                            if with_unknown {
+                                prop_assert!(result.is_err());
+                                prop_assert_eq!(&doc.snapshot(), &before);
+                            } else {
+                                prop_assert!(result.is_ok());
+                                let kept: Vec<_> = before.media.iter().filter(|m| !ids.contains(&m.id)).cloned().collect();
+                                prop_assert_eq!(&doc.project().media, &kept, "the others keep their order");
                             }
                         }
                         Op::Undo => { doc.undo(); }

@@ -132,28 +132,28 @@ inserted between existing ones.
 | F1.04 | Video containers: MP4, MOV, MKV, WebM, AVI, M4V | Probe tests for MP4, MOV, MKV, WebM (no container duration), AVI, M4V, MPEG-PS (`crates/engine/tests/media_formats.rs`). Missing: UI import path | partial |
 | F1.05 | Video codecs (decode): H.264, HEVC, VP8/VP9, AV1, ProRes, MPEG-2/4, MJPEG | Decoders are LGPL-safe. Probe decodes the first frame of H.264, HEVC, VP8, VP9, AV1 (dav1d), ProRes, MPEG-2, MPEG-4, MJPEG in tests. Missing: playback decode (0310+) | partial |
 | F1.06 | Audio formats: MP3, WAV, AAC/M4A, FLAC, OGG/Opus | Probe tests for all five (codec, sample rate, channels, duration); multi-track files list every stream, default first. Missing: UI, audio playback | partial |
-| F1.07 | Image formats: JPG, PNG, WebP, BMP, TIFF, GIF (animated) | Probe tests: stills are `image` (no duration), animated GIF is `video`; animated WebP imports as a still (FFmpeg 7.1). Missing: UI, posters (0230) | partial |
-| F1.08 | HEIC/HEIF photos (phone pictures) | Supported, no libheif: FFmpeg 7.1 exposes phone tile grids as a stream group; the probe reports the grid size, decodes a tile and reads `irot` itself (`engine/src/media/heif.rs`; self-made grid fixture). Missing: tile composition for posters/preview (0230/0320), a check with a real phone HEIC on Windows, UI | partial |
+| F1.07 | Image formats: JPG, PNG, WebP, BMP, TIFF, GIF (animated) | Probe tests: stills are `image` (no duration), animated GIF is `video`; animated WebP imports as a still (FFmpeg 7.1). Posters for every image format (0230, tests). Missing: UI | partial |
+| F1.08 | HEIC/HEIF photos (phone pictures) | Supported, no libheif: FFmpeg 7.1 exposes phone tile grids as a stream group; the probe reports the grid size, decodes a tile and reads `irot` itself (`engine/src/media/heif.rs`; self-made grid fixture). Tile composition: `engine::media::still::decode_tile_grid` (0230) stitches and crops the grid for posters; 0320 reuses it for image clips. Missing: a check with a real phone HEIC on Windows, UI | partial |
 | F1.09 | Media probing: duration, resolution, frame rate, codec, audio channels/sample rate | `engine::media::probe` fills `MediaInfo` (plus pixel format, bit depth, colour, HDR/Dolby Vision metadata); shown in `MediaView`. Missing: UI list | partial |
-| F1.10 | Rotation metadata honoured (portrait phone videos) | Probe reads the display matrix (video), EXIF orientation (JPEG) and `irot` (HEIC); `display_size()` is upright; tests. Missing: applying it in posters and the render graph (0230/0310) | partial |
+| F1.10 | Rotation metadata honoured (portrait phone videos) | Probe reads the display matrix (video), EXIF orientation (JPEG) and `irot` (HEIC); `display_size()` is upright; tests. Posters and filmstrips are upright (0230, fixture tests). Missing: the render graph (0310) | partial |
 | F1.11 | Variable frame rate sources play and cut correctly | Timing from timestamps (`Time::from_ticks`), sample-and-hold rule `engine::media::decode::frame_index_at`, VFR fixture test. Missing: playback and cutting (0250, 0310+) | partial |
-| F1.12 | Non-square pixel aspect ratio and anamorphic sources displayed correctly | Probe records `sampleAspect`; `display_size()` corrects the width (MPEG-2 4:3 SAR fixture). Missing: posters and render graph (0230/0310) | partial |
+| F1.12 | Non-square pixel aspect ratio and anamorphic sources displayed correctly | Probe records `sampleAspect`; `display_size()` corrects the width (MPEG-2 4:3 SAR fixture); posters and filmstrips use it (0230). Missing: render graph (0310) | partial |
 | F1.13 | Corrupt / unsupported files rejected with a clear message | Per-file `MediaErrorKind` in `media-job-report` (`damaged`, `unsupportedFormat`, `unsupportedCodec`, ...); truncated, random, text and empty files tested. UI: result toast in the media panel with added / already imported / failed counts and per-file translated reasons (`importSummary.ts`, `i18n` keys per `MediaErrorKind`, Vitest). Needs manual verification in `pnpm dev` on Windows | partial |
 
 ### Media panel
 
 | ID | Feature | Notes | Status |
 |---|---|---|---|
-| F1.14 | Grid of media with thumbnail, name, duration, type icon | `media://` | missing |
-| F1.15 | List view alternative | | missing |
-| F1.16 | Hover-scrub thumbnail preview (skimming) | | missing |
+| F1.14 | Grid of media with thumbnail, name, duration, type icon | Backend (0230): `media://…/poster/<id>?v=` (JPEG, long side `POSTER_LONG_SIDE` 320, upright: rotation, pixel aspect, HEIC grids stitched, HDR tone-mapped) through a bounded handler pool, disk cache and in-flight map (`src-tauri/src/protocol.rs`, `previews.rs`, `engine::media::previews`; fixture tests). Missing: the UI grid | partial |
+| F1.15 | List view alternative | Backend data ready (`MediaView`: name, path, duration, size, codec, audio). Missing: UI | partial |
+| F1.16 | Hover-scrub thumbnail preview (skimming) | Backend (0230): `MediaView.filmstrip` layout + `media://…/filmstrip/<id>?tile=<n>&v=` (JPEG strips of 32 frames, `frameWidth x 96`, upright, keyframe-based with forward decode for long GOPs; tests). Missing: UI | partial |
 | F1.17 | Preview a media item in the player before adding it | | missing |
 | F1.18 | "Used in timeline" badge | | missing |
-| F1.19 | Sort and filter (type, name, date, duration) | | missing |
+| F1.19 | Sort and filter (type, name, date, duration) | View logic in the UI over `ProjectState.media` (design §7); no backend work. Missing: UI | missing |
 | F1.20 | Search by name | | missing |
-| F1.21 | Remove media from project (with warning if used) | | missing |
-| F1.22 | Show in file explorer | | missing |
-| F1.23 | Background thumbnail and waveform generation with progress | | missing |
+| F1.21 | Remove media from project (with warning if used) | Backend (0230): `RemoveMedia` (one undo step `removeMedia`, restores positions; refuses `MediaInUse`, structured for clips from 0260) + `remove_media`; unit and property tests. Missing: UI with confirmation; the warn-and-remove-clips path is 0260 | partial |
+| F1.22 | Show in file explorer | Backend (0230): `reveal_media(id)` opens Explorer with the file selected (`tauri-plugin-opener` `reveal_item_in_dir`, called from Rust only). Missing: UI, manual check on Windows | partial |
+| F1.23 | Background thumbnail and waveform generation with progress | Backend (0230): background job `generatingPreviews` after import and open (posters, then waveforms, then filmstrip tiles; skips cached and removed media; `job-progress`/`job-finished`), content-keyed cache under `app_local_data_dir()\cache\media\v1` (atomic writes, old versions deleted, 2 GiB LRU eviction); waveform `media://…/waveform/<id>?v=` (`CFWF`, 100 buckets/s). Tests for generators, cache, routes, shared generation. Missing: UI progress, the 100-file responsiveness check on Windows | partial |
 
 ### Timeline
 
@@ -211,7 +211,7 @@ inserted between existing ones.
 | F1.68 | J/K/L shuttle (reverse / pause / forward, repeated presses speed up) | | missing |
 | F1.69 | Audio scrubbing while dragging the playhead | | missing |
 | F3.45 | Hardware-accelerated decoding (D3D11VA / D3D12VA on Windows) for HEVC, H.264, AV1 with software fallback | Moved from Tier 3 on 2026-11-22 (4K HEVC phone footage); ID kept. Zero-copy path decided in 0310; `docs/design/media-import.md` §5 | missing |
-| F3.31 | HDR sources (PQ/HLG, Rec.2020, Dolby Vision 8.x base layer) with tone mapping to SDR | Moved from Tier 3 on 2026-11-22 (phone records HDR); ID kept. One simple operator in the shared render graph so preview and export match; probe data in `docs/design/media-import.md` §3. Refinement and 10-bit pipeline: F3.30 | missing |
+| F3.31 | HDR sources (PQ/HLG, Rec.2020, Dolby Vision 8.x base layer) with tone mapping to SDR | Moved from Tier 3 on 2026-11-22 (phone records HDR); ID kept. One simple operator in the shared render graph so preview and export match; probe data in `docs/design/media-import.md` §3. Refinement and 10-bit pipeline: F3.30. Thumbnails (0230): CPU tone map in `engine::media::tonemap` (HLG/PQ, roll-off above a knee, BT.2020→709), to be aligned with the render-graph operator in 0310. Missing: the render graph (0310/0320) | partial |
 
 ### Basic clip properties (inspector)
 

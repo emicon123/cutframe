@@ -32,6 +32,9 @@ specta-typescript = "=0.0.15"
 tauri = "2.12"
 tauri-build = "2.7"
 tauri-plugin-dialog = "2.8"
+# Reveal a media file in Explorer from Rust (`reveal_item_in_dir`); the plugin itself is not
+# registered, so the webview gets no opener permissions.
+tauri-plugin-opener = "2.7"
 tauri-specta = { version = "=2.0.0-rc.29", features = ["derive", "typescript"] }
 thiserror = "2.0"
 tracing = "0.1"
