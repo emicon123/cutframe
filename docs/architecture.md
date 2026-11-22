@@ -56,6 +56,7 @@ flowchart TB
   feeder["Audio feeder - target"]
   audio["cpal audio callback - target, real-time"]
   jobs["Job pool - target"]
+  export["export thread - target, dedicated job"]
   main -- "crossbeam messages" --> render
   media -- "RenderFrame request" --> render
   main -. "ArcSwap snapshot - target" .-> render
@@ -63,12 +64,15 @@ flowchart TB
   feeder -. "rtrb PCM ring" .-> audio
   audio -. "atomic sample clock" .-> render
   jobs -. "cached files" .-> media
+  main -. "Arc Project at start - target" .-> export
 ```
 
 Solid edges exist today and dotted edges are the target. The rules per thread are in ADR-0004. In
 short: the main thread never blocks, the audio callback never allocates, locks or does I/O, and only
 edits mutate the model. **Today** `preview-render` draws continuously while the preview is visible.
 **Target:** it draws when an input changes, and continuously only during playback.
+Designs: `docs/design/render-graph.md` §9 and `docs/design/playback.md` §6 (render, readers, feeder,
+callback) and `docs/design/export.md` (export thread).
 
 ## Flow 1: command, model, undo stack, events, UI
 
@@ -114,28 +118,30 @@ flowchart LR
     dec["Decode - HW on Windows, SW fallback"] --> rgraph
     fx["effects/: effect.json and shader.wgsl"] --> rgraph
     rgraph --> pv["Preview window surface"]
-    rgraph --> ex["Export encoder - NVENC, QSV, AMF, OpenH264"]
+    rgraph --> ex["engine::export - NVENC, QSV, AMF, Media Foundation, OpenH264"]
   end
 ```
 
 Both paths already share one encode function, which is the seed of CLAUDE.md rule 3. The render
-graph, decode and export are not built yet. The render graph needs a design doc before playback.
+graph, decode and export are not built yet; they are designed in `docs/design/render-graph.md`
+and `docs/design/export.md`.
 
 ## Flow 3: audio (target only)
 
 ```mermaid
 flowchart LR
   file["Media file"] --> dec["Audio feeder: FFmpeg decode and swresample"]
-  dec --> ring["rtrb ring per source"]
-  ring --> cb["cpal callback: mix, gain, mute"]
+  dec --> mix["Audio feeder: mix_block - volume, fades, mute"]
+  mix --> ring["One rtrb ring of fixed blocks"]
+  ring --> cb["cpal callback: copy, channel convert, publish clock"]
   cb --> dev["WASAPI output device"]
-  cb --> clock["Atomic sample clock - master"]
+  cb --> clock["Audio device clock - master"]
   clock --> rnd["Render thread picks the video frame"]
   clock --> tick["playback-tick at most 60 Hz to the UI"]
 ```
 
 There is no audio code today. The playhead is UI-only state (`ui/src/stores/playheadStore.ts`) until
-playback moves transport into Rust (ADR-0004).
+playback moves transport into Rust (ADR-0004 amendment 2026-11-22, `docs/design/playback.md`).
 
 ## Flow 4: `media://`
 
