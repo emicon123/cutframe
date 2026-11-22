@@ -113,6 +113,13 @@ pub fn pool_size() -> usize {
 }
 
 impl JobManager {
+    /// A job manager whose events go nowhere, for tests that need an `AppState`.
+    #[cfg(test)]
+    pub(crate) fn for_tests() -> Self {
+        let (host, _rx) = tests::FakeHost::new();
+        Self::new(host)
+    }
+
     pub fn new(host: Arc<dyn JobHost>) -> Self {
         Self::with_workers(host, pool_size())
     }

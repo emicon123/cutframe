@@ -1,65 +1,20 @@
-import { commands } from "@/bindings";
-import { fileActions } from "@/features/project/fileActions";
-import { t } from "@/i18n";
-import { importFromDialog } from "@/features/media-bin/importActions";
-import { run } from "@/stores/appStore";
+import { type Action, ACTIONS, currentActionContext, isEnabled, type KeyBinding } from "./actions";
 
 export type KeyInput = Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "shiftKey" | "altKey">;
 
-export type Shortcut = {
-  id: string;
-  /** `KeyboardEvent.key`, compared case-insensitively. */
-  key: string;
-  ctrl?: boolean;
-  shift?: boolean;
-  /**
-   * Always block the WebView2 default (Ctrl+N new window, Ctrl+O/S file dialogs), even where the
-   * shortcut itself is ignored (text fields, open dialogs).
-   */
-  blockDefault?: boolean;
-  run: () => void;
-};
-
-/** The single registry of editor shortcuts. */
-export const SHORTCUTS: readonly Shortcut[] = [
-  { id: "undo", key: "z", ctrl: true, run: () => void run(commands.undo()) },
-  { id: "redo", key: "z", ctrl: true, shift: true, run: () => void run(commands.redo()) },
-  { id: "redo-alt", key: "y", ctrl: true, run: () => void run(commands.redo()) },
-  { id: "new-project", key: "n", ctrl: true, blockDefault: true, run: () => void fileActions.newProject() },
-  { id: "open-project", key: "o", ctrl: true, blockDefault: true, run: () => void fileActions.openProject() },
-  { id: "save", key: "s", ctrl: true, blockDefault: true, run: () => void fileActions.save() },
-  {
-    id: "save-as",
-    key: "s",
-    ctrl: true,
-    shift: true,
-    blockDefault: true,
-    run: () => void fileActions.saveAs(),
-  },
-  { id: "import-media", key: "i", ctrl: true, run: () => void importFromDialog() },
-];
-
-/** Display text of a registered shortcut, e.g. `"Ctrl+Shift+S"`; empty for an unknown id. */
-export function shortcutLabel(id: string, shortcuts: readonly Shortcut[] = SHORTCUTS): string {
-  const shortcut = shortcuts.find((s) => s.id === id);
-  if (!shortcut) return "";
-  const { ctrl, shift, separator } = t.keys;
-  const parts = [shortcut.ctrl && ctrl, shortcut.shift && shift, shortcut.key.toUpperCase()];
-  return parts.filter((part) => typeof part === "string").join(separator);
+export function matchesBinding(input: KeyInput, binding: KeyBinding): boolean {
+  const ctrl = input.ctrlKey || input.metaKey;
+  return (
+    binding.key.toLowerCase() === input.key.toLowerCase() &&
+    Boolean(binding.ctrl) === ctrl &&
+    (binding.shift === "any" || Boolean(binding.shift) === input.shiftKey) &&
+    !input.altKey
+  );
 }
 
-export function findShortcut(
-  input: KeyInput,
-  shortcuts: readonly Shortcut[] = SHORTCUTS,
-): Shortcut | undefined {
-  const ctrl = input.ctrlKey || input.metaKey;
-  return shortcuts.find(
-    (s) =>
-      s.key.toLowerCase() === input.key.toLowerCase() &&
-      Boolean(s.ctrl) === ctrl &&
-      Boolean(s.shift) === input.shiftKey &&
-      !input.altKey,
-  );
+/** The registered action whose shortcut matches `input`. */
+export function findShortcut(input: KeyInput, actions: readonly Action[] = ACTIONS): Action | undefined {
+  return actions.find((a) => a.shortcuts?.some((binding) => matchesBinding(input, binding)));
 }
 
 /** Shortcuts are ignored while the user types. */
@@ -79,15 +34,18 @@ export function isInOverlay(target: EventTarget | null): boolean {
   );
 }
 
+/** Runs the action of a matching shortcut. Disabled actions only block the WebView default. */
+export function handleShortcut(event: KeyboardEvent, actions: readonly Action[] = ACTIONS): void {
+  const action = findShortcut(event, actions);
+  if (!action) return;
+  const ignored = isTextEntry(event.target) || isInOverlay(event.target);
+  if (ignored && !action.blockDefault) return;
+  event.preventDefault();
+  if (!ignored && isEnabled(action, currentActionContext())) action.run();
+}
+
 export function installShortcuts(): () => void {
-  const onKeyDown = (event: KeyboardEvent) => {
-    const shortcut = findShortcut(event);
-    if (!shortcut) return;
-    const ignored = isTextEntry(event.target) || isInOverlay(event.target);
-    if (ignored && !shortcut.blockDefault) return;
-    event.preventDefault();
-    if (!ignored) shortcut.run();
-  };
+  const onKeyDown = (event: KeyboardEvent) => handleShortcut(event);
   window.addEventListener("keydown", onKeyDown);
   return () => window.removeEventListener("keydown", onKeyDown);
 }

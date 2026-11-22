@@ -53,6 +53,9 @@ pub enum CommandError {
     /// Project settings outside the supported ranges ([`ProjectSettings::validate`]).
     #[error("invalid project settings: {0}")]
     InvalidSettings(ValidationError),
+    /// A history jump to a point that is not in the history ([`crate::Document::jump_to`]).
+    #[error("history point {index} is out of range (0..={len})")]
+    HistoryOutOfRange { index: usize, len: usize },
 }
 
 /// A reversible edit.

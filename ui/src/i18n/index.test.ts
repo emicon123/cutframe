@@ -14,7 +14,7 @@ describe("historyLabelText", () => {
     ["importMedia", "Import Media"],
   ])("translates %s", (label, text) => {
     expect(historyLabelText(label)).toBe(text);
-    expect(t.topBar.undoAction(historyLabelText(label))).toBe(`Undo ${text}`);
+    expect(t.edit.undoAction(historyLabelText(label))).toBe(`Undo ${text}`);
   });
 
   it("falls back to generic text for an unknown key, never the raw key", () => {

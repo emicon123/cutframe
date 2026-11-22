@@ -1,5 +1,6 @@
 import { commands, events } from "@/bindings";
 import { fileActions } from "@/features/project/fileActions";
+import { recovery } from "@/features/project/recovery";
 import { logError } from "@/ipc/errors";
 import { useAppStore } from "@/stores/appStore";
 import { useProjectStore } from "@/stores/projectStore";
@@ -7,7 +8,7 @@ import { useProjectStore } from "@/stores/projectStore";
 /**
  * Keeps the project store in sync with Rust: subscribes to `projectChanged` (and `quitRequested`,
  * answered with the unsaved-changes prompt) first, cancels any stale gesture, then fetches the
- * current state, so no change is missed in between. Returns a cleanup function.
+ * current state, so no change is missed in between, and then offers crash recovery. Returns a cleanup function.
  */
 export function startProjectSync(): () => void {
   let disposed = false;
@@ -32,6 +33,8 @@ export function startProjectSync(): () => void {
       const [project, info] = await Promise.all([commands.getProject(), commands.getAppInfo()]);
       apply(project);
       setInfo(info);
+      // After the first state, so a restore's unsaved check sees the real document.
+      void recovery.load();
     })
     .catch(reportError);
 
