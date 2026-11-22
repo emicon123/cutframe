@@ -19,8 +19,8 @@ Remaining basic clip properties for an MVP edit.
 
 ## Scope
 
-- **design note:** volume and fades are already `AudioProps` (`volume`, `fadeIn`, `fadeOut`) since 0260 and are set with `set_clip_property`; speed and reverse are new clip fields with a schema migration and change only `Clip::source_time` / `source_end` (`docs/design/timeline-editing.md` §3.2).
-- **backend:** clip volume and fades in the mixer; constant speed with duration update and pitch-preserving time-stretch (permissive-licence library or own implementation; no GPL); reverse (reverse decode or cached render); freeze frame insert; image default duration from preferences.
+- **design note** (see also `docs/design/playback.md` §6.3 and `docs/design/render-graph.md` §4.1: readers and `build_plan` only call `Clip::source_time`, so speed needs no render-graph change): volume and fades are already `AudioProps` (`volume`, `fadeIn`, `fadeOut`) since 0260 and are set with `set_clip_property`; speed and reverse are new clip fields with a schema migration and change only `Clip::source_time` / `source_end` (`docs/design/timeline-editing.md` §3.2).
+- **backend:** clip volume and fades are already in `mix_block` from 0330 (`docs/design/playback.md` §6.3); this task adds constant speed with duration update and pitch-preserving time-stretch per voice on the audio feeder thread, never in the callback (permissive-licence library or own implementation; no GPL); reverse through a GOP-reverse reader mode (decode a GOP forward into a bounded CPU frame stack, emit it backwards; playback §13); freeze frame insert; image default duration from preferences.
 - **frontend:** inspector controls and timeline speed badge.
 
 ## Done when
