@@ -3,6 +3,10 @@
 **Tier:** 1 · **Agents:** `backend`, `frontend` · **Depends on:** `0220`
 **Spec:** `docs/design/media-import.md` (§4 routes, §6.3–6.4, §12 task 0230), `docs/feature-catalog.md` (feature IDs below), `docs/adr/`, `CLAUDE.md`
 
+> **Closed 2026-11-22 without the manual check (user's decision).** `pnpm check`, `cargo deny` and a `pnpm dev`
+> start passed on Windows, but the end-to-end UI checks in `pnpm dev` (100-file import, cache after restart,
+> hover scrub, remove + undo, Show in Explorer, cache folder change) were not done by hand.
+
 ## Why
 
 Users pick clips visually; the media bin is an empty placeholder today.
