@@ -6,6 +6,8 @@ mod import;
 mod ipc;
 mod jobs;
 mod launch;
+mod media_paths;
+mod media_status;
 mod preferences;
 mod preview;
 mod previews;
@@ -13,6 +15,7 @@ mod project_file;
 mod protocol;
 mod recent;
 mod recovery;
+mod relink;
 mod smoke_test;
 mod state;
 
@@ -73,6 +76,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             commands::import_media_dialog,
             commands::cancel_job,
             commands::remove_media,
+            commands::relink_media,
+            commands::relink_media_folder,
             commands::reveal_media,
             commands::take_launch_path,
             commands::get_preferences,
@@ -199,6 +204,13 @@ pub fn run() {
                 spawner,
                 recent.covers_dir().to_path_buf(),
             )));
+            // Runtime offline detection: a preview generator that finds the file gone.
+            let handle = app.handle().clone();
+            previews.on_missing(Box::new(move |asset| {
+                if let Some(state) = handle.try_state::<AppState>() {
+                    state.report_missing(&handle, asset);
+                }
+            }));
             app.manage(
                 AppState::new(project, preview, recovery.clone(), jobs, previews)
                     .with_preferences(preferences)

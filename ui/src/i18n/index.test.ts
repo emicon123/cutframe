@@ -13,6 +13,7 @@ describe("historyLabelText", () => {
     ["setProjectSettings", "Change Project Settings"],
     ["importMedia", "Import Media"],
     ["removeMedia", "Remove Media"],
+    ["relinkMedia", "Relink Media"],
   ])("translates %s", (label, text) => {
     expect(historyLabelText(label)).toBe(text);
     expect(t.edit.undoAction(historyLabelText(label))).toBe(`Undo ${text}`);
@@ -55,23 +56,27 @@ describe("mediaErrorText", () => {
     "unsupportedCodec",
     "damaged",
     "tooManyFiles",
+    "kindMismatch",
   ])("translates %s", (kind) => {
     expect(mediaErrorText(kind)).toBe(t.mediaBin.errors[kind]);
     expect(mediaErrorText(kind)).not.toBe(kind);
   });
 
   it("falls back to generic text for an unknown kind", () => {
-    expect(mediaErrorText("kindMismatch")).toBe(t.mediaBin.unknownError);
+    expect(mediaErrorText("diskEjected")).toBe(t.mediaBin.unknownError);
     expect(mediaErrorText("hasOwnProperty")).toBe(t.mediaBin.unknownError);
   });
 });
 
 describe("jobStageText", () => {
-  it.each<JobStage>(["probing", "generatingPreviews"])("translates %s", (stage) => {
-    expect(jobStageText(stage)).toBe(t.mediaBin.job.stages[stage]);
-  });
+  it.each<JobStage>(["probing", "generatingPreviews", "checkingMedia", "searchingFolder"])(
+    "translates %s",
+    (stage) => {
+      expect(jobStageText(stage)).toBe(t.mediaBin.job.stages[stage]);
+    },
+  );
 
   it("falls back to generic text for an unknown stage", () => {
-    expect(jobStageText("checkingMedia")).toBe(t.mediaBin.job.unknownStage);
+    expect(jobStageText("renderingExport")).toBe(t.mediaBin.job.unknownStage);
   });
 });

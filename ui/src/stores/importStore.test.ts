@@ -9,6 +9,7 @@ import {
   initialImportState,
   isBackgroundJob,
   isCleanSummary,
+  isImportJob,
   summarizeReport,
 } from "./importStore";
 
@@ -56,7 +57,7 @@ describe("importReducer", () => {
       { type: "progress", event: { jobId: "j", stage: "probing", progress: 0.5 } },
     ]);
     expect(state.jobs).toEqual([
-      { id: "j", stage: "probing", progress: 0.5, cancelling: false, files: null },
+      { id: "j", started: true, stage: "probing", progress: 0.5, cancelling: false, files: null },
     ]);
   });
 
@@ -149,8 +150,22 @@ describe("importReducer", () => {
     expect(reduce(actions).finished.length).toBeLessThanOrEqual(32);
   });
 
+  it("never summarises a job nobody started as an import (relink)", () => {
+    const state = reduce([
+      { type: "progress", event: { jobId: "r", stage: "probing", progress: null } },
+      { type: "report", event: { jobId: "r", files } },
+      { type: "finished", event: { jobId: "r", result: ok } },
+    ]);
+    expect(state.jobs).toEqual([]);
+    expect(state.summary).toBeNull();
+    expect(isImportJob({ started: false, stage: "probing" })).toBe(false);
+    expect(isImportJob({ started: true, stage: "probing" })).toBe(true);
+    expect(isImportJob({ started: true, stage: "checkingMedia" })).toBe(false);
+  });
+
   it("dismisses the summary", () => {
     const state = reduce([
+      { type: "started", id: "j" },
       { type: "finished", event: { jobId: "j", result: { Err: { kind: "internal", message: "" } } } },
       { type: "dismissSummary" },
     ]);

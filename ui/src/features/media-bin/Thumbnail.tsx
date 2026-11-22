@@ -15,6 +15,7 @@ import {
 } from "@/ipc/media";
 import { cn } from "@/lib/utils";
 
+import { previewKey } from "./relink";
 import { type SkimFrame, skimFrame, tileBackground } from "./skim";
 import { drawWaveform } from "./waveformDraw";
 
@@ -26,11 +27,17 @@ export const KIND_ICONS = { video: Film, audio: Music, image: Image } satisfies 
  */
 export function Thumbnail({ item, className }: { item: MediaView_Serialize; className?: string }) {
   return (
-    <div className={cn("relative overflow-hidden rounded-sm bg-muted", className)}>
+    <div
+      className={cn(
+        "relative overflow-hidden rounded-sm bg-muted",
+        item.status === "offline" && "opacity-50",
+        className,
+      )}
+    >
       {item.kind === "audio" ? (
-        <WaveformThumb key={waveformUrl(item)} item={item} />
+        <WaveformThumb key={previewKey(waveformUrl(item), item.status)} item={item} />
       ) : (
-        <Poster key={posterUrl(item)} item={item} />
+        <Poster key={previewKey(posterUrl(item), item.status)} item={item} />
       )}
       {item.kind === "video" && item.filmstrip && <Skim item={item} layout={item.filmstrip} />}
     </div>

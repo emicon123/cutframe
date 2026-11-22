@@ -15,7 +15,9 @@ use crate::autosave::{AutosaveHandle, Msg};
 use crate::ipc::IpcError;
 use crate::ipc::events::ProjectChanged;
 use crate::ipc::types::ProjectState;
+use crate::ipc::types::{JobId, MediaStatus};
 use crate::jobs::JobManager;
+use crate::media_status::{self, MediaStatuses, StatusKey, StatusUpdate};
 use crate::preferences::{Preferences, Startup};
 use crate::preview::Preview;
 use crate::previews::{self, Previews};
@@ -45,6 +47,8 @@ pub struct AppState {
     recent: RecentStore,
     /// Serializes every read-modify-write of the recent list.
     recent_lock: tauri::async_runtime::Mutex<()>,
+    /// The running media check, cancelled when another project replaces the open one.
+    media_check: Mutex<Option<JobId>>,
 }
 
 /// The preferences in effect and where they live (design `preferences.md` §4).
@@ -192,6 +196,7 @@ impl AppState {
             launch_path: Mutex::new(None),
             recent: RecentStore::new(Path::new("")),
             recent_lock: tauri::async_runtime::Mutex::new(()),
+            media_check: Mutex::new(None),
         }
     }
 
@@ -265,6 +270,46 @@ impl AppState {
     /// open project (`None`, after open).
     pub fn prefetch_previews(&self, ids: Option<Vec<app_core::MediaId>>) {
         previews::start_prefetch(&self.jobs, Arc::clone(&self.previews), ids);
+    }
+
+    /// Starts the background media check (`checkingMedia`) for the open project, cancelling one
+    /// still running for a project opened before.
+    pub fn check_media(&self) {
+        let id = media_status::start_check(&self.jobs);
+        let previous = self
+            .media_check
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .replace(id);
+        if let Some(previous) = previous {
+            self.jobs.cancel(previous);
+        }
+    }
+
+    /// Records media statuses (design §6.6). Bumps the revision and emits `projectChanged` only
+    /// when one changed.
+    pub fn set_media_status(
+        &self,
+        app: &AppHandle,
+        updates: Vec<StatusUpdate>,
+    ) -> Result<(), IpcError> {
+        let state = {
+            let mut session = self.lock();
+            if !session.set_media_status(updates) {
+                return Ok(());
+            }
+            session.state()
+        };
+        ProjectChanged(state).emit(app)?;
+        Ok(())
+    }
+
+    /// A decoder or preview generator found `asset`'s file gone: it is `offline` from now on.
+    pub fn report_missing(&self, app: &AppHandle, asset: &app_core::MediaAsset) {
+        let update = (StatusKey::of(asset), MediaStatus::Offline);
+        if let Err(err) = self.set_media_status(app, vec![update]) {
+            tracing::warn!(%err, "failed to emit project-changed for offline media");
+        }
     }
 
     pub fn recovery(&self) -> &RecoveryStore {
@@ -463,6 +508,8 @@ struct Session {
     /// Increases when the document is replaced. History positions of different documents are
     /// not comparable.
     generation: u64,
+    /// Whether each media file is reachable (design §6.6). Not part of the document.
+    media_status: MediaStatuses,
 }
 
 impl Session {
@@ -475,6 +522,7 @@ impl Session {
             file_path: None,
             source_version: CURRENT_SCHEMA_VERSION,
             generation: 0,
+            media_status: MediaStatuses::default(),
         }
     }
 
@@ -484,7 +532,17 @@ impl Session {
             self.revision,
             self.file_path.as_deref(),
             self.dirty(),
+            &self.media_status,
         )
+    }
+
+    /// Bumps the revision if a status changed.
+    fn set_media_status(&mut self, updates: Vec<StatusUpdate>) -> bool {
+        let changed = self.media_status.apply(updates);
+        if changed {
+            self.revision += 1;
+        }
+        changed
     }
 
     fn dirty(&self) -> bool {
@@ -535,6 +593,8 @@ impl Session {
         self.source_version = source_version;
         self.generation += 1;
         self.revision += 1;
+        // Until the check of the new project says otherwise, its media counts as online.
+        self.media_status.clear();
     }
 
     /// [`Session::replace`] for a restored autosave: dirty until the first explicit save.
@@ -607,6 +667,30 @@ mod tests {
         assert_eq!(prefs.get(), next);
         assert_eq!(prefs.cache_root(), PathBuf::from("/c/cutframe-cache"));
         assert_eq!(prefs.backup_of_version(), None);
+    }
+
+    #[test]
+    fn media_status_bumps_the_revision_and_is_cleared_by_replace() {
+        use app_core::media::samples;
+        let mut project = Project::new("Test");
+        project.media.push(samples::video(1));
+        let asset = project.media[0].clone();
+        let mut session = Session::new(project.clone());
+        let offline = || vec![(StatusKey::of(&asset), MediaStatus::Offline)];
+
+        assert_eq!(session.state().project.media[0].status, MediaStatus::Online);
+        assert!(session.set_media_status(offline()));
+        assert_eq!(session.state().revision, 1);
+        assert_eq!(
+            session.state().project.media[0].status,
+            MediaStatus::Offline
+        );
+        assert!(!session.dirty(), "status is not an edit");
+        assert!(!session.set_media_status(offline()), "no change");
+        assert_eq!(session.state().revision, 1);
+
+        session.replace(project, None, CURRENT_SCHEMA_VERSION);
+        assert_eq!(session.state().project.media[0].status, MediaStatus::Online);
     }
 
     #[test]

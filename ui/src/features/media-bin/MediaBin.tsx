@@ -6,7 +6,13 @@ import type { MediaView_Serialize } from "@/bindings";
 import { Button } from "@/components/ui/button";
 import { jobStageText, mediaErrorText, t } from "@/i18n";
 import { cn } from "@/lib/utils";
-import { type ImportJob, isBackgroundJob, isCleanSummary, useImportStore } from "@/stores/importStore";
+import {
+  type ImportJob,
+  isBackgroundJob,
+  isCleanSummary,
+  isImportJob,
+  useImportStore,
+} from "@/stores/importStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
 
@@ -16,6 +22,9 @@ import { cancelAllImports, cancelImport, importFromDialog, importPaths } from ".
 import { summaryLines } from "./importSummary";
 import { MediaBrowser } from "./MediaBrowser";
 import { MediaToolbar } from "./MediaToolbar";
+import { countMissing } from "./relink";
+import { RelinkDialog } from "./RelinkDialog";
+import { openRelink } from "./relinkStore";
 import { useFileDrop } from "./useFileDrop";
 
 /** How long a result with nothing to read (every file added) stays visible. */
@@ -53,15 +62,45 @@ export function MediaBin() {
         </Button>
       </header>
       <ImportJobs />
+      {media && <MissingNotice media={media} />}
       {media && media.length > 0 ? <MediaContent media={media} /> : <EmptyState />}
       <ImportResult />
       <BackgroundJobs />
+      <RelinkDialog />
       {hovering && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-background/70 font-medium text-primary">
           {t.mediaBin.dropHint}
         </div>
       )}
     </section>
+  );
+}
+
+/** "N files missing" after open (or when a file disappears), with a way into the relink dialog. */
+function MissingNotice({ media }: { media: MediaView_Serialize[] }) {
+  const { offline, changed } = countMissing(media);
+  const key = `${offline}/${changed}`;
+  const [dismissed, setDismissed] = useState<string | null>(null);
+  if (offline + changed === 0 || dismissed === key) return null;
+  return (
+    <div
+      role="status"
+      className="flex shrink-0 items-center gap-2 border-b bg-destructive/10 px-3 py-1.5 text-xs"
+    >
+      <CircleAlert className="size-4 shrink-0 text-destructive" aria-hidden />
+      <span className="min-w-0 flex-1 truncate font-medium">{t.mediaBin.notice.text(offline, changed)}</span>
+      <Button variant="outline" size="xs" onClick={() => openRelink(null)}>
+        {t.mediaBin.notice.relink}
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        aria-label={t.mediaBin.notice.dismiss}
+        onClick={() => setDismissed(key)}
+      >
+        <X aria-hidden />
+      </Button>
+    </div>
   );
 }
 
@@ -147,7 +186,7 @@ function BackgroundJobs() {
 }
 
 function ImportJobs() {
-  const jobs = useImportStore(useShallow((s) => s.jobs.filter((job) => !isBackgroundJob(job))));
+  const jobs = useImportStore(useShallow((s) => s.jobs.filter(isImportJob)));
   if (jobs.length === 0) return null;
   return (
     <div className="flex shrink-0 flex-col gap-2 border-b px-3 py-2">

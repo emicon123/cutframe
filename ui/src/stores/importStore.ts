@@ -17,12 +17,15 @@ import type {
  */
 
 /**
- * A running job as the media panel shows it: an import the UI started, or a background job Rust
- * started by itself (preview generation, see `isBackgroundJob`), which arrives through the same
- * events.
+ * A running job as the media panel shows it. Every job's events arrive here: imports the UI
+ * started (`started`), background jobs Rust starts by itself (preview generation and the media
+ * check, see `isBackgroundJob`), and jobs other features own (relink), which this store tracks
+ * for their progress but never shows as an import or summarises.
  */
 export type ImportJob = {
   id: JobId;
+  /** An import the UI started (`importMedia` / `importMediaDialog` resolved with this id). */
+  started: boolean;
   /** `null` until the first `job-progress` event. */
   stage: JobStage | null;
   /** 0..=1, or `null` while the amount of work is not known yet. */
@@ -34,10 +37,15 @@ export type ImportJob = {
 };
 
 /** Stages of jobs Rust starts by itself; they get no Cancel button and no result toast. */
-const BACKGROUND_STAGES: readonly JobStage[] = ["generatingPreviews"];
+const BACKGROUND_STAGES: readonly JobStage[] = ["generatingPreviews", "checkingMedia"];
 
 export function isBackgroundJob(job: Pick<ImportJob, "stage">): boolean {
   return job.stage !== null && BACKGROUND_STAGES.includes(job.stage);
+}
+
+/** An import the user started and can cancel (a row with progress and Cancel in the panel). */
+export function isImportJob(job: Pick<ImportJob, "stage" | "started">): boolean {
+  return job.started && !isBackgroundJob(job);
 }
 
 export type FailedFile = { path: string; error: MediaErrorKind };
@@ -58,6 +66,12 @@ export type ImportState = {
   /** Recently finished ids, so a late `started` or `progress` does not bring a job back. */
   finished: JobId[];
   summary: ImportSummary | null;
+  /**
+   * Results of jobs that finished before anyone claimed them with `started` (a small import can
+   * finish before its command resolves). A later `started` shows its summary; other jobs' results
+   * (relink) just age out.
+   */
+  unclaimed: ImportSummary[];
 };
 
 export type ImportAction =
@@ -70,8 +84,9 @@ export type ImportAction =
 
 /** How many finished ids are remembered; events of one job arrive within moments of each other. */
 const FINISHED_MEMORY = 32;
+const UNCLAIMED_MEMORY = 8;
 
-export const initialImportState: ImportState = { jobs: [], finished: [], summary: null };
+export const initialImportState: ImportState = { jobs: [], finished: [], summary: null, unclaimed: [] };
 
 /** Counts the per-file outcomes of a media job report, keeping failures in input order. */
 export function summarizeReport(jobId: JobId, files: readonly MediaFileResult[]): ImportSummary {
@@ -98,7 +113,7 @@ export function isCleanSummary(summary: ImportSummary): boolean {
 }
 
 function newJob(id: JobId): ImportJob {
-  return { id, stage: null, progress: null, cancelling: false, files: null };
+  return { id, started: false, stage: null, progress: null, cancelling: false, files: null };
 }
 
 /**
@@ -117,8 +132,15 @@ export function importReducer(state: ImportState, action: ImportAction): ImportS
   };
 
   switch (action.type) {
-    case "started":
-      return update(action.id, (job) => job);
+    case "started": {
+      if (state.finished.includes(action.id)) {
+        const result = state.unclaimed.find((summary) => summary.jobId === action.id);
+        if (!result) return state;
+        const unclaimed = state.unclaimed.filter((summary) => summary !== result);
+        return { ...state, summary: result, unclaimed };
+      }
+      return update(action.id, (job) => ({ ...job, started: true }));
+    }
     case "progress": {
       const { jobId, stage, progress } = action.event;
       return update(jobId, (job) => ({ ...job, stage, progress: progress ?? null }));
@@ -135,17 +157,19 @@ export function importReducer(state: ImportState, action: ImportAction): ImportS
       const job = state.jobs.find((j) => j.id === jobId);
       const finished = [...state.finished, jobId].slice(-FINISHED_MEMORY);
       const jobs = state.jobs.filter((j) => j.id !== jobId);
-      let summary = state.summary;
+      let outcome: ImportSummary | null = null;
       if (job && isBackgroundJob(job)) {
         // Background work reports nothing: failed previews show placeholders instead.
       } else if (result.Err) {
         if (result.Err.kind !== "cancelled") {
-          summary = { jobId, added: 0, alreadyImported: 0, failed: [], jobError: result.Err.kind };
+          outcome = { jobId, added: 0, alreadyImported: 0, failed: [], jobError: result.Err.kind };
         }
       } else if (job?.files) {
-        summary = summarizeReport(jobId, job.files);
+        outcome = summarizeReport(jobId, job.files);
       }
-      return { jobs, finished, summary };
+      if (job?.started) return { ...state, jobs, finished, summary: outcome ?? state.summary };
+      const unclaimed = outcome ? [...state.unclaimed, outcome].slice(-UNCLAIMED_MEMORY) : state.unclaimed;
+      return { ...state, jobs, finished, unclaimed };
     }
     case "dismissSummary":
       return { ...state, summary: null };
