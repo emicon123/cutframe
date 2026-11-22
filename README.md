@@ -17,7 +17,7 @@ Windows 10/11 x64 is the only supported development platform. Prerequisites:
 - **MSVC Build Tools** (Visual Studio Build Tools, workload "Desktop development with C++")
 - **Rust** via [rustup](https://rustup.rs); the pinned toolchain in `rust-toolchain.toml` (with
   rustfmt and clippy) is installed automatically on the first `cargo` call
-- **Node.js 24** and **pnpm** (`corepack enable` picks the version from `package.json`)
+- **Node.js 26** and **pnpm 12** (Node 26 no longer ships corepack: `npm install -g pnpm@12.21.0`, the version in `package.json`; make sure `%APPDATA%\npm` comes before `C:\Program Files\nodejs` in PATH so an old corepack shim does not shadow it)
 - **WebView2 Runtime** (preinstalled on Windows 11 and current Windows 10)
 - **LLVM 20** (`winget install -e --id LLVM.LLVM --version 20.1.8`): `libclang` for the FFmpeg
   bindings. Not 21 or newer: the bindgen 0.71 that `rusty_ffmpeg` 0.16 (FFmpeg 7.1) uses turns

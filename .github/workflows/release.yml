@@ -27,6 +27,31 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
+      # bindgen 0.71 (rusty_ffmpeg 0.16, FFmpeg 7.1) turns AVFormatContext & co. into opaque types
+      # with libclang 21+, so rsmpeg needs LLVM 20 (README). The runner image may ship a newer LLVM,
+      # so install the pinned 20.1.8 into the cache dir and point LIBCLANG_PATH at it before the
+      # FFmpeg step (fetch-ffmpeg.ps1 keeps an existing LIBCLANG_PATH).
+      - uses: actions/cache@v5
+        id: llvm-cache
+        with:
+          path: ${{ runner.temp }}\llvm-20.1.8
+          key: llvm-20.1.8-win64
+      - name: Install LLVM 20.1.8 (libclang for bindgen)
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        run: |
+          $exe = Join-Path $env:RUNNER_TEMP 'LLVM-20.1.8-win64.exe'
+          Invoke-WebRequest -Uri 'https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.8/LLVM-20.1.8-win64.exe' -OutFile $exe
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
+          if ($hash -ne '3197846a2b19063687dd56e93e34cd941e3548d907f23a6131571321bdf9fe7b') { throw "LLVM installer SHA-256 mismatch: $hash" }
+          $dest = Join-Path $env:RUNNER_TEMP 'llvm-20.1.8'
+          $p = Start-Process -FilePath $exe -ArgumentList '/S', "/D=$dest" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "LLVM installer exited with $($p.ExitCode)" }
+      - name: Use LLVM 20.1.8 for bindgen
+        run: |
+          $bin = Join-Path $env:RUNNER_TEMP 'llvm-20.1.8\bin'
+          if (-not (Test-Path -LiteralPath (Join-Path $bin 'libclang.dll'))) { throw "libclang.dll not found in $bin" }
+          "LIBCLANG_PATH=$bin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       # Pinned LGPL shared FFmpeg (scripts/ffmpeg.json): SHA-256 check and licence gate; a non-LGPL
       # build fails the release here. Sets the FFMPEG_* / LIBCLANG_PATH env for the Rust build, and
       # bundle.resources in tauri.conf.json ships .ffmpeg\bin\*.dll next to the .exe.
