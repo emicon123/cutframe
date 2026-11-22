@@ -1,7 +1,7 @@
 import { commands, type JobId, type MediaId } from "@/bindings";
 import { t } from "@/i18n";
 import { run } from "@/stores/appStore";
-import { isBackgroundJob, useImportStore } from "@/stores/importStore";
+import { isImportJob, useImportStore } from "@/stores/importStore";
 
 function track(id: JobId | null | undefined): void {
   if (id) useImportStore.getState().dispatch({ type: "started", id });
@@ -25,7 +25,7 @@ export function cancelImport(id: JobId): void {
 
 /** Cancels every running import (Esc in the media panel). Returns whether there was one. */
 export function cancelAllImports(): boolean {
-  const imports = useImportStore.getState().jobs.filter((job) => !isBackgroundJob(job));
+  const imports = useImportStore.getState().jobs.filter(isImportJob);
   for (const job of imports) if (!job.cancelling) cancelImport(job.id);
   return imports.length > 0;
 }

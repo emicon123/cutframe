@@ -1,4 +1,4 @@
-import { FolderSearch, Trash2, Upload } from "lucide-react";
+import { FolderSearch, Link, Trash2, Upload } from "lucide-react";
 import { type KeyboardEvent, type MouseEvent, useRef, useState } from "react";
 
 import type { MediaId, MediaView_Serialize } from "@/bindings";
@@ -17,6 +17,8 @@ import type { MediaLayout } from "@/stores/uiStore";
 
 import { importFromDialog, revealMedia } from "./importActions";
 import { MediaItem } from "./MediaItem";
+import { needsRelink } from "./relink";
+import { openRelink } from "./relinkStore";
 import { RemoveMediaDialog } from "./RemoveMediaDialog";
 import {
   emptySelection,
@@ -108,6 +110,9 @@ export function MediaBrowser({ media, layout }: { media: MediaView_Serialize[]; 
   };
 
   const single = selectedIds.length === 1 ? selectedIds[0] : undefined;
+  const toRelink = media.filter((item) => selected.has(item.id) && needsRelink(item));
+  // One item: its own dialog; several: the dialog for every item that needs a relink.
+  const relink = () => openRelink(toRelink.length === 1 && toRelink[0] ? toRelink[0].id : null);
 
   return (
     <>
@@ -145,6 +150,10 @@ export function MediaBrowser({ media, layout }: { media: MediaView_Serialize[]; 
             {t.file.importMedia}
           </ContextMenuItem>
           <ContextMenuSeparator />
+          <ContextMenuItem disabled={toRelink.length === 0} onSelect={relink}>
+            <Link aria-hidden />
+            {t.mediaBin.relink.action}
+          </ContextMenuItem>
           <ContextMenuItem disabled={single === undefined} onSelect={() => single && revealMedia(single)}>
             <FolderSearch aria-hidden />
             {t.mediaBin.actions.reveal}

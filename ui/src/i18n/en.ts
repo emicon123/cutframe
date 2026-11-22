@@ -8,6 +8,7 @@ import {
   MAX_IMPORT_FILES,
   type MediaErrorKind,
   type MediaKind,
+  type MediaStatus,
   type UiLanguage,
 } from "@/bindings";
 
@@ -226,6 +227,7 @@ export const en = {
       setProjectSettings: "Change Project Settings",
       importMedia: "Import Media",
       removeMedia: "Remove Media",
+      relinkMedia: "Relink Media",
     } satisfies Record<HistoryLabel, string>,
     /** Shown for a key this UI build does not know. */
     unknown: "Last Action",
@@ -264,6 +266,8 @@ export const en = {
       stages: {
         probing: "Importing media",
         generatingPreviews: "Generating previews",
+        checkingMedia: "Checking media files",
+        searchingFolder: "Searching folder",
       } satisfies Record<JobStage, string>,
       /** Shown for a stage this UI build does not know. */
       unknownStage: "Working",
@@ -290,6 +294,7 @@ export const en = {
       unsupportedCodec: "unsupported codec",
       damaged: "the file is damaged",
       tooManyFiles: `more than ${MAX_IMPORT_FILES} media files in this folder`,
+      kindMismatch: "the file is a different kind of media (for example audio instead of video)",
     } satisfies Record<MediaErrorKind, string>,
     unknownError: "could not be read",
     layout: {
@@ -333,6 +338,54 @@ export const en = {
       cancel: "Cancel",
     },
     background: "Generating previews in the background",
+    status: {
+      badge: { offline: "Missing", changed: "Changed" } satisfies Record<
+        Exclude<MediaStatus, "online">,
+        string
+      >,
+      tip: {
+        offline: "The file is missing: it was moved, renamed or deleted, or its drive is not connected",
+        changed: "The file has different content than when it was imported",
+      } satisfies Record<Exclude<MediaStatus, "online">, string>,
+    },
+    notice: {
+      text: (offline: number, changed: number) =>
+        [
+          offline > 0 && (offline === 1 ? "1 file missing" : `${offline} files missing`),
+          changed > 0 && (changed === 1 ? "1 file changed" : `${changed} files changed`),
+        ]
+          .filter((part) => typeof part === "string")
+          .join(", "),
+      relink: "Relink…",
+      dismiss: "Hide notice",
+    },
+    relink: {
+      action: "Relink…",
+      titleOne: (name: string) => `Relink “${name}”`,
+      titleAll: "Relink media",
+      description:
+        "Locate each file, or search a folder: every missing file found there is relinked by its content.",
+      allFound: "All media files are found.",
+      locate: "Locate…",
+      locateItem: (name: string) => `Locate “${name}”`,
+      locateTitle: (name: string) => `Locate ${name}`,
+      keepAsIs: "Use as it is now",
+      keepAsIsItem: (name: string) => `Use “${name}” as it is now`,
+      searchFolder: "Search folder…",
+      folderTitle: "Search a folder for missing media",
+      close: "Close",
+      cancel: "Cancel",
+      mismatch: "This file has different content than the original. Use it anyway?",
+      useAnyway: "Use anyway",
+      outcomes: {
+        relinked: (n: number) => (n === 1 ? "1 file relinked" : `${n} files relinked`),
+        notFound: (n: number) => (n === 1 ? "1 file not found" : `${n} files not found`),
+        fingerprintMismatch: "The chosen file has different content",
+        nothingMissing: "No files are missing",
+        cancelled: "Relink cancelled",
+      },
+      jobFailed: (reason: string) => `Relink failed: ${reason}`,
+    },
   },
   preview: {
     unavailable: "Preview unavailable: no usable GPU",
