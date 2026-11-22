@@ -62,7 +62,9 @@ None.
 
 Tauri's NSIS `APP_ASSOCIATE` writes `Software\Classes\.<ext>` and `Software\Classes\<name>\shell\open\
 command = "<exe>" "%1"` under `SHELL_CONTEXT`, which is HKCU for `installMode: currentUser`: no admin.
-The uninstaller removes the keys. The icon is the app exe's. `name` is the ProgID (no spaces).
+The uninstaller (`APP_UNASSOCIATE`) deletes the ProgID key and restores `.<ext>`'s previous default
+value (empty on a clean machine), but leaves the `.<ext>` key itself with a `<name>_backup` value
+(verified against the template embedded in `@tauri-apps/cli` 2.12.6). The icon is the app exe's. `name` is the ProgID (no spaces).
 **One constant check:** the JSON cannot reference `app_core::PROJECT_FILE_EXTENSION`, so a src-tauri
 test parses `tauri.conf.json` (`CARGO_MANIFEST_DIR`) and asserts
 `bundle.fileAssociations[0].ext == [PROJECT_FILE_EXTENSION]`. Renaming the extension fails this test
@@ -165,7 +167,8 @@ recovery: preview back within 2 s; the main thread never waits on it (all on `pr
   shows the notice once.
 - **devops (CI install test):** after the silent install, `HKCU\Software\Classes\.cutframe` default =
   `Cutframe.Project`, the open command points at the installed exe, no `HKLM\Software\Classes\.cutframe`;
-  install still runs without elevation; uninstall removes the keys.
+  the installer manifest requests `asInvoker` (the admin runner cannot prove "no UAC" otherwise);
+  uninstall deletes the ProgID key and `.cutframe` no longer points at it (the key may remain, §5).
 - **Manual (Windows, installed build):** double-click with the app closed / open and clean / open
   and dirty / minimised; file in a folder with spaces; two files selected + Enter (one opens, the
   other is ignored or prompts); `WGPU_FORCE_FALLBACK_ADAPTER=1` shows *software* + forced reason;
