@@ -76,7 +76,7 @@ first. `RUST_LOG=info,engine::preview=debug` logs `preview present rate` every 5
 | Minimize, restore, maximize, full-screen | Pass, full-screen not checked | Restore from minimized returns to maximized with the preview aligned. The app has no full-screen mode yet. |
 | Hiding for an overlapping dialog | Not checked | The UI has no dialog or menu that overlaps the preview yet. |
 | Present rate on an integrated GPU, UI responsive | Pass, with caveat | See the table below. Every interval on the iGPU stayed below the 60 Hz frame budget (16.7 ms). Process CPU time about 2–3 s over about 20 s including start-up. The UI stayed interactive during the splitter drag; responsiveness was not measured numerically. Only the stage-0 test pattern is rendered, so decode and compositing load is not measured. |
-| CI `--smoke-test` presents into the child window on WARP | Implemented | Commits `e1c7aa3`, `936f8bd`: CI fails unless the log shows `mode=Native`, `backend=Dx12` and at least 30 presented frames. The CI result on `main` was not checked in this session. |
+| CI `--smoke-test` presents into the child window on WARP | Pass | Commits `e1c7aa3`, `936f8bd`: CI fails unless the log shows `mode=Native`, `backend=Dx12` and at least 30 presented frames. CI was green on `main` at `cad6858`. |
 
 Present rate, `AutoVsync`, 165 Hz display, three 5 s windows per run:
 
@@ -94,7 +94,6 @@ The 21.8 ms gap on the RTX 3070 Ti occurred only in the first window after start
 depends on lands, whichever comes first. A failure of any of them reopens this ADR (Plan B per
 ADR-0001).
 
-- The CI `--smoke-test` on WARP is green on `main` (required by task 0005's Done-when).
 - Correct position after moving the window between monitors with different scale factors.
 - Full-screen keeps the preview aligned (when full-screen mode lands).
 - Hiding for an overlapping dialog works and the preview does not reappear on layout changes (when the
