@@ -27,3 +27,7 @@ Opening a project file from Explorer should open or focus the app; GPU problems 
 - each row above is updated in `docs/feature-catalog.md` (status + short evidence note); partial rows say what is missing
 - `pnpm check` passes; after any IPC change `pnpm bindings` is re-run and `ui/src/bindings.ts` committed
 - architecture rules in `CLAUDE.md` hold (model changes are undoable commands, no frames over JSON IPC, integer flicks, LGPL-only FFmpeg, no reference-product names or assets)
+
+## Closing note (2026-11-22)
+
+Moved to done after `pnpm check` and `cargo deny` passed on Windows. **The manual check in `pnpm dev` was not done**, and neither was the installer CI run (file association, single instance). The "manual check pending" notes in `docs/feature-catalog.md` still apply.
