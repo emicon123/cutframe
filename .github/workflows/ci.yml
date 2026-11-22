@@ -52,7 +52,16 @@ jobs:
       - name: Generated bindings are up to date
         run: git diff --exit-code -- ui/src/bindings.ts
 
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      # Native aarch64 binary: EmbarkStudios/cargo-deny-action is a Docker action with an x86_64
+      # binary and fails on this runner with "Exec format error". The tool version is pinned so a
+      # new cargo-deny release cannot change the policy check without a commit.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.22.0
+      # --all-features (as the old action ran it) also covers optional dependencies, even though
+      # deny.toml's [graph] defaults to the default feature set for a plain local `cargo deny check`.
+      - name: Licences, advisories, bans and sources (cargo-deny)
+        run: cargo deny --all-features check
 
   windows:
     name: Windows (tests, installer, smoke test)

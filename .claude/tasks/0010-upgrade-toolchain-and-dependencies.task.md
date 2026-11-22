@@ -29,7 +29,7 @@ warned that `pnpm/action-setup@v4` still targets the deprecated Node.js 20 runti
 | `actions-rust-lang/setup-rust-toolchain` | v1 | v2.0.1 | |
 | `actions/upload-artifact` | v4 | v7.0.2 | |
 | `tauri-apps/tauri-action` | v0 | action-v1.0.0 | check input/env changes (`GITHUB_TOKEN`, `tagName`, `releaseDraft`) |
-| `EmbarkStudios/cargo-deny-action` | v2 | v2.1.3 | |
+| `taiki-e/install-action` + `cargo-deny` | v2 + 0.22.0 | — | replaced `EmbarkStudios/cargo-deny-action` (x86_64 Docker image, failed on ARM64); re-check both |
 
 Not yet dependencies (pick current versions when they land, not here): FFmpeg 7.x / `rsmpeg`, `cpal`.
 
