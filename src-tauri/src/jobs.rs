@@ -23,6 +23,7 @@ use tauri_specta::Event;
 use crate::ipc::IpcError;
 use crate::ipc::events::{JobFinished, JobProgress, MediaJobReport};
 use crate::ipc::types::{JobId, JobStage};
+use crate::media_status::StatusUpdate;
 use crate::state::AppState;
 
 /// Minimum time between two `job-progress` events of one job.
@@ -43,6 +44,39 @@ pub trait JobHost: Send + Sync + 'static {
     fn snapshot(&self) -> Arc<Project>;
     /// Media was added to the project (an import finished): start generating its previews.
     fn media_added(&self, ids: Vec<MediaId>);
+    /// Records what a media job found out about files (session state, design §6.6); emits
+    /// `project-changed` when a status changed.
+    fn media_status(&self, updates: Vec<StatusUpdate>);
+}
+
+/// How often [`edit_when_idle`] retries while a gesture is open.
+const GESTURE_RETRY: Duration = Duration::from_millis(50);
+
+/// Runs `edit` through the host once no gesture is open (ADR-0006 §3: a job's edit never lands
+/// inside a drag), retrying every 50 ms. `edit` returns its result and whether it changed the
+/// document. `Ok(None)` when the job was cancelled while waiting.
+pub fn edit_when_idle<T>(
+    ctx: &JobContext,
+    mut edit: impl FnMut(&mut Document) -> Result<(T, bool), CommandError>,
+) -> Result<Option<T>, IpcError> {
+    loop {
+        let mut result = None;
+        ctx.host().edit(&mut |doc| {
+            if doc.gesture_label().is_some() {
+                return Ok(false);
+            }
+            let (value, changed) = edit(doc)?;
+            result = Some(value);
+            Ok(changed)
+        })?;
+        if result.is_some() {
+            return Ok(result);
+        }
+        if ctx.is_cancelled() {
+            return Ok(None);
+        }
+        std::thread::sleep(GESTURE_RETRY);
+    }
 }
 
 /// Which queue a task goes to.
@@ -410,6 +444,16 @@ impl JobHost for TauriJobHost {
     fn media_added(&self, ids: Vec<MediaId>) {
         self.app.state::<AppState>().prefetch_previews(Some(ids));
     }
+
+    fn media_status(&self, updates: Vec<StatusUpdate>) {
+        if let Err(err) = self
+            .app
+            .state::<AppState>()
+            .set_media_status(&self.app, updates)
+        {
+            tracing::warn!(%err, "failed to emit project-changed for media status");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -418,6 +462,7 @@ pub(crate) mod tests {
     use std::time::Instant;
 
     use super::*;
+    use crate::media_status::MediaStatuses;
 
     /// Records events and edits a plain document, like `AppState` without a window.
     #[derive(Debug)]
@@ -427,6 +472,8 @@ pub(crate) mod tests {
         pub changes: AtomicUsize,
         /// Ids passed to `media_added`, one entry per call.
         pub added: Mutex<Vec<Vec<MediaId>>>,
+        /// Media status as `AppState` would hold it.
+        pub statuses: Mutex<MediaStatuses>,
         finished: Mutex<Option<mpsc::Sender<JobId>>>,
     }
 
@@ -445,6 +492,7 @@ pub(crate) mod tests {
                 events: Mutex::default(),
                 changes: AtomicUsize::new(0),
                 added: Mutex::default(),
+                statuses: Mutex::default(),
                 finished: Mutex::new(Some(tx)),
             });
             (host, rx)
@@ -488,6 +536,10 @@ pub(crate) mod tests {
 
         fn media_added(&self, ids: Vec<MediaId>) {
             lock(&self.added).push(ids);
+        }
+
+        fn media_status(&self, updates: Vec<StatusUpdate>) {
+            lock(&self.statuses).apply(updates);
         }
     }
 
