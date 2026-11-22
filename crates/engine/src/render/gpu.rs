@@ -1,6 +1,63 @@
+//! GPU selection and the shared wgpu context.
+//!
+//! Debugging overrides (environment variables, read when the GPU is created):
+//! - `WGPU_FORCE_FALLBACK_ADAPTER=1` forces the software rasterizer (WARP on Windows).
+//! - `CUTFRAME_GPU=integrated|discrete` picks which hardware GPU kind is tried first.
+//!   `WGPU_FORCE_FALLBACK_ADAPTER` takes precedence over it.
+
 /// Debugging override: `WGPU_FORCE_FALLBACK_ADAPTER=1` (anything but `0`) skips hardware adapters
 /// and uses the software rasterizer (WARP on Windows), e.g. to reproduce GPU-less CI locally.
 const FORCE_FALLBACK_ENV: &str = "WGPU_FORCE_FALLBACK_ADAPTER";
+
+/// Debugging override: `CUTFRAME_GPU=integrated` tries integrated GPUs before discrete ones (e.g.
+/// to measure the preview present rate on a hybrid laptop's iGPU); `CUTFRAME_GPU=discrete` is the
+/// default order. Case-insensitive. Unset or empty keeps the default; any other value is ignored
+/// with a warning. The preview still falls back to the next adapter when the preferred one cannot
+/// present to the window. Offscreen rendering maps `integrated` to the low-power adapter.
+const GPU_PREFERENCE_ENV: &str = "CUTFRAME_GPU";
+
+/// Which hardware GPU kind is tried first (see [`GPU_PREFERENCE_ENV`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum GpuPreference {
+    #[default]
+    Discrete,
+    Integrated,
+}
+
+impl GpuPreference {
+    /// Parses a `CUTFRAME_GPU` value; `None` for an unknown one.
+    fn parse(value: &str) -> Option<Self> {
+        let value = value.trim();
+        if value.eq_ignore_ascii_case("discrete") {
+            Some(Self::Discrete)
+        } else if value.eq_ignore_ascii_case("integrated") {
+            Some(Self::Integrated)
+        } else {
+            None
+        }
+    }
+
+    fn from_env() -> Self {
+        match std::env::var(GPU_PREFERENCE_ENV) {
+            Ok(value) if value.trim().is_empty() => Self::default(),
+            Ok(value) => Self::parse(&value).unwrap_or_else(|| {
+                tracing::warn!(
+                    value = %value, expected = "integrated | discrete",
+                    "unknown {GPU_PREFERENCE_ENV} value, using the default adapter order"
+                );
+                Self::default()
+            }),
+            Err(std::env::VarError::NotPresent) => Self::default(),
+            Err(err @ std::env::VarError::NotUnicode(_)) => {
+                tracing::warn!(
+                    %err,
+                    "invalid {GPU_PREFERENCE_ENV} value, using the default adapter order"
+                );
+                Self::default()
+            }
+        }
+    }
+}
 
 /// Human-readable description of the active GPU, for logs and the status bar.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,7 +101,8 @@ impl GpuContext {
     ///
     /// The surface is created before the adapter is chosen, so the device is created once, on an
     /// adapter that is known to present to the window. Adapters are tried in [`adapter_order`]:
-    /// discrete, integrated, other, then the software fallback (WARP).
+    /// discrete, integrated, other, then the software fallback (WARP); `CUTFRAME_GPU=integrated`
+    /// swaps the first two.
     ///
     /// # Safety
     /// The handles in `target` must be valid and the window must outlive the returned surface.
@@ -64,7 +122,8 @@ impl GpuContext {
         let adapters = pollster::block_on(instance.enumerate_adapters(wgpu::Backends::all()));
         let infos: Vec<wgpu::AdapterInfo> = adapters.iter().map(wgpu::Adapter::get_info).collect();
         let types: Vec<wgpu::DeviceType> = infos.iter().map(|info| info.device_type).collect();
-        for index in adapter_order(&types, force_fallback()) {
+        let preference = GpuPreference::from_env();
+        for index in adapter_order(&types, force_fallback(), preference) {
             let (adapter, info) = (&adapters[index], &infos[index]);
             if !adapter.is_surface_supported(&surface) {
                 tracing::warn!(
@@ -77,7 +136,8 @@ impl GpuContext {
                 Ok((device, queue)) => {
                     tracing::info!(
                         adapter = %info.name, backend = ?info.backend, kind = ?info.device_type,
-                        candidates = adapters.len(), "GPU ready, presents to the preview window"
+                        candidates = adapters.len(), ?preference,
+                        "GPU ready, presents to the preview window"
                     );
                     let gpu = Self {
                         instance,
@@ -114,7 +174,11 @@ impl GpuContext {
         let adapter = if force_fallback() {
             request(true, wgpu::PowerPreference::LowPower)
         } else {
-            request(false, wgpu::PowerPreference::HighPerformance).or_else(|err| {
+            let power_preference = match GpuPreference::from_env() {
+                GpuPreference::Discrete => wgpu::PowerPreference::HighPerformance,
+                GpuPreference::Integrated => wgpu::PowerPreference::LowPower,
+            };
+            request(false, power_preference).or_else(|err| {
                 tracing::warn!(%err, "no hardware adapter, trying software fallback");
                 request(true, wgpu::PowerPreference::LowPower)
             })
@@ -171,18 +235,24 @@ fn force_fallback() -> bool {
 
 /// Indices of `types` in the order adapters are tried for the preview window: high-performance
 /// (discrete) first, then integrated, other and virtual GPUs, then the software fallback (WARP).
-/// Equal kinds keep the enumeration order (DXGI lists the adapter driving the primary display
-/// first). `software_only` keeps only software adapters.
-fn adapter_order(types: &[wgpu::DeviceType], software_only: bool) -> Vec<usize> {
-    fn rank(kind: wgpu::DeviceType) -> u8 {
-        match kind {
-            wgpu::DeviceType::DiscreteGpu => 0,
-            wgpu::DeviceType::IntegratedGpu => 1,
-            wgpu::DeviceType::Other => 2,
-            wgpu::DeviceType::VirtualGpu => 3,
-            wgpu::DeviceType::Cpu => 4,
+/// [`GpuPreference::Integrated`] tries integrated GPUs before discrete ones. Equal kinds keep the
+/// enumeration order (DXGI lists the adapter driving the primary display first). `software_only`
+/// keeps only software adapters (`preference` then has no effect).
+fn adapter_order(
+    types: &[wgpu::DeviceType],
+    software_only: bool,
+    preference: GpuPreference,
+) -> Vec<usize> {
+    let rank = |kind: wgpu::DeviceType| -> u8 {
+        match (kind, preference) {
+            (wgpu::DeviceType::DiscreteGpu, GpuPreference::Discrete)
+            | (wgpu::DeviceType::IntegratedGpu, GpuPreference::Integrated) => 0,
+            (wgpu::DeviceType::DiscreteGpu | wgpu::DeviceType::IntegratedGpu, _) => 1,
+            (wgpu::DeviceType::Other, _) => 2,
+            (wgpu::DeviceType::VirtualGpu, _) => 3,
+            (wgpu::DeviceType::Cpu, _) => 4,
         }
-    }
+    };
     let mut order: Vec<usize> = (0..types.len())
         .filter(|&index| !software_only || types[index] == wgpu::DeviceType::Cpu)
         .collect();
@@ -193,6 +263,7 @@ fn adapter_order(types: &[wgpu::DeviceType], software_only: bool) -> Vec<usize> 
 
 #[cfg(test)]
 mod tests {
+    use super::GpuPreference::{Discrete, Integrated};
     use super::*;
     use wgpu::DeviceType::{Cpu, DiscreteGpu, IntegratedGpu, Other, VirtualGpu};
 
@@ -200,7 +271,7 @@ mod tests {
     fn hybrid_laptop_tries_discrete_then_integrated_then_warp() {
         // DXGI order on a typical Optimus laptop: iGPU (drives the display), dGPU, WARP.
         assert_eq!(
-            adapter_order(&[IntegratedGpu, DiscreteGpu, Cpu], false),
+            adapter_order(&[IntegratedGpu, DiscreteGpu, Cpu], false, Discrete),
             [1, 0, 2]
         );
     }
@@ -208,7 +279,7 @@ mod tests {
     #[test]
     fn software_adapter_is_always_last() {
         assert_eq!(
-            adapter_order(&[Cpu, Other, VirtualGpu, IntegratedGpu], false),
+            adapter_order(&[Cpu, Other, VirtualGpu, IntegratedGpu], false, Discrete),
             [3, 1, 2, 0]
         );
     }
@@ -216,19 +287,82 @@ mod tests {
     #[test]
     fn equal_kinds_keep_enumeration_order() {
         assert_eq!(
-            adapter_order(&[DiscreteGpu, Cpu, DiscreteGpu, Cpu], false),
+            adapter_order(&[DiscreteGpu, Cpu, DiscreteGpu, Cpu], false, Discrete),
             [0, 2, 1, 3]
         );
     }
 
     #[test]
     fn software_only_keeps_just_the_fallback() {
-        assert_eq!(adapter_order(&[DiscreteGpu, Cpu, IntegratedGpu], true), [1]);
-        assert!(adapter_order(&[DiscreteGpu], true).is_empty());
+        assert_eq!(
+            adapter_order(&[DiscreteGpu, Cpu, IntegratedGpu], true, Discrete),
+            [1]
+        );
+        assert!(adapter_order(&[DiscreteGpu], true, Discrete).is_empty());
     }
 
     #[test]
     fn no_adapters_no_candidates() {
-        assert!(adapter_order(&[], false).is_empty());
+        assert!(adapter_order(&[], false, Discrete).is_empty());
+        assert!(adapter_order(&[], false, Integrated).is_empty());
+    }
+
+    #[test]
+    fn integrated_preference_tries_integrated_then_discrete_then_warp() {
+        assert_eq!(
+            adapter_order(&[IntegratedGpu, DiscreteGpu, Cpu], false, Integrated),
+            [0, 1, 2]
+        );
+        assert_eq!(
+            adapter_order(&[DiscreteGpu, IntegratedGpu, Cpu], false, Integrated),
+            [1, 0, 2]
+        );
+    }
+
+    #[test]
+    fn integrated_preference_keeps_the_rest_of_the_order() {
+        assert_eq!(
+            adapter_order(
+                &[
+                    Cpu,
+                    VirtualGpu,
+                    Other,
+                    DiscreteGpu,
+                    IntegratedGpu,
+                    IntegratedGpu
+                ],
+                false,
+                Integrated
+            ),
+            [4, 5, 3, 2, 1, 0]
+        );
+    }
+
+    #[test]
+    fn integrated_preference_without_an_igpu_keeps_the_default_order() {
+        assert_eq!(
+            adapter_order(&[Cpu, Other, DiscreteGpu], false, Integrated),
+            [2, 1, 0]
+        );
+    }
+
+    #[test]
+    fn software_only_ignores_the_preference() {
+        assert_eq!(
+            adapter_order(&[IntegratedGpu, Cpu, DiscreteGpu], true, Integrated),
+            [1]
+        );
+    }
+
+    #[test]
+    fn parses_the_preference_case_insensitively() {
+        assert_eq!(GpuPreference::parse("integrated"), Some(Integrated));
+        assert_eq!(GpuPreference::parse("Integrated"), Some(Integrated));
+        assert_eq!(GpuPreference::parse(" INTEGRATED "), Some(Integrated));
+        assert_eq!(GpuPreference::parse("discrete"), Some(Discrete));
+        assert_eq!(GpuPreference::parse("DISCRETE"), Some(Discrete));
+        assert_eq!(GpuPreference::parse("igpu"), None);
+        assert_eq!(GpuPreference::parse(""), None);
+        assert_eq!(GpuPreference::default(), Discrete);
     }
 }
