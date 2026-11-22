@@ -1,5 +1,6 @@
 //! Desktop shell: wires the engine and the project model to the UI through Tauri.
 
+mod ffmpeg_check;
 mod ipc;
 mod preview;
 mod project_file;
@@ -68,6 +69,9 @@ pub fn run() {
                 .unwrap_or_else(|_| EnvFilter::new("info,wgpu_core=warn,wgpu_hal=warn,naga=warn")),
         )
         .init();
+
+    // LGPL-only rule: log the linked FFmpeg, refuse a GPL/nonfree build in release.
+    ffmpeg_check::check();
 
     let ipc = ipc_builder();
     #[cfg(debug_assertions)]

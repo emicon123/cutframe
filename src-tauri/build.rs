@@ -17,6 +17,13 @@ fn main() {
         println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
         println!("cargo:rustc-link-arg=/MANIFESTINPUT:{}", manifest.display());
         // Fail the link instead of silently producing a binary without the manifest.
+        //
+        // Kept after FFmpeg started linking (review F43): the FFmpeg import libraries
+        // (`.ffmpeg\lib\*.lib`, linked through rusty_ffmpeg with FFMPEG_LINK_MODE=dynamic) are
+        // import-only, with no object code or debug info, so they do not raise the LNK4099
+        // ("PDB not found") warnings static libraries do. If a specific FFmpeg-related linker
+        // warning ever appears, silence that one code with `/IGNORE:<code>` here, with a comment,
+        // instead of dropping `/WX`.
         println!("cargo:rustc-link-arg=/WX");
     }
 

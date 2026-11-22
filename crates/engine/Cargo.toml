@@ -7,10 +7,14 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+app-core.workspace = true
 bytemuck.workspace = true
 crossbeam-channel.workspace = true
 pollster.workspace = true
 raw-window-handle.workspace = true
+rsmpeg.workspace = true
+# Not used directly: pins the FFmpeg 7.1 release of rsmpeg's FFI crate (see the workspace Cargo.toml).
+rusty_ffmpeg.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 wgpu.workspace = true

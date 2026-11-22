@@ -24,7 +24,9 @@ audit what already exists and to pick the next work items.
 - **Notes** flag architecture or licence constraints. The most common ones:
   - *LGPL:* FFmpeg is LGPL-only (`CLAUDE.md`). GPL encoders such as `libx264`/`libx265` are not
     allowed; H.264/HEVC encoding must use hardware or OS encoders (NVENC, Quick Sync, AMF, Media
-    Foundation) or a permissively licensed software encoder (e.g. OpenH264).
+    Foundation) or a permissively licensed software encoder. The bundled OpenH264 is excluded:
+    Cisco's patent licence covers only Cisco's own binaries downloaded at run time (review F28).
+    Selection lives in `engine::media::encoders` (allowlist plus a hard GPL/nonfree denylist).
   - *Model:* needs an ML model; licence, model size, CPU/GPU cost and offline use need an ADR.
   - *Content:* needs a library of licensed assets (music, stickers, stock footage, templates); that is
     a product/legal decision, not just code.
@@ -240,7 +242,7 @@ inserted between existing ones.
 | F1.87 | Resolution: 480p, 720p, 1080p, 2K, 4K (keeping project aspect) | | missing |
 | F1.88 | Frame rate: 24, 25, 30, 50, 60 fps | | missing |
 | F1.89 | Bitrate: low / recommended / high / custom | | missing |
-| F1.90 | H.264 export in MP4 | LGPL: hardware/OS encoder or OpenH264, never libx264 | missing |
+| F1.90 | H.264 export in MP4 | LGPL: hardware/OS encoder (Media Foundation's software H.264 encoder ships with Windows), never libx264; OpenH264 excluded (F28) | missing |
 | F1.91 | HEVC export in MP4/MOV | LGPL: hardware/OS encoder only | missing |
 | F1.92 | AAC audio in the export | | missing |
 | F1.93 | Export uses the same render graph as preview | Architecture rule 3 | missing |
