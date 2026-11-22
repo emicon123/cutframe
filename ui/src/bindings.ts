@@ -68,6 +68,24 @@ export const commands = {
 	 *  `quitRequested` started (Save succeeded, or Don't save).
 	 */
 	confirmClose: (options?: InvokeOptions) => __TAURI_INVOKE<null>("confirm_close", undefined, options),
+	/**
+	 *  Autosaves left by instances that did not exit cleanly and that are newer than their project
+	 *  file, newest first. Prunes corrupt and stale entries as a side effect. A missing recovery
+	 *  directory gives an empty list. Call once at startup.
+	 */
+	listRecovery: (options?: InvokeOptions) => __TAURI_INVOKE<RecoveryEntry_Serialize[]>("list_recovery", undefined, options),
+	/**
+	 *  Opens recovery entry `id` in place of the open project: the history is empty, the project is
+	 *  dirty until saved, and `filePath` is the original file (or none). Emits `projectChanged`. Fails
+	 *  with `fileNotFound` when no such entry can be restored (gone, or owned by a running instance).
+	 *  Ask about unsaved changes first.
+	 */
+	restoreRecovery: (id: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("restore_recovery", { id }, options),
+	/**
+	 *  Deletes recovery entry `id`. Unknown or already deleted ids are fine; an entry of a running
+	 *  instance is never touched.
+	 */
+	discardRecovery: (id: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("discard_recovery", { id }, options),
 };
 
 /** Events */
@@ -273,6 +291,33 @@ export type ProjectView = {
  */
 export type QuitRequested = null;
 
+/**  An autosave left by an instance that did not exit cleanly, offered for restore at startup. */
+export type RecoveryEntry = RecoveryEntry_Serialize | RecoveryEntry_Deserialize;
+
+/**  An autosave left by an instance that did not exit cleanly, offered for restore at startup. */
+export type RecoveryEntry_Deserialize = {
+	/**  Session id of the crashed instance; pass it to `restoreRecovery` / `discardRecovery`. */
+	id: string,
+	/**  The project's name (model data, not translated). */
+	projectName: string,
+	/**  The project's file at the time of the autosave; `None` = never saved. */
+	filePath?: string | null,
+	/**  When the autosave was taken, in Unix milliseconds. The UI formats it. */
+	savedAtMs: number,
+};
+
+/**  An autosave left by an instance that did not exit cleanly, offered for restore at startup. */
+export type RecoveryEntry_Serialize = {
+	/**  Session id of the crashed instance; pass it to `restoreRecovery` / `discardRecovery`. */
+	id: string,
+	/**  The project's name (model data, not translated). */
+	projectName: string,
+	/**  The project's file at the time of the autosave; `None` = never saved. */
+	filePath: string | null,
+	/**  When the autosave was taken, in Unix milliseconds. The UI formats it. */
+	savedAtMs: number,
+};
+
 /**
  *  A point in time or a duration, in flicks.
  * 
@@ -341,6 +386,9 @@ export type MockCommandHandlers = {
     saveProjectAs: (args: { path: string }) => null | Promise<null>,
     setProjectSettings: (args: { settings: ProjectSettings }) => null | Promise<null>,
     confirmClose: () => null | Promise<null>,
+    listRecovery: () => RecoveryEntry_Serialize[] | Promise<RecoveryEntry_Serialize[]>,
+    restoreRecovery: (args: { id: string }) => null | Promise<null>,
+    discardRecovery: (args: { id: string }) => null | Promise<null>,
 };
 
 /**
@@ -384,6 +432,9 @@ export function mockCommands(handlers: Partial<MockCommandHandlers> = {}): void 
             case "save_project_as": return mockCommandHandler(mockHandlers.saveProjectAs, "save_project_as", args);
             case "set_project_settings": return mockCommandHandler(mockHandlers.setProjectSettings, "set_project_settings", args);
             case "confirm_close": return mockCommandHandler(mockHandlers.confirmClose, "confirm_close", args);
+            case "list_recovery": return mockCommandHandler(mockHandlers.listRecovery, "list_recovery", args);
+            case "restore_recovery": return mockCommandHandler(mockHandlers.restoreRecovery, "restore_recovery", args);
+            case "discard_recovery": return mockCommandHandler(mockHandlers.discardRecovery, "discard_recovery", args);
             default: throw new Error(`No mock handler registered for command '${cmd}'`);
         }
     }, { shouldMockEvents: true });
