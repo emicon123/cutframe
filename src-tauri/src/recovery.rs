@@ -327,9 +327,12 @@ fn keeps_entry(err: &ReadError) -> bool {
         // A file that vanished or cannot be read right now (e.g. locked by a scanner) is not
         // known to be corrupt. Not UTF-8 is.
         ReadError::Io(e) => e.kind() != io::ErrorKind::InvalidData,
-        ReadError::Load(LoadError::Json(_) | LoadError::MissingVersion | LoadError::Invalid(_)) => {
-            false
-        }
+        ReadError::Load(
+            LoadError::Json(_)
+            | LoadError::MissingVersion
+            | LoadError::Invalid(_)
+            | LoadError::Migration { .. },
+        ) => false,
     }
 }
 

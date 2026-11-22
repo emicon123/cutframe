@@ -430,7 +430,12 @@ mod tests {
     fn batch_is_one_history_entry() {
         let mut doc = Document::new(Project::new("Test"));
         let before = doc.snapshot();
-        let ids: Vec<TrackId> = before.tracks.iter().map(|t| t.id).collect();
+        let ids: Vec<TrackId> = before
+            .tracks
+            .iter()
+            .map(|t| t.id)
+            .filter(|&id| id != before.main_track)
+            .collect();
         let batch = Batch::new(
             HistoryLabel::RemoveTrack,
             ids.iter()
@@ -438,14 +443,14 @@ mod tests {
                 .collect(),
         );
         doc.execute(Box::new(batch)).unwrap();
-        assert!(doc.project().tracks.is_empty());
+        assert_eq!(doc.project().tracks.len(), 1, "only the main track is left");
         assert_eq!(doc.undo_label(), Some(HistoryLabel::RemoveTrack));
 
         assert!(doc.undo());
         assert_eq!(*doc.snapshot(), *before);
         assert!(!doc.can_undo());
         assert!(doc.redo());
-        assert!(doc.project().tracks.is_empty());
+        assert_eq!(doc.project().tracks.len(), 1);
     }
 
     #[test]

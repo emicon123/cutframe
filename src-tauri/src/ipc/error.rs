@@ -65,7 +65,9 @@ impl From<ReadError> for IpcError {
                 IpcError::MalformedProject(message)
             }
             ReadError::Load(LoadError::TooNew { .. }) => IpcError::ProjectTooNew(message),
-            ReadError::Load(LoadError::Invalid(_)) => IpcError::InvalidProject(message),
+            ReadError::Load(LoadError::Invalid(_) | LoadError::Migration { .. }) => {
+                IpcError::InvalidProject(message)
+            }
         }
     }
 }
