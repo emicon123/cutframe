@@ -363,7 +363,7 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
-    use app_core::command::{AddTrack, RemoveTrack, RenameProject};
+    use app_core::command::{AddTrack, HistoryLabel, RemoveTrack, RenameProject};
     use app_core::{TrackId, TrackKind};
 
     use super::*;
@@ -465,6 +465,56 @@ mod tests {
             })
             .unwrap();
         assert_eq!(session.state().revision, state.revision + 1);
+    }
+
+    fn jump(session: &mut Session, index: usize) -> Option<()> {
+        session
+            .edit(|doc| Ok(doc.jump_to(index)?.then_some(())))
+            .expect("jump")
+    }
+
+    #[test]
+    fn a_history_jump_is_one_revision_and_keeps_dirty_tracking() {
+        let mut session = Session::new(Project::new("Test"));
+        for name in ["A", "B", "C"] {
+            rename(&mut session, name);
+        }
+        save(&mut session, "/p/a.cutframe");
+        let before = session.state().revision;
+
+        // Three undo steps, one change.
+        assert_eq!(jump(&mut session, 0), Some(()));
+        let state = session.state();
+        assert_eq!(state.revision, before + 1);
+        assert_eq!(state.project.name, "Test");
+        assert_eq!(state.history.current, 0);
+        assert_eq!(
+            state
+                .history
+                .entries
+                .iter()
+                .map(|e| e.label)
+                .collect::<Vec<_>>(),
+            [HistoryLabel::RenameProject; 3]
+        );
+        assert!(state.dirty);
+
+        // Already there: no change, no revision.
+        assert_eq!(jump(&mut session, 0), None);
+        assert_eq!(session.state().revision, before + 1);
+
+        // Back to the saved point is clean again.
+        assert_eq!(jump(&mut session, 3), Some(()));
+        let state = session.state();
+        assert_eq!(state.revision, before + 2);
+        assert_eq!((state.history.current, state.dirty), (3, false));
+
+        // Out of range: rejected, nothing changes.
+        assert_eq!(
+            session.edit(|doc| Ok(doc.jump_to(4)?.then_some(()))),
+            Err(CommandError::HistoryOutOfRange { index: 4, len: 3 })
+        );
+        assert_eq!(session.state().revision, before + 2);
     }
 
     fn save(session: &mut Session, path: &str) -> SaveSnapshot {
