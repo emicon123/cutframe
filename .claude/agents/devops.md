@@ -49,7 +49,7 @@ capabilities). Those belong to `backend`. Coordinate when a change spans both.
 1. **Versioning:** the single source is `version` in the workspace `Cargo.toml` (semver).
    `tauri.conf.json` does not duplicate it. A release is triggered by pushing tag `vX.Y.Z`, and the
    workflow fails if the tag and the version differ.
-2. **Build on `windows-latest`:** Rust from `rust-toolchain.toml`, Node 24 + pnpm, `Swatinem/rust-cache`,
+2. **Build on `windows-latest`:** Rust from `rust-toolchain.toml`, Node 26 (LTS) + pnpm, `Swatinem/rust-cache`,
    and FFmpeg via `scripts/fetch-ffmpeg.ps1` (target; pinned version + SHA-256). LLVM/libclang is needed for
    `rsmpeg` bindgen.
 3. **Bundle with `tauri-action`:** target **NSIS only**.
@@ -103,7 +103,7 @@ capabilities). Those belong to `backend`. Coordinate when a change spans both.
 ## Dev environment scripts
 
 - `setup-dev-windows.ps1` (target): `winget` for Rustup, Visual Studio Build Tools (C++ workload),
-  LLVM, Node 24 and Git; enables pnpm through corepack; runs `fetch-ffmpeg.ps1`; sets `FFMPEG_DIR` and
+  LLVM, Node 26 (LTS) and Git; enables pnpm through corepack; runs `fetch-ffmpeg.ps1`; sets `FFMPEG_DIR` and
   `LIBCLANG_PATH` for the user. It must be idempotent and need no admin rights beyond what winget
   itself asks for.
 - It ends by printing the versions found and the next command (`pnpm install && pnpm dev`).

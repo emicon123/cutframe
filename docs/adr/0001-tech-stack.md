@@ -26,7 +26,7 @@ FFmpeg (media I/O).**
 | Area | Technology |
 |---|---|
 | App shell | Tauri 2 (WebView2) |
-| UI | React 19, TypeScript, Vite, Tailwind CSS v4, shadcn/ui |
+| UI | React 19, TypeScript (7 for `tsc`; 6 API kept for typescript-eslint, see ui/package.json), Vite, Tailwind CSS v4, shadcn/ui |
 | UI state | Zustand (a mirror of the Rust-side model) |
 | Timeline | Canvas 2D (not DOM, so it stays fast with thousands of clips) |
 | Typed IPC | `tauri-specta` (TypeScript types generated from Rust) |

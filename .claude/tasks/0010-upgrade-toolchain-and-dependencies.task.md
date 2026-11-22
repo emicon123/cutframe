@@ -33,6 +33,21 @@ warned that `pnpm/action-setup@v4` still targets the deprecated Node.js 20 runti
 
 Not yet dependencies (pick current versions when they land, not here): FFmpeg 7.x / `rsmpeg`, `cpal`.
 
+## Outcome (2026-11-22)
+
+| Area | Result |
+|---|---|
+| Rust toolchain | 1.100 is still the latest stable: unchanged |
+| Rust crates | `cargo update`: hashbrown 0.17.1 → 0.17.2. The 4 transitive crates are still held by upstream. Every direct dependency is on its latest stable (no new majors) |
+| Tauri | 2.12.7 / 2.7.6 in `Cargo.lock`, CLI 2.12.6, API 2.12.5: latest 2.x. 3.x alpha not adopted |
+| specta family | no new release: pins unchanged, bindings unchanged |
+| `wgpu` / `windows` | 30.0.2 / 0.62.2: latest, no newer major |
+| pnpm | 12.21.0 (lockfile stays `lockfileVersion: '9.0'`, gains the `packageManagerDependencies` document) |
+| Node | 26 (current LTS, "Lithium"): `engines` and CI `node-version` |
+| TypeScript | `tsc` = 7.0.2 (`typescript7` alias). The `typescript` module stays on the TS 6 API (`@typescript/typescript6`) because TS 7 ships no classic JS API and typescript-eslint 8.73 (latest stable) supports only TS <6.1. Remove the alias when typescript-eslint supports TS 7 |
+| Other UI deps | `pnpm -r outdated`: nothing else outdated |
+| Actions | checkout v7, setup-node v7, pnpm/action-setup v6, setup-rust-toolchain v2, upload-artifact v7, tauri-action v1 (inputs used by `release.yml` unchanged), taiki-e/install-action v2 (latest major) + cargo-deny 0.22.0 (unchanged) |
+
 ## Scope
 
 - **devops:** `rust-toolchain.toml` + workspace `rust-version`; root `package.json` (`packageManager`,

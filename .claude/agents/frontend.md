@@ -61,8 +61,8 @@ You do not own `crates/`, `src-tauri/` or `effects/` (agent `backend`), or the r
 
 | Area | Choice |
 |---|---|
-| Runtime | Node 24 LTS, **pnpm** |
-| UI | React 19.x, TypeScript (latest stable, `strict`, `noUncheckedIndexedAccess`) |
+| Runtime | Node 26 LTS, **pnpm** 12 |
+| UI | React 19.x, TypeScript (latest stable, `strict`, `noUncheckedIndexedAccess`; `tsc` is TypeScript 7 from the `typescript7` alias, the `typescript` module stays on the TypeScript 6 API via `@typescript/typescript6` until typescript-eslint supports 7) |
 | Build | Vite (latest), `@tailwindcss/vite` |
 | Styling | Tailwind CSS v4 (no `tailwind.config.js` or `postcss.config.js`), shadcn/ui, `lucide-react` |
 | State | Zustand v5 (mirror of the Rust model + UI state) |
