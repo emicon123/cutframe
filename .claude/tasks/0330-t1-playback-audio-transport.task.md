@@ -19,12 +19,13 @@ The heart of the MVP: press Space and watch the edit with sound.
 
 ## Scope
 
-- **backend:** transport in Rust (play/pause/seek/loop/JKL rates), `cpal` audio thread per architecture rule 4, mixer for audio tracks, video frames scheduled against the audio clock, dropped-frame skipping.
+- **backend:** transport in Rust (play/pause/seek/loop/JKL rates), `cpal` audio thread per architecture rule 4, mixer for audio tracks, video frames scheduled against the audio clock, dropped-frame skipping; decode workers use the hardware decode path from 0320 and pause background preview jobs during playback (`docs/design/media-import.md` §6.1).
 - **frontend:** playhead follows `playbackTick` (replace the UI-only `playheadStore` source), timeline auto-scroll, Space/J/K/L, loop toggle, audio scrubbing while dragging.
 
 ## Done when
 
 - 1080p30 two-track edit plays in sync for 10 minutes without drift on a mid-range Windows laptop
+- a 4K30 HEVC 10-bit HDR phone clip plays in real time with hardware decode on the reference iGPU laptop (dropped frames counted and below 1 %), tone-mapped (F3.45 and F3.31 from task 0320)
 - audio thread passes a no-allocation check in tests
 - every feature above works end-to-end in `pnpm dev` and has tests (`app-core` unit/property tests for commands, Vitest for UI logic, golden frames for rendering)
 - each row above is updated in `docs/feature-catalog.md` (status + short evidence note); partial rows say what is missing

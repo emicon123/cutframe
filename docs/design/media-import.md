@@ -1,6 +1,6 @@
 # Design: media assets, import, decode and `media://` assets
 
-- **Status:** Proposed (task 0210). Implemented by tasks 0220, 0230 and 0240.
+- **Status:** Proposed (task 0210); open questions answered by the user on 2026-11-22 (see Decisions). Implemented by tasks 0220, 0230 and 0240; the HDR and hardware-decode parts by 0310–0330.
 - **Date:** 2026-11-22
 - **Relates to:** ADR-0002 (project file), ADR-0003 (IPC, jobs), ADR-0004 (threads), ADR-0006 (edit
   transactions), review P1 #1, F12, F13, F16. Feature rows F1.01–F1.23, F0.25.
@@ -8,6 +8,20 @@
 This design is sized for the stated purpose: one person cutting YouTube videos and Shorts on Windows.
 The footage that matters most is phone video (portrait, HEVC, often VFR, sometimes HDR), screen
 recordings (long GOP, sometimes several audio tracks) and phone photos.
+
+### Decisions (user, 2026-11-22)
+
+The three open questions from the first draft were answered:
+
+1. **HDR phone footage: tone map in Tier 1.** The user's phone records HDR. Tier 1 gets a basic
+   HDR→SDR tone map (HLG and PQ, one simple operator) inside the shared render graph, so preview and
+   export match (feature F3.31 moves to Tier 1, tasks 0310/0320). This design makes the probe record
+   everything that operator needs (§3 `VideoStreamInfo`, `HdrInfo`).
+2. **Hardware decode in Tier 1.** Much of the footage is 4K HEVC. D3D11VA/D3D12VA decode for HEVC,
+   H.264 and AV1 with a software fallback moves from task 0700 into Tier 1 (feature F3.45): 0310
+   decides the zero-copy path, 0320 builds the decode path, 0330 proves real-time playback (§5).
+3. **Settled as designed:** re-importing identical content is skipped (`AlreadyImported`), and
+   removing media that the timeline uses warns, then removes its clips too, in one undo step.
 
 ## 1. Goal and non-goals
 
@@ -28,12 +42,13 @@ VFR sources keep audio and video in sync.
 
 **Non-goals (explicitly out of scope):**
 
-- proxies, hardware decode and the render cache (task 0700); interchange formats (EDL, XML, AAF);
+- proxies and the render cache (task 0700); interchange formats (EDL, XML, AAF);
 - copying or "collecting" media into a project folder, media bins/folders, ratings, tags, metadata
   editing; renaming media items (the name is the file name);
 - selecting a non-default audio stream of a multi-track recording (the model records all audio
   streams now, so that choice can come later without a migration);
-- HDR tone mapping (colour metadata is recorded; how it is rendered belongs to 0310/0750);
+- rendering HDR: this design only records the HDR metadata; the tone map itself is in the render
+  graph (0310/0320). HDR export stays out of scope (F3.32 `n/a`);
 - previewing a media item in the player (F1.17) and the "used in timeline" badge (F1.18): both
   need clips or playback and move to later tasks (see §11).
 
@@ -147,7 +162,43 @@ pub struct VideoStreamInfo {
     pub frame_rate: Option<Rational>,
     /// FFmpeg pixel format name, e.g. `yuv420p10le`.
     pub pixel_format: String,
+    /// Bits per luma sample from the pixel format descriptor (8, 10, 12). The render graph needs
+    /// it to upload 10-bit HDR planes without truncating them to 8 bits before the tone map.
+    pub bit_depth: u8,
     pub color: ColorInfo,
+    /// `Some` when the stream is HDR: transfer is PQ (`smpte2084`) or HLG (`arib-std-b67`), or a
+    /// Dolby Vision configuration record is present. `None` for SDR.
+    pub hdr: Option<HdrInfo>,
+}
+
+#[serde(rename_all = "camelCase")]
+pub struct HdrInfo {
+    /// Which curve the decoded base layer uses. This is what the tone map keys on.
+    pub transfer: HdrTransfer,
+    /// From `AV_PKT_DATA_MASTERING_DISPLAY_METADATA`: peak luminance of the mastering display in
+    /// whole cd/m2 (nits), when present. Optional input for the PQ operator.
+    pub mastering_max_nits: Option<u32>,
+    /// From `AV_PKT_DATA_CONTENT_LIGHT_LEVEL`: MaxCLL in nits, when present.
+    pub max_cll_nits: Option<u32>,
+    /// From `AV_PKT_DATA_DOVI_CONF` (stream side data), when present.
+    pub dolby_vision: Option<DolbyVisionInfo>,
+}
+
+#[serde(rename_all = "camelCase")]
+pub enum HdrTransfer {
+    Pq,
+    Hlg,
+    /// Dolby Vision without a compatible base layer (profile 5): the base layer is not plain PQ or
+    /// HLG, so the simple tone map shows wrong colours. Imported, logged, badged; no DV processing.
+    DolbyVisionOnly,
+}
+
+#[serde(rename_all = "camelCase")]
+pub struct DolbyVisionInfo {
+    pub profile: u8,          // e.g. 8 for iPhone footage
+    pub level: u8,
+    /// `bl_signal_compatibility_id`: 1 = HDR10 (PQ), 2 = SDR, 4 = HLG (iPhone 8.4), 0 = none.
+    pub compatibility_id: u8,
 }
 
 #[serde(rename_all = "camelCase")]
@@ -187,7 +238,9 @@ adds the media rules to it):
 - `Video` ⇒ `video` is `Some`, `duration` is `Some(> 0)`, `video.frame_rate` is `Some`;
   `Audio` ⇒ `video` is `None`, `audio` not empty, `duration` is `Some(> 0)`;
   `Image` ⇒ `video` is `Some`, `duration` is `None`, `audio` is empty;
-- `width`, `height` > 0; every `Rational` has `num > 0` and `den > 0`;
+- `width`, `height` > 0; every `Rational` has `num > 0` and `den > 0`; `bit_depth` in 8..=16;
+- `hdr` is `Some` exactly when `color.transfer` is `smpte2084` or `arib-std-b67` or a Dolby Vision
+  record exists; `DolbyVisionOnly` only with `dolby_vision.compatibility_id == 0`;
 - `fingerprint.hash` is 32 lowercase hex chars; `path.absolute` is non-empty;
 - once clips reference media (design 0250), every reference resolves to an asset in `media`.
 
@@ -301,6 +354,7 @@ pub struct MediaView {
     pub display_height: Option<u32>,
     pub frame_rate: Option<Rational>,
     pub video_codec: Option<String>,
+    pub hdr: Option<HdrTransfer>,        // HDR badge in the panel; `dolbyVisionOnly` gets a warning
     pub audio: Option<AudioSummary>,     // default stream: sample rate, channels, stream count
     pub status: MediaStatus,             // online | offline | changed (session state, §6.6)
     pub used_by: u32,                    // clips referencing it; 0 until design 0250
@@ -383,8 +437,17 @@ ADR-0004 §2) and on `rsmpeg` (task 0200).
   encoder or a permissive Rust encoder; backend picks, cargo-deny decides). Filmstrips decode
   keyframes only (`skip_frame = NONKEY`); when the keyframe before a sample time is more than one
   `interval` away (long-GOP screen recordings), it decodes forward to the sample. Waveforms decode
-  the default audio stream once and reduce it with `swresample` to mono. HDR sources produce flat,
-  untone-mapped previews in Tier 1.
+  the default audio stream once and reduce it with `swresample` to mono. Previews decode in
+  software (no GPU needed in job workers).
+- **HDR probe:** `hdr` is filled from the stream's colour properties and its side data
+  (`coded_side_data`: mastering display, content light level, `DOVI_CONF`). Dolby Vision profile 8.4
+  (iPhone) has an HLG-compatible base layer and is treated as `Hlg`, ignoring the RPU; profile 8.1
+  is treated as `Pq`; profile 5 becomes `DolbyVisionOnly`. Nothing is decoded for this, the probe
+  only reads metadata.
+- **HDR previews:** posters and filmstrips of HDR sources are converted with `sws_scale` to 16-bit
+  RGB and tone-mapped on the CPU with a lookup table built from the same operator constants as the
+  render graph (0310), then written as 8-bit JPEG. They only need to look right, not match the
+  preview pixel for pixel; no golden test compares the two.
 - **Cancellation:** every `AVFormatContext` gets an `AVIOInterruptCB` that checks the job's cancel
   flag, so a slow USB stick, a network share or a cloud-only OneDrive file can be cancelled.
 - **Paths:** passed to FFmpeg as UTF-8. FFmpeg's `file` protocol converts to UTF-16 on Windows, so
@@ -394,16 +457,22 @@ ADR-0004 §2) and on `rsmpeg` (task 0200).
   long-lived decode workers for playback (one per active source) are designed in 0310 and reuse
   this module's open/seek/decode code.
 - **Render graph / export parity:** not touched here. The render graph (0310/0320) reads
-  `rotation`, `sample_aspect`, `color` and `origin` from the model; preview and export share that
-  code, and thumbnails reuse `display_size` so the bin and the preview agree on the shape.
+  `rotation`, `sample_aspect`, `color`, `bit_depth`, `hdr` and `origin` from the model; preview and
+  export share that code, and thumbnails reuse `display_size` so the bin and the preview agree on
+  the shape. The tone map runs per source layer, at the YUV→RGB step, so the rest of the graph
+  stays SDR Rec.709 (F3.33 is `n/a`) and 10-bit working precision (F3.30) can stay in task 0750.
 
-### Zero-copy decode for D3D12 (review F16): deferred to the render-graph design 0310
+### Hardware decode and zero-copy for D3D12 (review F16): path decided in the render-graph design 0310
 
-Tier 1 decodes in software and uploads planes to wgpu; hardware decode is task 0700 (Tier 3). The
-choice belongs with the render graph, which owns the textures, so 0310 decides it. This design
-only keeps the door open: the decoder returns `DecodedVideoFrame { pts: Time, data: FrameData }`
-with `FrameData::Cpu(planes)` today and room for a `FrameData::Gpu(...)` variant later; previews
-always use the CPU path.
+Hardware decode is Tier 1 (user decision 2026-11-22, F3.45): D3D11VA or D3D12VA for HEVC, H.264
+and AV1, with software decode as the fallback when the GPU or driver lacks the profile (e.g. 4:2:2
+or 12-bit HEVC, AV1 on older iGPUs) or the hardware decoder fails to open. The zero-copy path
+belongs with the render graph, which owns the textures, so 0310 decides it; 0320 builds it, 0330
+proves real-time 4K HEVC playback with it. This design fixes only the shape: the decoder returns
+`DecodedVideoFrame { pts: Time, data: FrameData }` with `FrameData::Cpu(planes)` (software, and the
+download fallback) and `FrameData::Gpu(...)` (hardware, 0310 defines it). 10-bit HDR sources arrive
+as P010 / `yuv420p10le` and must reach the tone map without an 8-bit step. The import probe and the
+preview jobs always use software decode, so import works on any machine.
 
 Input for 0310 (to verify with a spike, not settled facts):
 
@@ -417,7 +486,8 @@ Input for 0310 (to verify with a spike, not settled facts):
   a copy out of the decoder's texture array into a shareable texture, and keyed-mutex or fence
   sync across APIs.
 - **Recommendation for the spike:** try D3D12VA on the shared device first; keep the CPU path as the
-  universal fallback; implement D3D11VA only if D3D12VA fails on the reference iGPU.
+  universal fallback; implement D3D11VA only if D3D12VA fails on the reference iGPU. The spike must
+  include a 10-bit HEVC HDR phone clip (P010 output), not only 8-bit H.264.
 
 ## 6. Shell impact (`src-tauri`)
 
@@ -558,8 +628,10 @@ as `online`.
     "container": "mov", "origin": 0, "duration": 7056000000,
     "video": { "streamIndex": 0, "codec": "hevc", "width": 1920, "height": 1080,
                "sampleAspect": { "num": 1, "den": 1 }, "rotation": "cw90",
-               "frameRate": { "num": 30000, "den": 1001 }, "pixelFormat": "yuv420p10le",
-               "color": { "primaries": "bt2020", "transfer": "arib-std-b67", "matrix": "bt2020nc", "range": "tv" } },
+               "frameRate": { "num": 30000, "den": 1001 }, "pixelFormat": "yuv420p10le", "bitDepth": 10,
+               "color": { "primaries": "bt2020", "transfer": "arib-std-b67", "matrix": "bt2020nc", "range": "tv" },
+               "hdr": { "transfer": "hlg", "masteringMaxNits": null, "maxCllNits": null,
+                        "dolbyVision": { "profile": 8, "level": 4, "compatibilityId": 4 } } },
     "audio": [{ "streamIndex": 1, "codec": "aac", "sampleRate": 44100, "channels": 2 }]
   }
 }]
@@ -591,7 +663,9 @@ the job manager and a `--release` integration test over a generated folder of fi
 - `validate` rejects each broken invariant from §3 (one case per rule).
 - `Time::from_ticks` / `to_ticks`: known time bases (1/90000, 1/600, 1001/30000, 1/44100);
   proptest that a round trip stays within one tick; no overflow at ±2^53 flicks.
-- Migration: `project-v1.json` loads with `media: []`; `project-v2.json` loads and round-trips;
+- `validate` accepts the HDR combinations above and rejects `hdr = None` with a PQ/HLG transfer.
+- Migration: `project-v1.json` loads with `media: []`; `project-v2.json` (whose video asset is the
+  HLG / Dolby Vision 8.4 example from §8) loads and round-trips;
   the snapshot test of the canonical project covers the media form.
 - Filmstrip layout function: interval and frame count for 0 s, 1 s, 20 min, 3 h; frame width clamp.
 
@@ -607,11 +681,14 @@ sizes, total ≤ 2 MB, self-generated test patterns, so licence-clean) in
 | `vp9-opus.webm` without container duration | duration found by the end scan |
 | `av1.mkv`, `prores.mov`, `mjpeg.avi`, `mpeg4.m4v` | probe + first frame decode (AV1 needs dav1d in the 0200 build) |
 | `two-audio-tracks.mkv` (OBS-style) | two `audio` entries, default first |
+| `hevc10-hlg.mov` with a Dolby Vision 8.4 record, `hevc10-pq.mkv` with mastering display + MaxCLL, an 8-bit SDR clip | `bit_depth`, `hdr.transfer`, nits values, `dolbyVision` fields; SDR gives `hdr = None` |
 | `mp3`, `wav`, `flac`, `ogg` (Opus), `m4a` | `kind = audio`, sample rate, channels |
 | `jpg` with EXIF orientation 6, `png`, `webp`, `bmp`, `tiff`, animated `gif`, `heic` (tile grid) | kind, rotation, size; HEIC either decodes or returns `UnsupportedFormat` |
 | truncated `mp4`, random bytes named `.mp4`, a text file named `.mov`, a 0-byte file | `Damaged` / `UnsupportedFormat`, never a panic |
 | a file under a folder named `ąęłó` | opens |
 
+- HDR poster: the HLG fixture's poster has no clipped or grey-washed mid-tones (coarse mean-luma
+  and saturation bounds), so the CPU tone map is wired in.
 - Golden preview test: the poster of the portrait fixture is portrait and its coloured corner
   marker is where an upright picture has it (coarse pixel check, not a byte-exact image).
 - Waveform: a 1 kHz full-scale sine fixture gives peaks near ±127; silence gives 0.
@@ -748,6 +825,10 @@ stateDiagram-v2
    batch).
 3. frontend: relink dialog (one file, whole folder, mismatch confirmation), offline/changed badges
    in the media panel.
+
+**Tier 1 additions from the 2026-11-22 decisions (outside 0220–0240):** HDR→SDR tone map (F3.31)
+and hardware decode (F3.45) are designed in 0310 and built in 0320; 0330 proves 4K HEVC real-time
+playback. Task 0700 keeps proxies, render cache and budgets; task 0750 keeps the 10-bit pipeline.
 
 **Moved to later tasks:** F1.17 (preview a media item in the player) → 0340, because it needs the
 render graph and transport. F1.18 ("used in timeline" badge), the "warn if used" half of F1.21 and

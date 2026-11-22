@@ -25,7 +25,7 @@ First step of the MVP: get video, audio and images into the project.
 ## Scope
 
 - **backend:** `app-core` media model (`MediaId`, `MediaAsset`, `MediaInfo`, `Rational`, `Time::from_ticks`), `AddMedia` (`importMedia`), schema v1 → v2 migration + `project-v2.json` fixture, media rules for `Project::validate` (design §3, §8). Assets store `absolute` paths only; `relative` waits for task 0100.
-- **backend:** `engine::media::probe` and `fingerprint` (BLAKE3 over size + first/last 1 MiB): rotation, pixel aspect, timestamp-based (VFR-safe) timing, HEIC tile grids or a clear `unsupportedFormat` (design §5).
+- **backend:** `engine::media::probe` and `fingerprint` (BLAKE3 over size + first/last 1 MiB): rotation, pixel aspect, timestamp-based (VFR-safe) timing, HDR metadata (`bitDepth`, transfer/primaries, `hdr` with mastering/MaxCLL nits and Dolby Vision profile/compatibility id), HEIC tile grids or a clear `unsupportedFormat` (design §5).
 - **backend:** the shared job manager (bounded pool, interactive/background queues, `cancel_job`, `job-progress`, `job-finished`, `IpcError::Cancelled`) and `import_media(paths)` / `import_media_dialog()`: per-file outcomes in `media-job-report`, duplicates skipped by fingerprint, all successes added as one undo step, nothing added on cancel (design §4, §6.1–6.2).
 - **backend:** `MediaView` in `ProjectState`, constants `MEDIA_EXTENSIONS` etc. via `Builder::constant`; `cargo deny` for the new crates (`blake3`, `tauri-plugin-dialog`).
 - **backend:** format coverage tests with tiny committed fixtures per container/codec (≤ 2 MB total, self-generated, licence-clean; design §10).

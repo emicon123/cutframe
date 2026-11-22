@@ -43,6 +43,7 @@ inserted between existing ones.
 |---|---|---|---|
 | 2026-11-21 | `2c0c2f7` | Tiers 0–1 | Tier 0: 6 done, 10 partial, 19 missing. Tier 1: 4 done, 9 partial, 86 missing (no media, clip editing, playback or export yet). |
 | 2026-11-22 | `f37e796` | F0.28, F0.29 | Done by task 0006 (edit transactions). Tier 0 now: 8 done, 10 partial, 17 missing. |
+| 2026-11-22 | `3841d6f` | F3.31, F3.45 | User decision on the media design: basic HDR→SDR tone mapping and hardware decode move to Tier 1 (Preview section, IDs kept; tasks 0310/0320/0330). Task 0700 and 0750 trimmed. |
 | 2026-11-22 | `8174ada` | Tiers 2–3 | Private hobby use (`CLAUDE.md` "Purpose"): 35 rows set to `n/a`; tasks 0620, 0790, 0820 and 0830 removed, others trimmed. |
 
 ## Tiers
@@ -207,6 +208,8 @@ inserted between existing ones.
 | F1.67 | Loop playback | | missing |
 | F1.68 | J/K/L shuttle (reverse / pause / forward, repeated presses speed up) | | missing |
 | F1.69 | Audio scrubbing while dragging the playhead | | missing |
+| F3.45 | Hardware-accelerated decoding (D3D11VA / D3D12VA on Windows) for HEVC, H.264, AV1 with software fallback | Moved from Tier 3 on 2026-11-22 (4K HEVC phone footage); ID kept. Zero-copy path decided in 0310; `docs/design/media-import.md` §5 | missing |
+| F3.31 | HDR sources (PQ/HLG, Rec.2020, Dolby Vision 8.x base layer) with tone mapping to SDR | Moved from Tier 3 on 2026-11-22 (phone records HDR); ID kept. One simple operator in the shared render graph so preview and export match; probe data in `docs/design/media-import.md` §3. Refinement and 10-bit pipeline: F3.30 | missing |
 
 ### Basic clip properties (inspector)
 
@@ -465,7 +468,6 @@ inserted between existing ones.
 | F3.28 | Scopes: waveform, vectorscope, histogram, RGB parade | Out of scope (private hobby use): pro grading | n/a |
 | F3.29 | Colour match between clips | Out of scope (private hobby use): pro grading | n/a |
 | F3.30 | 10-bit (and higher) internal pipeline | Render graph | ? |
-| F3.31 | HDR sources (PQ/HLG, Rec.2020) with tone mapping to SDR | ADR: colour management | ? |
 | F3.32 | HDR export | Out of scope (private hobby use): YouTube delivery stays SDR | n/a |
 | F3.33 | Colour-space aware pipeline (Rec.709, sRGB, Display P3) | Out of scope (private hobby use): wide-gamut delivery not needed; Rec.709 only. Was: ADR | n/a |
 
@@ -489,7 +491,6 @@ inserted between existing ones.
 
 | ID | Feature | Notes | Status |
 |---|---|---|---|
-| F3.45 | Hardware-accelerated decoding (D3D11VA / DXVA2 on Windows) | | ? |
 | F3.46 | Proxy media: generate, toggle, auto-use for 4K / heavy codecs | | ? |
 | F3.47 | Render cache: pre-render heavy timeline sections | | ? |
 | F3.48 | Background analysis jobs queue (waveforms, proxies, stabilisation, transcription) | ADR: long-running jobs | ? |
