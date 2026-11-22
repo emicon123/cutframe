@@ -11,9 +11,10 @@ use uuid::Uuid;
 
 use super::IpcError;
 use super::types::{
-    AppInfo, GpuInfoView, JobId, PreviewMode, PreviewRect, ProjectState, RecoveryEntry,
+    AppInfo, CacheInfo, JobId, PreviewMode, PreviewRect, ProjectState, RecoveryEntry,
 };
 use crate::import;
+use crate::preferences::{self, CURRENT_PREFERENCES_VERSION, Preferences, PreferencesError};
 use crate::project_file;
 use crate::state::{AppState, SaveSnapshot};
 
@@ -125,19 +126,14 @@ pub fn jump_to_history(
         .is_some())
 }
 
+/// App version and the GPU capability report. Call once at startup; afterwards listen to
+/// `appInfoChanged`.
 #[tauri::command]
 #[specta::specta]
 pub fn get_app_info(app: AppHandle, state: State<'_, AppState>) -> AppInfo {
     AppInfo {
         version: app.package_info().version.to_string(),
-        gpu: state.preview.as_ref().map(|p| {
-            let info = p.gpu_info();
-            GpuInfoView {
-                adapter: info.adapter.clone(),
-                backend: info.backend.clone(),
-                software: info.software,
-            }
-        }),
+        gpu: state.preview.as_ref().map(|p| (&*p.gpu_info()).into()),
         preview_mode: state
             .preview
             .as_ref()
@@ -386,4 +382,95 @@ pub async fn import_media_dialog(
 pub fn cancel_job(state: State<'_, AppState>, id: JobId) -> Result<(), IpcError> {
     state.jobs.cancel(id);
     Ok(())
+}
+
+/// The project path passed on the command line at startup (a double-clicked project file), once;
+/// later calls return `None`. Call after the first project state, before the recovery check.
+#[tauri::command]
+#[specta::specta]
+pub fn take_launch_path(state: State<'_, AppState>) -> Option<String> {
+    state
+        .take_launch_path()
+        .map(|path| path.to_string_lossy().into_owned())
+}
+
+/// The preferences in effect (read at startup).
+#[tauri::command]
+#[specta::specta]
+pub fn get_preferences(state: State<'_, AppState>) -> Preferences {
+    state.preferences().get()
+}
+
+/// Validates and replaces all preferences, writes the file, applies them (autosave interval, cache
+/// folder) and returns what is now in effect. Fails with `invalidEdit` (the message names the
+/// field) when a value is out of range or `schemaVersion` is not current, and with `io` when the
+/// file or the cache folder cannot be written; then nothing changes. Not an undo step.
+#[tauri::command]
+#[specta::specta]
+pub async fn set_preferences(
+    state: State<'_, AppState>,
+    preferences: Preferences,
+) -> Result<Preferences, IpcError> {
+    if preferences.schema_version != CURRENT_PREFERENCES_VERSION {
+        return Err(invalid(PreferencesError::WrongVersion(
+            preferences.schema_version,
+        )));
+    }
+    preferences.validate().map_err(invalid)?;
+
+    let store = state.preferences();
+    let _writing = store.write_lock().lock().await;
+    let root = preferences.cache_root(store.app_cache_dir());
+    let (path, backup) = (store.path().to_owned(), store.backup_of_version());
+    let (to_write, created) = (preferences.clone(), root.clone());
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::create_dir_all(&created)?;
+        preferences::write(&path, &to_write, backup)
+    })
+    .await?
+    .map_err(|err| IpcError::io(&err))?;
+
+    let previous = store.replace(preferences.clone(), root);
+    if previous.autosave_interval != preferences.autosave_interval {
+        state.set_autosave_interval(preferences.autosave_duration());
+    }
+    Ok(preferences)
+}
+
+fn invalid(err: PreferencesError) -> IpcError {
+    IpcError::InvalidEdit(err.to_string())
+}
+
+/// The effective cache folder and what it holds.
+#[tauri::command]
+#[specta::specta]
+pub async fn get_cache_info(state: State<'_, AppState>) -> Result<CacheInfo, IpcError> {
+    let root = state.preferences().cache_root();
+    let stats = tauri::async_runtime::spawn_blocking({
+        let root = root.clone();
+        move || preferences::cache_info(&root)
+    })
+    .await?
+    .map_err(|err| IpcError::io(&err))?;
+    Ok(CacheInfo::new(&root, stats))
+}
+
+/// Deletes everything inside the cache folder (never the folder itself or anything outside it).
+/// Returns the info after clearing.
+#[tauri::command]
+#[specta::specta]
+pub async fn clear_cache(state: State<'_, AppState>) -> Result<CacheInfo, IpcError> {
+    let store = state.preferences();
+    let _changing = store.write_lock().lock().await;
+    let root = store.cache_root();
+    let stats = tauri::async_runtime::spawn_blocking({
+        let root = root.clone();
+        move || {
+            preferences::clear_cache(&root)?;
+            preferences::cache_info(&root)
+        }
+    })
+    .await?
+    .map_err(|err| IpcError::io(&err))?;
+    Ok(CacheInfo::new(&root, stats))
 }

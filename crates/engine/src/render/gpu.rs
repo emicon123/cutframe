@@ -59,13 +59,67 @@ impl GpuPreference {
     }
 }
 
-/// Human-readable description of the active GPU, for logs and the status bar.
+/// Description of the active GPU, for logs, the status bar and the capability report.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GpuInfo {
+    /// Adapter name as the driver reports it.
     pub adapter: String,
     pub backend: String,
     /// True when running on a software rasterizer (WARP, llvmpipe).
     pub software: bool,
+    pub device_type: DeviceKind,
+    /// Driver description (`AdapterInfo::driver_info`); may be empty.
+    pub driver: String,
+    /// Whether the preview renders into the native window; `false` = offscreen only.
+    pub presents_to_window: bool,
+    /// Why this is not the first-choice adapter, if it is not.
+    pub fallback: Option<FallbackReason>,
+}
+
+/// Kind of GPU adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceKind {
+    Discrete,
+    Integrated,
+    Virtual,
+    /// A software rasterizer (WARP on Windows).
+    Software,
+    Other,
+}
+
+impl From<wgpu::DeviceType> for DeviceKind {
+    fn from(kind: wgpu::DeviceType) -> Self {
+        match kind {
+            wgpu::DeviceType::DiscreteGpu => Self::Discrete,
+            wgpu::DeviceType::IntegratedGpu => Self::Integrated,
+            wgpu::DeviceType::VirtualGpu => Self::Virtual,
+            wgpu::DeviceType::Cpu => Self::Software,
+            wgpu::DeviceType::Other => Self::Other,
+        }
+    }
+}
+
+/// Why the GPU in use is not the first-choice adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FallbackReason {
+    /// `WGPU_FORCE_FALLBACK_ADAPTER` forced the software rasterizer.
+    ForcedByEnv,
+    /// A preferred adapter was skipped because it cannot present to the preview window (or its
+    /// device could not be created), or no adapter can present and the preview is offscreen only.
+    PreferredCannotPresent,
+    /// There is no hardware adapter; the software rasterizer is used.
+    NoHardwareAdapter,
+    /// The GPU device was lost at runtime and the context was recreated.
+    DeviceLost,
+}
+
+/// Which adapters a new context may use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdapterMode {
+    /// Hardware first, software fallback last (the normal order).
+    Auto,
+    /// Only the software rasterizer (WARP), e.g. after the hardware device was lost twice.
+    SoftwareOnly,
 }
 
 /// The wgpu instance, adapter, device and queue shared by all renderers.
@@ -75,6 +129,8 @@ pub struct GpuContext {
     pub adapter: wgpu::Adapter,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
+    /// Why this is not the first-choice adapter (reported in [`GpuInfo::fallback`]).
+    pub fallback: Option<FallbackReason>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -92,7 +148,12 @@ impl GpuContext {
     /// software adapter (WARP on Windows, lavapipe/llvmpipe on Linux) so headless CI and GPU-less
     /// machines still work.
     pub fn new() -> Result<Self, GpuError> {
-        Self::offscreen(create_instance())
+        Self::new_with(AdapterMode::Auto)
+    }
+
+    /// [`Self::new`] restricted to the adapters `mode` allows.
+    pub fn new_with(mode: AdapterMode) -> Result<Self, GpuError> {
+        Self::offscreen(create_instance(), mode)
     }
 
     /// A GPU that can also present to the window behind `target`. Returns the surface for that
@@ -102,20 +163,22 @@ impl GpuContext {
     /// The surface is created before the adapter is chosen, so the device is created once, on an
     /// adapter that is known to present to the window. Adapters are tried in [`adapter_order`]:
     /// discrete, integrated, other, then the software fallback (WARP); `CUTFRAME_GPU=integrated`
-    /// swaps the first two.
+    /// swaps the first two. [`AdapterMode::SoftwareOnly`] tries only the software fallback.
     ///
     /// # Safety
     /// The handles in `target` must be valid and the window must outlive the returned surface.
     pub unsafe fn with_window(
         target: wgpu::SurfaceTargetUnsafe,
+        mode: AdapterMode,
     ) -> Result<(Self, Option<wgpu::Surface<'static>>), GpuError> {
         let instance = create_instance();
+        let forced = force_fallback();
         // SAFETY: guaranteed by the caller.
         let surface = match unsafe { instance.create_surface_unsafe(target) } {
             Ok(surface) => surface,
             Err(err) => {
                 tracing::error!(%err, "cannot create the preview surface; rendering offscreen only");
-                return Ok((Self::offscreen(instance)?, None));
+                return Ok((Self::offscreen_only(instance, mode, forced)?, None));
             }
         };
 
@@ -123,9 +186,12 @@ impl GpuContext {
         let infos: Vec<wgpu::AdapterInfo> = adapters.iter().map(wgpu::Adapter::get_info).collect();
         let types: Vec<wgpu::DeviceType> = infos.iter().map(|info| info.device_type).collect();
         let preference = GpuPreference::from_env();
-        for index in adapter_order(&types, force_fallback(), preference) {
+        let software_only = forced || mode == AdapterMode::SoftwareOnly;
+        let mut skipped = false;
+        for index in adapter_order(&types, software_only, preference) {
             let (adapter, info) = (&adapters[index], &infos[index]);
             if !adapter.is_surface_supported(&surface) {
+                skipped = true;
                 tracing::warn!(
                     adapter = %info.name, backend = ?info.backend, kind = ?info.device_type,
                     "adapter cannot present to the preview window, trying the next one"
@@ -144,13 +210,17 @@ impl GpuContext {
                         adapter: adapter.clone(),
                         device,
                         queue,
+                        fallback: fallback_reason(&types, types[index], skipped, forced),
                     };
                     return Ok((gpu, Some(surface)));
                 }
-                Err(err) => tracing::warn!(
-                    %err, adapter = %info.name,
-                    "cannot create a device on this adapter, trying the next one"
-                ),
+                Err(err) => {
+                    skipped = true;
+                    tracing::warn!(
+                        %err, adapter = %info.name,
+                        "cannot create a device on this adapter, trying the next one"
+                    );
+                }
             }
         }
 
@@ -159,10 +229,23 @@ impl GpuContext {
             "no adapter can present to the preview window; rendering offscreen only"
         );
         drop(surface);
-        Ok((Self::offscreen(instance)?, None))
+        Ok((Self::offscreen_only(instance, mode, forced)?, None))
     }
 
-    fn offscreen(instance: wgpu::Instance) -> Result<Self, GpuError> {
+    /// The offscreen fallback of [`Self::with_window`]: the window cannot be presented to.
+    fn offscreen_only(
+        instance: wgpu::Instance,
+        mode: AdapterMode,
+        forced: bool,
+    ) -> Result<Self, GpuError> {
+        let mut gpu = Self::offscreen(instance, mode)?;
+        if !forced {
+            gpu.fallback = Some(FallbackReason::PreferredCannotPresent);
+        }
+        Ok(gpu)
+    }
+
+    fn offscreen(instance: wgpu::Instance, mode: AdapterMode) -> Result<Self, GpuError> {
         let request = |force_fallback_adapter, power_preference| {
             pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference,
@@ -171,7 +254,8 @@ impl GpuContext {
                 ..Default::default()
             }))
         };
-        let adapter = if force_fallback() {
+        let forced = force_fallback();
+        let adapter = if forced || mode == AdapterMode::SoftwareOnly {
             request(true, wgpu::PowerPreference::LowPower)
         } else {
             let power_preference = match GpuPreference::from_env() {
@@ -187,20 +271,34 @@ impl GpuContext {
 
         let info = adapter.get_info();
         tracing::info!(adapter = %info.name, backend = ?info.backend, kind = ?info.device_type, "GPU ready");
+        let fallback = if forced {
+            Some(FallbackReason::ForcedByEnv)
+        } else if info.device_type == wgpu::DeviceType::Cpu && mode == AdapterMode::Auto {
+            Some(FallbackReason::NoHardwareAdapter)
+        } else {
+            None
+        };
         Ok(Self {
             instance,
             adapter,
             device,
             queue,
+            fallback,
         })
     }
 
+    /// The report for this context. `presents_to_window` is `false`: only the owner of the
+    /// surface knows whether it presents.
     pub fn info(&self) -> GpuInfo {
         let info = self.adapter.get_info();
         GpuInfo {
             adapter: info.name,
             backend: format!("{:?}", info.backend),
             software: info.device_type == wgpu::DeviceType::Cpu,
+            device_type: info.device_type.into(),
+            driver: info.driver_info,
+            presents_to_window: false,
+            fallback: self.fallback,
         }
     }
 }
@@ -227,6 +325,25 @@ fn request_device(
         memory_hints: wgpu::MemoryHints::Performance,
         ..Default::default()
     }))
+}
+
+/// Why `chosen` (the adapter that presents to the window) is not the first choice. `types` are all
+/// enumerated adapters; `skipped` is whether a better-ranked candidate was skipped.
+fn fallback_reason(
+    types: &[wgpu::DeviceType],
+    chosen: wgpu::DeviceType,
+    skipped: bool,
+    forced: bool,
+) -> Option<FallbackReason> {
+    if forced {
+        Some(FallbackReason::ForcedByEnv)
+    } else if chosen == wgpu::DeviceType::Cpu && types.iter().all(|&t| t == wgpu::DeviceType::Cpu) {
+        Some(FallbackReason::NoHardwareAdapter)
+    } else if skipped {
+        Some(FallbackReason::PreferredCannotPresent)
+    } else {
+        None
+    }
 }
 
 fn force_fallback() -> bool {
@@ -352,6 +469,56 @@ mod tests {
             adapter_order(&[IntegratedGpu, Cpu, DiscreteGpu], true, Integrated),
             [1]
         );
+    }
+
+    #[test]
+    fn fallback_reason_explains_the_chosen_adapter() {
+        use FallbackReason::*;
+        // First choice presents: no fallback.
+        assert_eq!(
+            fallback_reason(
+                &[IntegratedGpu, DiscreteGpu, Cpu],
+                DiscreteGpu,
+                false,
+                false
+            ),
+            None
+        );
+        // The dGPU could not present, the iGPU does.
+        assert_eq!(
+            fallback_reason(
+                &[IntegratedGpu, DiscreteGpu, Cpu],
+                IntegratedGpu,
+                true,
+                false
+            ),
+            Some(PreferredCannotPresent)
+        );
+        // Hardware exists but nothing presents except WARP.
+        assert_eq!(
+            fallback_reason(&[DiscreteGpu, Cpu], Cpu, true, false),
+            Some(PreferredCannotPresent)
+        );
+        // Only WARP exists (CI runners, VMs).
+        assert_eq!(
+            fallback_reason(&[Cpu], Cpu, false, false),
+            Some(NoHardwareAdapter)
+        );
+        // The environment override wins over everything.
+        assert_eq!(
+            fallback_reason(&[DiscreteGpu, Cpu], Cpu, false, true),
+            Some(ForcedByEnv)
+        );
+        assert_eq!(fallback_reason(&[Cpu], Cpu, true, true), Some(ForcedByEnv));
+    }
+
+    #[test]
+    fn device_types_map_to_kinds() {
+        assert_eq!(DeviceKind::from(DiscreteGpu), DeviceKind::Discrete);
+        assert_eq!(DeviceKind::from(IntegratedGpu), DeviceKind::Integrated);
+        assert_eq!(DeviceKind::from(VirtualGpu), DeviceKind::Virtual);
+        assert_eq!(DeviceKind::from(Cpu), DeviceKind::Software);
+        assert_eq!(DeviceKind::from(Other), DeviceKind::Other);
     }
 
     #[test]

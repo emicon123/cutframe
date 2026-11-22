@@ -4,7 +4,7 @@ mod gpu;
 mod offscreen;
 mod test_pattern;
 
-pub use gpu::{GpuContext, GpuError, GpuInfo};
+pub use gpu::{AdapterMode, DeviceKind, FallbackReason, GpuContext, GpuError, GpuInfo};
 pub use offscreen::{OffscreenFrame, render_offscreen};
 pub use test_pattern::{PatternParams, TestPattern};
 

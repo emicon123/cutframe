@@ -5,6 +5,8 @@ mod ffmpeg_check;
 mod import;
 mod ipc;
 mod jobs;
+mod launch;
+mod preferences;
 mod preview;
 mod project_file;
 mod protocol;
@@ -12,19 +14,25 @@ mod recovery;
 mod smoke_test;
 mod state;
 
+use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use app_core::Project;
-use tauri::{Manager, Window, WindowEvent};
+use tauri::{AppHandle, Manager, Window, WindowEvent};
+use tauri_plugin_window_state::StateFlags;
 use tauri_specta::{Builder, Event, collect_commands, collect_events};
 use tracing_subscriber::EnvFilter;
 
 use crate::ipc::commands;
-use crate::ipc::events::{JobFinished, JobProgress, MediaJobReport, ProjectChanged, QuitRequested};
+use crate::ipc::events::{
+    AppInfoChanged, JobFinished, JobProgress, MediaJobReport, OpenFileRequested, ProjectChanged,
+    QuitRequested,
+};
 use crate::jobs::{JobManager, TauriJobHost};
 use crate::preview::Preview;
 use crate::recovery::RecoveryStore;
-use crate::state::AppState;
+use crate::state::{AppState, PreferencesState};
 
 /// Where the generated TypeScript bindings live. Committed to the repo.
 pub const BINDINGS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/src/bindings.ts");
@@ -60,13 +68,20 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             commands::import_media,
             commands::import_media_dialog,
             commands::cancel_job,
+            commands::take_launch_path,
+            commands::get_preferences,
+            commands::set_preferences,
+            commands::get_cache_info,
+            commands::clear_cache,
         ])
         .events(collect_events![
             ProjectChanged,
             QuitRequested,
             JobProgress,
             JobFinished,
-            MediaJobReport
+            MediaJobReport,
+            OpenFileRequested,
+            AppInfoChanged
         ])
         // The only place the UI gets the project file extension from (ADR-0002 amendment §1).
         .constant("PROJECT_FILE_EXTENSION", app_core::PROJECT_FILE_EXTENSION)
@@ -110,8 +125,26 @@ pub fn run() {
         smoke_test::start_watchdog();
     }
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+    // First plugin: a second process hands its arguments over and exits inside plugin init,
+    // before `setup`, so it never takes a recovery lock or reads preferences.
+    let single_instance_env = std::env::var(launch::SINGLE_INSTANCE_ENV).ok();
+    if launch::single_instance_enabled(
+        smoke_test,
+        cfg!(debug_assertions),
+        single_instance_env.as_deref(),
+    ) {
+        builder = builder.plugin(tauri_plugin_single_instance::init(on_second_instance));
+    }
+    builder
         .plugin(tauri_plugin_dialog::init())
+        // Rust side only: restores the main window on creation and saves it on exit. The UI does
+        // not call its JS API, so no capability permission is granted.
+        .plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(StateFlags::SIZE | StateFlags::POSITION | StateFlags::MAXIMIZED)
+                .build(),
+        )
         .invoke_handler(ipc.invoke_handler())
         .on_window_event(on_window_event)
         .register_asynchronous_uri_scheme_protocol(protocol::SCHEME, protocol::handle)
@@ -128,8 +161,16 @@ pub fn run() {
                 uuid::Uuid::now_v7(),
             );
             let jobs = JobManager::new(Arc::new(TauriJobHost::new(app.handle().clone())));
-            app.manage(AppState::new(project, preview, recovery.clone(), jobs));
-            start_autosave(app.handle(), recovery);
+            let preferences = load_preferences(app.handle())?;
+            let interval = preferences.get().autosave_duration();
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let launch_path = launch::project_path_from_args(&launch::own_args(), &cwd);
+            app.manage(
+                AppState::new(project, preview, recovery.clone(), jobs)
+                    .with_preferences(preferences)
+                    .with_launch_path(launch_path),
+            );
+            start_autosave(app.handle(), recovery, interval);
 
             if smoke_test {
                 smoke_test::run(app.handle().clone());
@@ -140,9 +181,46 @@ pub fn run() {
         .expect("error while running the application");
 }
 
-/// Takes this session's recovery lock and starts the autosave thread. Failures only disable
-/// autosave (logged); the app still starts.
-fn start_autosave(app: &tauri::AppHandle, recovery: RecoveryStore) {
+/// Reads the preferences (defaults when missing or invalid) and creates the cache root. A < 1 KB
+/// read on the main thread, once.
+fn load_preferences(app: &AppHandle) -> tauri::Result<PreferencesState> {
+    let path = app.path().app_config_dir()?.join(preferences::FILE_NAME);
+    let startup = preferences::read_startup(&path);
+    let app_cache_dir = app.path().app_cache_dir()?;
+    let state = PreferencesState::new(startup, path, app_cache_dir);
+    let root = state.cache_root();
+    if let Err(err) = std::fs::create_dir_all(&root) {
+        tracing::warn!(%err, root = %root.display(), "cannot create the cache folder");
+    }
+    Ok(state)
+}
+
+/// A second launch (e.g. a double-clicked project file while the app runs): bring the main window
+/// to the front, then ask the UI to open the path it passed, if any.
+fn on_second_instance(app: &AppHandle, argv: Vec<String>, cwd: String) {
+    let path = launch::project_path_from_args(&argv, Path::new(&cwd));
+    tracing::info!(?path, "second instance started");
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+        // Windows' foreground lock may refuse focus; then the taskbar button flashes.
+        for result in [window.unminimize(), window.show(), window.set_focus()] {
+            if let Err(err) = result {
+                tracing::warn!(%err, "cannot bring the main window to the front");
+            }
+        }
+    }
+    if let Some(path) = path {
+        let event = OpenFileRequested {
+            path: path.to_string_lossy().into_owned(),
+        };
+        if let Err(err) = event.emit(app) {
+            tracing::error!(%err, "cannot forward the opened file to the UI");
+        }
+    }
+}
+
+/// Takes this session's recovery lock and starts the autosave thread with `interval` (`None` =
+/// off). Failures only disable autosave (logged); the app still starts.
+fn start_autosave(app: &AppHandle, recovery: RecoveryStore, interval: Option<Duration>) {
     tracing::info!(session = %recovery.session_id(), "recovery session");
     let lock = recovery
         .acquire_lock()
@@ -150,7 +228,7 @@ fn start_autosave(app: &tauri::AppHandle, recovery: RecoveryStore) {
         .ok();
     let handle = app.clone();
     let snapshot = move || handle.state::<AppState>().save_snapshot();
-    match autosave::spawn(recovery, lock, snapshot) {
+    match autosave::spawn(recovery, lock, interval, snapshot) {
         Ok(autosave) => app.state::<AppState>().set_autosave(autosave),
         Err(err) => tracing::error!(%err, "failed to start the autosave thread"),
     }
@@ -194,5 +272,24 @@ mod tests {
     #[test]
     fn export_typescript_bindings() {
         super::export_bindings().expect("bindings export");
+    }
+
+    /// The installer's file association must use the extension the app saves with
+    /// (ADR-0002 amendment §1). The JSON cannot reference the constant, so this test ties them.
+    #[test]
+    fn file_association_uses_the_project_extension() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tauri.conf.json");
+        let config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).expect("tauri.conf.json"))
+                .expect("tauri.conf.json is JSON");
+        let associations = config["bundle"]["fileAssociations"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{path}: bundle.fileAssociations is missing"));
+        assert_eq!(associations.len(), 1, "one association: {associations:?}");
+        assert_eq!(
+            associations[0]["ext"],
+            serde_json::json!([app_core::PROJECT_FILE_EXTENSION]),
+            "bundle.fileAssociations[0].ext must be [PROJECT_FILE_EXTENSION]"
+        );
     }
 }

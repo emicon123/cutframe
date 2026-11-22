@@ -1,5 +1,6 @@
 //! Autosave thread (design `autosave-recovery.md` §5): while the project has unsaved changes,
-//! writes it to the recovery directory every [`AUTOSAVE_INTERVAL`], never over the user's file.
+//! writes it to the recovery directory at the interval set in the preferences (or never, when
+//! autosave is off), never over the user's file.
 //!
 //! The thread owns every write and delete of this session's recovery files, so they are serialized
 //! without a lock and the main thread does no I/O. The decisions live in [`Autosaver`]; the loop
@@ -17,10 +18,6 @@ use uuid::Uuid;
 use crate::recovery::{RecoveryStore, unix_ms};
 use crate::state::SaveSnapshot;
 
-/// How often the open project is autosaved. The only place it is set; task 0150 (preferences)
-/// replaces it.
-pub const AUTOSAVE_INTERVAL: Duration = Duration::from_secs(60);
-
 /// How long a clean exit waits for the thread to delete its files, so a stuck disk cannot hang it.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -30,6 +27,9 @@ pub enum Msg {
     Discard,
     /// Entry `old` was restored into this session: write the own autosave now, then delete `old`.
     Adopt { old: Uuid },
+    /// The autosave interval changed (`None` = off). The next tick is one new interval from now.
+    /// Off also deletes the own autosave, so no stale snapshot is offered later.
+    SetInterval(Option<Duration>),
     /// Clean exit: delete the own autosave and lock file, acknowledge, stop.
     Shutdown { ack: Sender<()> },
 }
@@ -57,37 +57,53 @@ impl AutosaveHandle {
 }
 
 /// Starts the `autosave` thread. `lock` is this session's held recovery lock (or `None` if it
-/// could not be taken); the thread keeps it open until `Shutdown`. `snapshot` takes the state to
-/// save (a brief document lock).
+/// could not be taken); the thread keeps it open until `Shutdown`. `interval` is the autosave
+/// interval from the preferences (`None` = off). `snapshot` takes the state to save (a brief
+/// document lock).
 pub fn spawn(
     store: RecoveryStore,
     lock: Option<File>,
+    interval: Option<Duration>,
     snapshot: impl Fn() -> SaveSnapshot + Send + 'static,
 ) -> io::Result<AutosaveHandle> {
     let (tx, rx) = crossbeam_channel::unbounded();
     thread::Builder::new()
         .name("autosave".into())
-        .spawn(move || run(&rx, &store, Autosaver::new(lock), &snapshot))?;
+        .spawn(move || run(&rx, &store, Autosaver::new(lock), interval, &snapshot))?;
     Ok(AutosaveHandle { tx })
+}
+
+/// When the next tick is due: one `interval` after `now`, or never when autosave is off.
+pub fn next_deadline(now: Instant, interval: Option<Duration>) -> Option<Instant> {
+    interval.map(|interval| now + interval)
 }
 
 fn run(
     rx: &Receiver<Msg>,
     store: &RecoveryStore,
     mut saver: Autosaver,
+    mut interval: Option<Duration>,
     snapshot: &dyn Fn() -> SaveSnapshot,
 ) {
     let now_ms = || unix_ms(SystemTime::now());
-    let mut next_tick = Instant::now() + AUTOSAVE_INTERVAL;
+    let mut next_tick = next_deadline(Instant::now(), interval);
     loop {
-        match rx.recv_deadline(next_tick) {
+        let received = match next_tick {
+            Some(deadline) => rx.recv_deadline(deadline),
+            None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+        };
+        match received {
             Ok(msg) => {
+                if let Msg::SetInterval(new) = msg {
+                    interval = new;
+                    next_tick = next_deadline(Instant::now(), interval);
+                }
                 if saver.handle(msg, snapshot, now_ms(), store) == Flow::Exit {
                     return;
                 }
             }
             Err(RecvTimeoutError::Timeout) => {
-                next_tick = Instant::now() + AUTOSAVE_INTERVAL;
+                next_tick = next_deadline(Instant::now(), interval);
                 // `saved_at_ms` is the time the snapshot was taken.
                 let (snap, now) = (snapshot(), now_ms());
                 if let Err(err) = saver.tick(&snap, now, store) {
@@ -157,7 +173,8 @@ impl Autosaver {
         store: &RecoveryStore,
     ) -> Flow {
         match msg {
-            Msg::Discard => {
+            Msg::SetInterval(Some(_)) => Flow::Continue,
+            Msg::Discard | Msg::SetInterval(None) => {
                 self.last_written = None;
                 if let Err(err) = store.delete_own() {
                     tracing::warn!(%err, "failed to delete the autosave");
@@ -431,7 +448,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let s = store(dir.path());
         let lock = s.acquire_lock().unwrap();
-        let handle = spawn(s, Some(lock), || {
+        let handle = spawn(s, Some(lock), Some(Duration::from_secs(60)), || {
             AppState::new(
                 Project::new("P"),
                 None,
@@ -443,6 +460,66 @@ mod tests {
         .unwrap();
         handle.shutdown();
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn next_deadline_is_one_interval_away_or_never() {
+        let now = Instant::now();
+        assert_eq!(
+            next_deadline(now, Some(Duration::from_secs(15))),
+            Some(now + Duration::from_secs(15))
+        );
+        assert_eq!(next_deadline(now, None), None);
+    }
+
+    #[test]
+    fn switching_autosave_off_deletes_the_own_file() {
+        let mut f = Fixture::new();
+        rename(&f.state, "A");
+        assert!(f.tick());
+        assert_eq!(
+            f.handle(Msg::SetInterval(Some(Duration::from_secs(30)))),
+            Flow::Continue
+        );
+        assert_eq!(f.written().as_deref(), Some("A"), "a new interval keeps it");
+        assert_eq!(f.handle(Msg::SetInterval(None)), Flow::Continue);
+        assert_eq!(f.written(), None);
+    }
+
+    /// The thread waits for the new, shorter deadline instead of the old one; with autosave off
+    /// it never ticks.
+    #[test]
+    fn the_thread_follows_interval_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new(
+            Project::new("Start"),
+            None,
+            store(dir.path()),
+            crate::jobs::JobManager::for_tests(),
+        );
+        rename(&state, "Dirty");
+        let snap = state.save_snapshot();
+        let handle = spawn(state.recovery().clone(), None, None, move || snap.clone()).unwrap();
+        let own = dir.path().join(own_file(state.recovery()));
+
+        thread::sleep(Duration::from_millis(100));
+        assert!(!own.exists(), "off: no ticks");
+
+        handle.send(Msg::SetInterval(Some(Duration::from_secs(3_600))));
+        handle.send(Msg::SetInterval(Some(Duration::from_millis(20))));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !own.exists() {
+            assert!(Instant::now() < deadline, "no tick at the new deadline");
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        handle.send(Msg::SetInterval(None));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while own.exists() {
+            assert!(Instant::now() < deadline, "off did not delete the autosave");
+            thread::sleep(Duration::from_millis(10));
+        }
+        handle.shutdown();
     }
 
     /// Design budget (autosave-recovery §10): one tick on a 1,000-clip, 20-track project holds the
