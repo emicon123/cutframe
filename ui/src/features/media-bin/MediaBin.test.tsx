@@ -1,13 +1,15 @@
-import { mockWindows } from "@tauri-apps/api/mocks";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { mockConvertFileSrc, mockWindows } from "@tauri-apps/api/mocks";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { emit } from "@tauri-apps/api/event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { mockCommands, type MediaView_Serialize } from "@/bindings";
 import { t } from "@/i18n";
 import { FLICKS_PER_SECOND } from "@/lib/time";
+import { useAppStore } from "@/stores/appStore";
 import { initialImportState, useImportStore } from "@/stores/importStore";
 import { type ProjectState, useProjectStore } from "@/stores/projectStore";
+import { useUiStore } from "@/stores/uiStore";
 
 import { MediaBin } from "./MediaBin";
 
@@ -26,7 +28,35 @@ const video: MediaView_Serialize = {
   status: "online",
   usedBy: 0,
   previewVersion: "0123456789abcdef",
+  filmstrip: { interval: FLICKS_PER_SECOND, frames: 42, framesPerTile: 32, frameWidth: 54 },
 };
+
+const photo: MediaView_Serialize = {
+  ...video,
+  id: "m2",
+  kind: "image",
+  fileName: "beach.heic",
+  path: "C:\\photos\\beach.heic",
+  duration: null,
+  hdr: "hlg",
+  previewVersion: "fedcba9876543210",
+  filmstrip: null,
+};
+
+const song: MediaView_Serialize = {
+  ...video,
+  id: "m3",
+  kind: "audio",
+  fileName: "song.mp3",
+  path: "C:\\music\\song.mp3",
+  duration: 185 * FLICKS_PER_SECOND,
+  displayWidth: null,
+  displayHeight: null,
+  previewVersion: "aaaaaaaaaaaaaaaa",
+  filmstrip: null,
+};
+
+const option = (name: string) => screen.getByRole("option", { name: new RegExp(name.replace(".", "\\.")) });
 
 function withMedia(media: MediaView_Serialize[]): ProjectState {
   return {
@@ -50,6 +80,9 @@ let calls: string[];
 beforeEach(() => {
   calls = [];
   mockWindows("main");
+  mockConvertFileSrc("windows");
+  // Waveform requests never answer in these tests.
+  vi.stubGlobal("fetch", () => new Promise(() => undefined));
   mockCommands({
     importMediaDialog: ({ filterLabel }) => {
       calls.push(`dialog ${filterLabel}`);
@@ -63,11 +96,27 @@ beforeEach(() => {
       calls.push(`cancel ${id}`);
       return null;
     },
+    removeMedia: ({ ids }) => {
+      calls.push(`remove ${ids.join(",")}`);
+      return null;
+    },
+    revealMedia: ({ id }) => {
+      calls.push(`reveal ${id}`);
+      return null;
+    },
   });
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  useUiStore.setState({
+    mediaLayout: "grid",
+    mediaSort: "imported",
+    mediaSortDirection: "asc",
+    mediaKinds: [],
+  });
+  useAppStore.setState({ previewOccluders: 0 });
   useProjectStore.setState({ state: null });
   useImportStore.setState(initialImportState);
 });
@@ -84,11 +133,127 @@ describe("MediaBin", () => {
     expect(screen.getByText(t.mediaBin.job.cancelling)).toBeTruthy();
   });
 
-  it("lists imported media with kind, duration and resolution", () => {
+  it("shows a grid with posters, durations and an HDR badge, and a list view with details", () => {
+    useProjectStore.setState({ state: withMedia([video, photo, song]) });
+    render(<MediaBin />);
+    const tile = option("portrait.mp4");
+    expect(within(tile).getByText("0:42")).toBeTruthy();
+    expect(tile.querySelector("img")?.getAttribute("src")).toBe(
+      "http://media.localhost/poster/m1?v=0123456789abcdef",
+    );
+    expect(tile.querySelector("img")?.getAttribute("loading")).toBe("lazy");
+    expect(within(option("beach.heic")).getByText(t.mediaBin.hdr.badge.hlg)).toBeTruthy();
+    // Audio items draw a waveform instead of a poster.
+    expect(option("song.mp3").querySelector("img")).toBeNull();
+    expect(option("song.mp3").querySelector("canvas")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: t.mediaBin.layout.list }));
+    expect(useUiStore.getState().mediaLayout).toBe("list");
+    expect(screen.getByText("Video · 0:42 · 1080×1920")).toBeTruthy();
+  });
+
+  it("searches by name and sorts by the remembered key", async () => {
+    useProjectStore.setState({ state: withMedia([video, photo, song]) });
+    useUiStore.setState({ mediaSort: "name" });
+    render(<MediaBin />);
+    const names = () => screen.getAllByRole("option").map((o) => o.querySelector("p")?.textContent);
+    expect(names()).toEqual(["beach.heic", "portrait.mp4", "song.mp3"]);
+
+    fireEvent.change(screen.getByRole("searchbox", { name: t.mediaBin.search }), {
+      target: { value: "SON" },
+    });
+    await waitFor(() => expect(names()).toEqual(["song.mp3"]));
+
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "zzz" } });
+    expect(await screen.findByText(t.mediaBin.noMatches)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: t.mediaBin.clearFilters }));
+    await waitFor(() => expect(names()).toHaveLength(3));
+  });
+
+  it("removes the selection after confirmation with Delete", async () => {
+    useProjectStore.setState({ state: withMedia([video, photo, song]) });
+    render(<MediaBin />);
+    fireEvent.click(option("portrait.mp4"));
+    fireEvent.click(option("song.mp3"), { ctrlKey: true });
+    expect(option("portrait.mp4").getAttribute("aria-selected")).toBe("true");
+    expect(option("beach.heic").getAttribute("aria-selected")).toBe("false");
+
+    fireEvent.keyDown(option("song.mp3"), { key: "Delete" });
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(t.mediaBin.remove.title(2, ""))).toBeTruthy();
+    expect(useAppStore.getState().previewOccluders).toBe(1);
+    fireEvent.click(within(dialog).getByRole("button", { name: t.mediaBin.remove.confirm }));
+    await waitFor(() => expect(calls).toEqual(["remove m1,m3"]));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("moves the selection and focus with arrow keys and extends it with Shift", () => {
+    useProjectStore.setState({ state: withMedia([video, photo, song]) });
+    useUiStore.setState({ mediaLayout: "list" });
+    render(<MediaBin />);
+    fireEvent.click(option("portrait.mp4"));
+    fireEvent.keyDown(option("portrait.mp4"), { key: "ArrowDown" });
+    expect(document.activeElement).toBe(option("beach.heic"));
+    fireEvent.keyDown(option("beach.heic"), { key: "ArrowDown", shiftKey: true });
+    const selected = screen.getAllByRole("option").filter((o) => o.getAttribute("aria-selected") === "true");
+    expect(selected.map((o) => o.dataset.mediaId)).toEqual(["m2", "m3"]);
+    expect(option("song.mp3").tabIndex).toBe(0);
+    expect(option("portrait.mp4").tabIndex).toBe(-1);
+  });
+
+  it("cancelling the confirmation removes nothing", async () => {
     useProjectStore.setState({ state: withMedia([video]) });
     render(<MediaBin />);
-    expect(screen.getByText("portrait.mp4")).toBeTruthy();
-    expect(screen.getByText("Video · 0:42 · 1080×1920")).toBeTruthy();
+    fireEvent.click(option("portrait.mp4"));
+    fireEvent.keyDown(option("portrait.mp4"), { key: "Delete" });
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(t.mediaBin.remove.title(1, "portrait.mp4"))).toBeTruthy();
+    // The footer button; the dialog's ✕ carries the same label.
+    const [cancel] = within(dialog).getAllByRole("button", { name: t.mediaBin.remove.cancel });
+    if (cancel) fireEvent.click(cancel);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(calls).toEqual([]);
+  });
+
+  it("reveals the right-clicked item in Explorer from the context menu", async () => {
+    useProjectStore.setState({ state: withMedia([video, photo]) });
+    render(<MediaBin />);
+    fireEvent.contextMenu(option("beach.heic"));
+    const menu = await screen.findByRole("menu");
+    // The open menu hides the rest of the page from the accessibility tree.
+    const tile = screen.getByRole("option", { name: /beach/, hidden: true });
+    expect(tile.getAttribute("aria-selected")).toBe("true");
+    expect(useAppStore.getState().previewOccluders).toBe(1);
+    fireEvent.click(within(menu).getByRole("menuitem", { name: t.mediaBin.actions.reveal }));
+    await waitFor(() => expect(calls).toEqual(["reveal m2"]));
+  });
+
+  it("skims a video: the pointer position picks the filmstrip tile and frame", () => {
+    useProjectStore.setState({ state: withMedia([video]) });
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+      DOMRect.fromRect({ x: 0, y: 0, width: 100, height: 56 }),
+    );
+    render(<MediaBin />);
+    const skim = within(option("portrait.mp4")).getByTestId("skim");
+    // 42 frames; x = 80 % lands on frame 33, slot 1 of tile 1 (which holds 10 frames).
+    fireEvent.pointerMove(skim, { clientX: 80, pointerType: "mouse" });
+    const sprite = skim.firstElementChild as HTMLElement;
+    expect(sprite.style.backgroundImage).toContain("filmstrip/m1?tile=1&v=0123456789abcdef");
+    expect(sprite.style.backgroundSize).toBe("1000% 100%");
+    fireEvent.pointerLeave(skim);
+    expect(skim.childElementCount).toBe(0);
+  });
+
+  it("shows background preview generation without a cancel button or result", () => {
+    useProjectStore.setState({ state: withMedia([video]) });
+    useImportStore.getState().dispatch({
+      type: "progress",
+      event: { jobId: "bg", stage: "generatingPreviews", progress: 0.25 },
+    });
+    render(<MediaBin />);
+    const bar = screen.getByRole("progressbar", { name: t.mediaBin.background });
+    expect(bar.getAttribute("aria-valuenow")).toBe("25");
+    expect(screen.queryByRole("button", { name: t.mediaBin.job.cancel })).toBeNull();
   });
 
   it("shows translated per-file reasons after a job with failures", () => {

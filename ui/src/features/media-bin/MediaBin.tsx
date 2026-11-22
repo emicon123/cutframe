@@ -1,17 +1,21 @@
-import { CircleAlert, Film, FolderOpen, Image, Music, Upload, X } from "lucide-react";
-import { type KeyboardEvent, useEffect, useRef } from "react";
+import { CircleAlert, FolderOpen, Loader, Upload, X } from "lucide-react";
+import { type KeyboardEvent, useDeferredValue, useEffect, useRef, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 
-import type { MediaKind, MediaView_Serialize } from "@/bindings";
+import type { MediaView_Serialize } from "@/bindings";
 import { Button } from "@/components/ui/button";
 import { jobStageText, mediaErrorText, t } from "@/i18n";
-import { formatDuration } from "@/lib/time";
 import { cn } from "@/lib/utils";
-import { type ImportJob, isCleanSummary, useImportStore } from "@/stores/importStore";
+import { type ImportJob, isBackgroundJob, isCleanSummary, useImportStore } from "@/stores/importStore";
 import { useProjectStore } from "@/stores/projectStore";
+import { useUiStore } from "@/stores/uiStore";
 
+import { browseMedia } from "./browse";
 import { fileNameOf } from "./dropTarget";
 import { cancelAllImports, cancelImport, importFromDialog, importPaths } from "./importActions";
 import { summaryLines } from "./importSummary";
+import { MediaBrowser } from "./MediaBrowser";
+import { MediaToolbar } from "./MediaToolbar";
 import { useFileDrop } from "./useFileDrop";
 
 /** How long a result with nothing to read (every file added) stays visible. */
@@ -49,8 +53,9 @@ export function MediaBin() {
         </Button>
       </header>
       <ImportJobs />
-      {media && media.length > 0 ? <MediaList media={media} /> : <EmptyState />}
+      {media && media.length > 0 ? <MediaContent media={media} /> : <EmptyState />}
       <ImportResult />
+      <BackgroundJobs />
       {hovering && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-background/70 font-medium text-primary">
           {t.mediaBin.dropHint}
@@ -70,38 +75,79 @@ function EmptyState() {
   );
 }
 
-const KIND_ICONS = { video: Film, audio: Music, image: Image } satisfies Record<MediaKind, unknown>;
+/** Search, filter and sort over the project's media, then the grid or list. */
+function MediaContent({ media }: { media: MediaView_Serialize[] }) {
+  const [query, setQuery] = useState("");
+  const deferredQuery = useDeferredValue(query);
+  const { layout, sort, direction, kinds, setKinds } = useUiStore(
+    useShallow((s) => ({
+      layout: s.mediaLayout,
+      sort: s.mediaSort,
+      direction: s.mediaSortDirection,
+      kinds: s.mediaKinds,
+      setKinds: s.setMediaKinds,
+    })),
+  );
+  const visible = browseMedia(media, { sort, direction, kinds, query: deferredQuery });
 
-function mediaDetails(item: MediaView_Serialize): string {
-  const parts: string[] = [t.mediaBin.kinds[item.kind]];
-  if (item.duration !== null) parts.push(formatDuration(item.duration));
-  if (item.displayWidth !== null && item.displayHeight !== null) {
-    parts.push(t.mediaBin.resolution(item.displayWidth, item.displayHeight));
-  }
-  return parts.join(t.mediaBin.detailSeparator);
+  return (
+    <>
+      <MediaToolbar query={query} onQueryChange={setQuery} />
+      {visible.length > 0 ? (
+        <MediaBrowser media={visible} layout={layout} />
+      ) : (
+        <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center text-xs text-muted-foreground">
+          <p>{t.mediaBin.noMatches}</p>
+          <Button
+            variant="outline"
+            size="xs"
+            onClick={() => {
+              setQuery("");
+              setKinds([]);
+            }}
+          >
+            {t.mediaBin.clearFilters}
+          </Button>
+        </div>
+      )}
+    </>
+  );
 }
 
-function MediaList({ media }: { media: MediaView_Serialize[] }) {
+/** Slim, unobtrusive progress of preview generation that Rust runs by itself (F1.23). */
+function BackgroundJobs() {
+  const jobs = useImportStore(useShallow((s) => s.jobs.filter(isBackgroundJob)));
+  const job = jobs[0];
+  if (!job) return null;
+  const percent = job.progress === null ? null : Math.round(job.progress * 100);
+  const label = jobStageText(job.stage ?? "generatingPreviews");
   return (
-    <ul className="min-h-0 flex-1 overflow-y-auto py-1" aria-label={t.mediaBin.list}>
-      {media.map((item) => {
-        const Icon = KIND_ICONS[item.kind];
-        return (
-          <li key={item.id} className="flex items-center gap-2 px-3 py-1.5" title={item.path}>
-            <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-            <div className="min-w-0">
-              <p className="truncate">{item.fileName}</p>
-              <p className="truncate text-xs text-muted-foreground">{mediaDetails(item)}</p>
-            </div>
-          </li>
-        );
-      })}
-    </ul>
+    <div
+      className="flex shrink-0 items-center gap-2 border-t px-3 py-1 text-xs text-muted-foreground"
+      title={t.mediaBin.background}
+    >
+      <Loader className="size-3 shrink-0 animate-spin" aria-hidden />
+      <span className="truncate">{label}</span>
+      <div
+        role="progressbar"
+        aria-label={t.mediaBin.background}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent ?? undefined}
+        className="h-0.5 min-w-8 flex-1 overflow-hidden rounded-full bg-muted"
+      >
+        <div
+          className={cn("h-full rounded-full bg-primary/70", percent === null && "w-full animate-pulse")}
+          style={percent === null ? undefined : { width: `${percent}%` }}
+        />
+      </div>
+      {percent !== null && <span className="tabular-nums">{t.mediaBin.job.percent(percent)}</span>}
+    </div>
   );
 }
 
 function ImportJobs() {
-  const jobs = useImportStore((s) => s.jobs);
+  const jobs = useImportStore(useShallow((s) => s.jobs.filter((job) => !isBackgroundJob(job))));
   if (jobs.length === 0) return null;
   return (
     <div className="flex shrink-0 flex-col gap-2 border-b px-3 py-2">

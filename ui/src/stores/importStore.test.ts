@@ -7,6 +7,7 @@ import {
   importReducer,
   type ImportState,
   initialImportState,
+  isBackgroundJob,
   isCleanSummary,
   summarizeReport,
 } from "./importStore";
@@ -120,6 +121,24 @@ describe("importReducer", () => {
     ]);
     expect(state.jobs.map((j) => j.id)).toEqual(["b"]);
     expect(state.summary?.jobId).toBe("a");
+  });
+
+  it("treats preview generation as background work without a result", () => {
+    const progress = (stage: "generatingPreviews" | "probing") => ({
+      type: "progress" as const,
+      event: { jobId: "bg", stage, progress: 0.5 },
+    });
+    const running = reduce([progress("generatingPreviews")]);
+    expect(running.jobs.map(isBackgroundJob)).toEqual([true]);
+    expect(isBackgroundJob({ stage: "probing" })).toBe(false);
+    expect(isBackgroundJob({ stage: null })).toBe(false);
+
+    const failed = reduce([
+      progress("generatingPreviews"),
+      { type: "finished", event: { jobId: "bg", result: { Err: { kind: "internal", message: "" } } } },
+    ]);
+    expect(failed.jobs).toEqual([]);
+    expect(failed.summary).toBeNull();
   });
 
   it("remembers a bounded number of finished ids", () => {

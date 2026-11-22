@@ -12,6 +12,7 @@ describe("historyLabelText", () => {
     ["renameProject", "Rename Project"],
     ["setProjectSettings", "Change Project Settings"],
     ["importMedia", "Import Media"],
+    ["removeMedia", "Remove Media"],
   ])("translates %s", (label, text) => {
     expect(historyLabelText(label)).toBe(text);
     expect(t.edit.undoAction(historyLabelText(label))).toBe(`Undo ${text}`);
@@ -66,11 +67,11 @@ describe("mediaErrorText", () => {
 });
 
 describe("jobStageText", () => {
-  it.each<JobStage>(["probing"])("translates %s", (stage) => {
+  it.each<JobStage>(["probing", "generatingPreviews"])("translates %s", (stage) => {
     expect(jobStageText(stage)).toBe(t.mediaBin.job.stages[stage]);
   });
 
   it("falls back to generic text for an unknown stage", () => {
-    expect(jobStageText("generatingPreviews")).toBe(t.mediaBin.job.unknownStage);
+    expect(jobStageText("checkingMedia")).toBe(t.mediaBin.job.unknownStage);
   });
 });
