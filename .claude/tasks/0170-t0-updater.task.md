@@ -1,11 +1,12 @@
-# Task 0170: Auto-update and code signing
+# Task 0170: Auto-update
 
 **Tier:** 0 · **Agents:** **user**, `devops`, `backend`, `frontend` · **Depends on:** `0160`
 **Spec:** `docs/feature-catalog.md` (feature IDs below), `docs/adr/`, `docs/design/`, `CLAUDE.md`
 
 ## Why
 
-Hard constraint: the app must update itself. Review items F31–F33.
+Hard constraint: the app must update itself. Review items F31 and F33 (F32, code signing, is out of
+scope: private use, see the ADR-0001 amendment).
 
 ## Features
 
@@ -14,7 +15,9 @@ Hard constraint: the app must update itself. Review items F31–F33.
 ## Scope
 
 - **user:** freeze the product name, identifier and updater key (review F33, CLAUDE.md H5) — changing them after the first public release breaks updates. This task may wait for that decision; later tasks do not depend on it.
-- **devops:** `tauri-plugin-updater` config, `latest.json` on GitHub Releases, signing keys in Actions secrets; Authenticode signing of the installer (review F32).
+- **devops:** `tauri-plugin-updater` config, `latest.json` on GitHub Releases, updater signing keys in Actions secrets. The repository is private, so first decide how the
+  installed app reaches `latest.json` and the installer (e.g. a public release-asset host, or a
+  read-only token); no Authenticode signing.
 - **backend:** register the plugin; **frontend:** update prompt (download, progress, restart).
 
 ## Done when

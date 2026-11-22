@@ -32,7 +32,7 @@ audit what already exists and to pick the next work items.
 
 ## Work plan
 
-Every feature of tiers 0–3 that is not `done` belongs to exactly one task file in `.claude/tasks/`:
+Every feature of tiers 0–3 that is not `done` or `n/a` belongs to exactly one task file in `.claude/tasks/`:
 `01xx` tier 0, `02xx`–`04xx` tier 1, `05xx`–`06xx` tier 2, `07xx`–`08xx` tier 3. Design tasks for the
 `architect` come before the feature tasks they unblock. Numbers step by 10, so new tasks can be
 inserted between existing ones.
@@ -43,6 +43,7 @@ inserted between existing ones.
 |---|---|---|---|
 | 2026-11-21 | `2c0c2f7` | Tiers 0–1 | Tier 0: 6 done, 10 partial, 19 missing. Tier 1: 4 done, 9 partial, 86 missing (no media, clip editing, playback or export yet). |
 | 2026-11-22 | `f37e796` | F0.28, F0.29 | Done by task 0006 (edit transactions). Tier 0 now: 8 done, 10 partial, 17 missing. |
+| 2026-11-22 | `8174ada` | Tiers 2–3 | Private hobby use (`CLAUDE.md` "Purpose"): 35 rows set to `n/a`; tasks 0620, 0790, 0820 and 0830 removed, others trimmed. |
 
 ## Tiers
 
@@ -74,7 +75,7 @@ inserted between existing ones.
 | F0.09 | Logging to a file in app data; "open logs folder" | `tracing` logs to stdout only; no file, no "open logs folder" | partial |
 | F0.10 | About dialog with version and third-party licence notices (FFmpeg LGPL notice, source offer) | LGPL compliance requirement; Version shown in the status bar only; no licence notices | missing |
 | F0.11 | Per-user NSIS installer, no admin rights | Hard constraint; `tauri.conf.json` `installMode: currentUser`; CI installs silently and smoke-tests | done |
-| F0.12 | Automatic updates (check, download, install, restart) | Hard constraint; No updater plugin or config; no signing (`docs/architecture-review.md`) | missing |
+| F0.12 | Automatic updates (check, download, install, restart) | Hard constraint; No updater plugin or config; no Authenticode signing by design (private use, ADR-0001 amendment) | missing |
 | F0.13 | GPU / hardware-acceleration capability detection with graceful fallback | Adapter/backend/software (WARP) detected and shown; preview `unavailable` fallback; no hardware decode/encode yet | partial |
 | F0.14 | Single-instance handling (opening a project file focuses the running app) | | missing |
 | F0.15 | File association for the project file extension | devops; Extension not decided (ADR-0002, H5) | missing |
@@ -366,7 +367,7 @@ inserted between existing ones.
 
 | ID | Feature | Notes | Status |
 |---|---|---|---|
-| F2.72 | Sticker library (static and animated) | Content | ? |
+| F2.72 | Sticker library (static and animated) | Out of scope (private hobby use): licensed content is a public-product need; use own files. Was: Content | n/a |
 | F2.73 | Import own stickers (PNG, GIF, APNG, animated WebP) | | ? |
 | F2.74 | Sticker in/out/loop animations | | ? |
 | F2.75 | Shapes (rectangle, circle, arrow, line) with fill/stroke | | ? |
@@ -385,8 +386,8 @@ inserted between existing ones.
 | F2.83 | Pan / balance; mono/stereo handling | | ? |
 | F2.84 | Audio speed change with pitch options | | ? |
 | F2.85 | Manual beat markers on music clips | | ? |
-| F2.86 | Built-in sound effects library | Content | ? |
-| F2.87 | Built-in royalty-free music library | Content | ? |
+| F2.86 | Built-in sound effects library | Out of scope (private hobby use): licensed content is a public-product need; use own files. Was: Content | n/a |
+| F2.87 | Built-in royalty-free music library | Out of scope (private hobby use): licensed content is a public-product need; use own files or the YouTube Audio Library. Was: Content | n/a |
 
 ### Timeline productivity
 
@@ -412,7 +413,7 @@ inserted between existing ones.
 | F2.100 | Export a range (in/out) only | | ? |
 | F2.101 | Save and reuse export presets | | ? |
 | F2.102 | Estimated file size | | ? |
-| F2.103 | Animated GIF export | | ? |
+| F2.103 | Animated GIF export | Out of scope (private hobby use): GIF is not a YouTube format | n/a |
 | F2.104 | Social presets (vertical 1080×1920, square, etc.) | | ? |
 | F2.105 | Video cover / thumbnail: pick a frame or image, add text, embed in file and use in recent projects | | ? |
 
@@ -430,8 +431,8 @@ inserted between existing ones.
 | F3.04 | Word-level highlight (karaoke-style) captions | Needs word timestamps | ? |
 | F3.05 | Import subtitles (SRT, ASS, LRC) | | ? |
 | F3.06 | Export subtitles (SRT, TXT) and burn-in on export | | ? |
-| F3.07 | Bilingual captions / translation | Model or online service | ? |
-| F3.08 | Lyrics recognition on music | Model | ? |
+| F3.07 | Bilingual captions / translation | Out of scope (private hobby use): niche, needs a model or online service. Was: Model or online service | n/a |
+| F3.08 | Lyrics recognition on music | Out of scope (private hobby use): niche, needs a model. Was: Model | n/a |
 | F3.09 | Text-to-speech from a text clip | Model / OS voices | ? |
 | F3.10 | Transcript-based editing: delete words in the transcript to cut the video | | ? |
 | F3.11 | Remove filler words | | ? |
@@ -451,7 +452,7 @@ inserted between existing ones.
 | F3.20 | Automatic beat detection on music | | ? |
 | F3.21 | Auto-cut to the beat (place cuts on beat markers) | | ? |
 | F3.22 | Audio fade curve shapes | | ? |
-| F3.23 | Vocal / instrumental separation | Model | ? |
+| F3.23 | Vocal / instrumental separation | Out of scope (private hobby use): heavy ML model for little gain. Was: Model | n/a |
 | F3.24 | Audio mixer panel | | ? |
 
 ### Pro colour
@@ -460,13 +461,13 @@ inserted between existing ones.
 |---|---|---|---|
 | F3.25 | HSL: per-hue-range hue/saturation/lightness | | ? |
 | F3.26 | Curves: master, R, G, B, hue-vs-sat, etc. | | ? |
-| F3.27 | Colour wheels: lift, gamma, gain, offset | | ? |
-| F3.28 | Scopes: waveform, vectorscope, histogram, RGB parade | | ? |
-| F3.29 | Colour match between clips | | ? |
+| F3.27 | Colour wheels: lift, gamma, gain, offset | Out of scope (private hobby use): pro grading | n/a |
+| F3.28 | Scopes: waveform, vectorscope, histogram, RGB parade | Out of scope (private hobby use): pro grading | n/a |
+| F3.29 | Colour match between clips | Out of scope (private hobby use): pro grading | n/a |
 | F3.30 | 10-bit (and higher) internal pipeline | Render graph | ? |
 | F3.31 | HDR sources (PQ/HLG, Rec.2020) with tone mapping to SDR | ADR: colour management | ? |
-| F3.32 | HDR export | | ? |
-| F3.33 | Colour-space aware pipeline (Rec.709, sRGB, Display P3) | ADR | ? |
+| F3.32 | HDR export | Out of scope (private hobby use): YouTube delivery stays SDR | n/a |
+| F3.33 | Colour-space aware pipeline (Rec.709, sRGB, Display P3) | Out of scope (private hobby use): wide-gamut delivery not needed; Rec.709 only. Was: ADR | n/a |
 
 ### Motion and image processing
 
@@ -481,8 +482,8 @@ inserted between existing ones.
 | F3.40 | Auto reframe to another aspect ratio following the subject | | ? |
 | F3.41 | Scene detection: auto split a clip at scene cuts | | ? |
 | F3.42 | Video denoise | | ? |
-| F3.43 | Deflicker | | ? |
-| F3.44 | Lens distortion correction | | ? |
+| F3.43 | Deflicker | Out of scope (private hobby use): pro footage repair | n/a |
+| F3.44 | Lens distortion correction | Out of scope (private hobby use): pro footage repair | n/a |
 
 ### Performance
 
@@ -499,34 +500,34 @@ inserted between existing ones.
 
 | ID | Feature | Notes | Status |
 |---|---|---|---|
-| F3.51 | Insert vs overwrite edits; three-point editing | | ? |
-| F3.52 | Roll, slip and slide edits | | ? |
-| F3.53 | Timecode entry for move/seek ("+1:00" style) | | ? |
-| F3.54 | Customisable keyboard shortcuts with presets resembling other popular editors | | ? |
-| F3.55 | Media folders/bins, tags, ratings | | ? |
-| F3.56 | Multiple timelines/sequences in one project | | ? |
-| F3.57 | Multicam editing (sync by audio, switch angles) | | ? |
+| F3.51 | Insert vs overwrite edits; three-point editing | Out of scope (private hobby use): pro editing workflow | n/a |
+| F3.52 | Roll, slip and slide edits | Out of scope (private hobby use): pro editing workflow | n/a |
+| F3.53 | Timecode entry for move/seek ("+1:00" style) | Out of scope (private hobby use): pro editing workflow | n/a |
+| F3.54 | Customisable keyboard shortcuts with presets resembling other popular editors | Out of scope (private hobby use): pro editing workflow; default shortcuts are enough | n/a |
+| F3.55 | Media folders/bins, tags, ratings | Out of scope (private hobby use): one-person projects do not need tags or ratings | n/a |
+| F3.56 | Multiple timelines/sequences in one project | Out of scope (private hobby use): one video per project | n/a |
+| F3.57 | Multicam editing (sync by audio, switch angles) | Out of scope (private hobby use): rare in hobby recording; audio sync (F3.58) stays | n/a |
 | F3.58 | Sync clips by audio waveform | | ? |
 | F3.59 | Project versions / snapshots | | ? |
 | F3.60 | Collect files: copy project + all media into a folder (archive) | | ? |
-| F3.61 | Interchange: import/export OpenTimelineIO / FCPXML / EDL | | ? |
-| F3.62 | Screen recording built into the app | | ? |
-| F3.63 | Webcam recording built into the app | | ? |
-| F3.64 | Teleprompter for voiceover/webcam recording | | ? |
+| F3.61 | Interchange: import/export OpenTimelineIO / FCPXML / EDL | Out of scope (private hobby use): no other NLE to exchange projects with | n/a |
+| F3.62 | Screen recording built into the app | Out of scope (private hobby use): use OBS | n/a |
+| F3.63 | Webcam recording built into the app | Out of scope (private hobby use): use OBS | n/a |
+| F3.64 | Teleprompter for voiceover/webcam recording | Out of scope (private hobby use): use OBS or a dedicated teleprompter app | n/a |
 
 ### Pro export
 
 | ID | Feature | Notes | Status |
 |---|---|---|---|
-| F3.65 | ProRes / DNxHR export (MOV) | FFmpeg native encoders, LGPL-safe | ? |
-| F3.66 | AV1 export | Hardware AV1 or SVT-AV1 (BSD) | ? |
-| F3.67 | VP9 / WebM export | libvpx (BSD) | ? |
-| F3.68 | Export with transparent background (ProRes 4444, WebM alpha, PNG sequence) | | ? |
-| F3.69 | Image sequence export | | ? |
-| F3.70 | Export queue / batch export | | ? |
-| F3.71 | Higher frame rates (120 fps) and up to 8K | | ? |
-| F3.72 | Audio stems export (per track) | | ? |
-| F3.73 | Chapter markers embedded in MP4 | | ? |
+| F3.65 | ProRes / DNxHR export (MOV) | Out of scope (private hobby use): pro delivery format; YouTube takes H.264/HEVC. Was: FFmpeg native encoders, LGPL-safe | n/a |
+| F3.66 | AV1 export | Out of scope (private hobby use): pro delivery format; YouTube takes H.264/HEVC. Was: Hardware AV1 or SVT-AV1 (BSD) | n/a |
+| F3.67 | VP9 / WebM export | Out of scope (private hobby use): pro delivery format; YouTube takes H.264/HEVC. Was: libvpx (BSD) | n/a |
+| F3.68 | Export with transparent background (ProRes 4444, WebM alpha, PNG sequence) | Out of scope (private hobby use): pro delivery format | n/a |
+| F3.69 | Image sequence export | Out of scope (private hobby use): pro delivery format | n/a |
+| F3.70 | Export queue / batch export | Out of scope (private hobby use): one video at a time | n/a |
+| F3.71 | Higher frame rates (120 fps) and up to 8K | Out of scope (private hobby use): beyond YouTube hobby needs | n/a |
+| F3.72 | Audio stems export (per track) | Out of scope (private hobby use): pro delivery format | n/a |
+| F3.73 | Chapter markers embedded in MP4 | Out of scope (private hobby use): YouTube chapters come from the description | n/a |
 
 ### Localisation and accessibility
 
@@ -534,7 +535,7 @@ inserted between existing ones.
 |---|---|---|---|
 | F3.74 | Polish UI locale | `CLAUDE.md`: later | ? |
 | F3.75 | Keyboard-only operation of all panels | | ? |
-| F3.76 | Screen-reader labels; high-contrast / UI scale options | | ? |
+| F3.76 | Screen-reader labels; high-contrast / UI scale options | Out of scope (private hobby use): single known user | n/a |
 
 ---
 

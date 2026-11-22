@@ -18,6 +18,14 @@ Windows only (decision of 2026-11-22): Linux and the Raspberry Pi are no longer 
 platforms (ADR-0001 and ADR-0005 amendments). The legacy Linux code paths (`frames` preview mode)
 are still in the code but unmaintained.
 
+**Purpose: private, hobby use.** Cutframe is built for one person's own hobby video editing (e.g.
+YouTube videos and Shorts), not as a commercial or publicly distributed product. Judge every feature
+against that goal: keep what helps cut, polish and export a YouTube video quickly; drop professional
+post-production workflows (interchange with other NLEs, broadcast/delivery formats, pro grading
+suites), features that exist only for a public product (licensed content libraries, paid code
+signing, accessibility/localisation for other audiences) and features other free tools already do
+better (screen/webcam recording). Do not add such features back without the user asking.
+
 **Canonical spec:** `docs/adr/` and `docs/design/` are the source of truth. If the prompt or the code
 disagrees with them, say so before changing anything.
 

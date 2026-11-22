@@ -1,4 +1,4 @@
-# Task 0720: Transcript editing, silence removal, TTS, translation
+# Task 0720: Transcript editing, silence removal, TTS
 
 **Tier:** 3 · **Agents:** `architect`, `backend`, `frontend` · **Depends on:** `0710`
 **Spec:** `docs/feature-catalog.md` (feature IDs below), `docs/adr/`, `docs/design/`, `CLAUDE.md`
@@ -12,8 +12,6 @@ Speech-driven editing on top of the transcript.
 These rows have not been audited yet (`?`). First check the code, set each row's status in the
 catalog, and drop anything already `done` from the scope.
 
-- [ ] `F3.07` Bilingual captions / translation — *?*
-- [ ] `F3.08` Lyrics recognition on music — *?*
 - [ ] `F3.09` Text-to-speech from a text clip — *?*
 - [ ] `F3.10` Transcript-based editing: delete words in the transcript to cut the video — *?*
 - [ ] `F3.11` Remove filler words — *?*
@@ -21,8 +19,8 @@ catalog, and drop anything already `done` from the scope.
 
 ## Scope
 
-- **architect:** decide local vs online for translation, lyrics and TTS (privacy, licence, cost); some rows may become `n/a`.
-- **backend/frontend:** transcript-based cutting (one `Batch`), filler-word and silence removal with review before applying, TTS clips (OS voices first), bilingual captions, lyrics recognition.
+- **architect:** decide local vs online for TTS (privacy, licence, cost); some rows may become `n/a`.
+- **backend/frontend:** transcript-based cutting (one `Batch`), filler-word and silence removal with review before applying, TTS clips (OS voices first).
 
 ## Done when
 

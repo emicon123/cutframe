@@ -1,11 +1,11 @@
-# Task 0750: Colour management, 10-bit and HDR
+# Task 0750: 10-bit pipeline and HDR tone mapping
 
 **Tier:** 3 · **Agents:** `architect`, `backend` · **Depends on:** `0700`
 **Spec:** `docs/feature-catalog.md` (feature IDs below), `docs/adr/`, `docs/design/`, `CLAUDE.md`
 
 ## Why
 
-Phone HDR footage looks wrong without tone mapping; pro colour tools need a defined pipeline.
+Phone HDR footage looks wrong without tone mapping; curves and HSL need a defined pipeline.
 
 ## Features
 
@@ -14,13 +14,11 @@ catalog, and drop anything already `done` from the scope.
 
 - [ ] `F3.30` 10-bit (and higher) internal pipeline — *?*
 - [ ] `F3.31` HDR sources (PQ/HLG, Rec.2020) with tone mapping to SDR — *?*
-- [ ] `F3.32` HDR export — *?*
-- [ ] `F3.33` Colour-space aware pipeline (Rec.709, sRGB, Display P3) — *?*
 
 ## Scope
 
-- **architect:** ADR on working colour space, bit depth of the render graph, HDR input handling and tone mapping, HDR export options.
-- **backend:** implement per the ADR with golden-frame tests for Rec.709, Display P3 and HLG/PQ sources.
+- **architect:** ADR on working colour space, bit depth of the render graph, HDR input handling and tone mapping to SDR (export stays SDR Rec.709).
+- **backend:** implement per the ADR with golden-frame tests for Rec.709 and HLG/PQ sources.
 
 ## Done when
 

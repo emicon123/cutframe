@@ -192,7 +192,7 @@ stateDiagram-v2
 - **Quality gates:** local `pnpm check` on the Windows development machine is the primary gate.
   Windows CI (`windows-latest`) is the second line: a clean checkout running the same checks plus the
   CI-only ones listed in `CLAUDE.md`, and the NSIS installer with a silent install and `--smoke-test`.
-- **Shipping:** NSIS `currentUser` installer built on `windows-latest`. The updater and code signing
-  are not configured yet.
+- **Shipping:** NSIS `currentUser` installer built on `windows-latest`. The updater is not configured
+  yet; there is no code signing (private use, ADR-0001 amendment).
 - **FFmpeg:** there is no FFmpeg in the code yet. **Target:** pinned, checksummed LGPL FFmpeg DLLs,
   used for development, CI and the installer alike.

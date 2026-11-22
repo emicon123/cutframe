@@ -1,27 +1,24 @@
-# Task 0800: Bins, multiple timelines, versions, archive, interchange
+# Task 0800: Project snapshots and collect-files archive
 
 **Tier:** 3 · **Agents:** `architect`, `backend`, `frontend` · **Depends on:** `0640`
 **Spec:** `docs/feature-catalog.md` (feature IDs below), `docs/adr/`, `docs/design/`, `CLAUDE.md`
 
 ## Why
 
-Organising larger projects and moving them between tools.
+Keeping project history and archiving a finished video together with its media.
 
 ## Features
 
 These rows have not been audited yet (`?`). First check the code, set each row's status in the
 catalog, and drop anything already `done` from the scope.
 
-- [ ] `F3.55` Media folders/bins, tags, ratings — *?*
-- [ ] `F3.56` Multiple timelines/sequences in one project — *?*
 - [ ] `F3.59` Project versions / snapshots — *?*
 - [ ] `F3.60` Collect files: copy project + all media into a folder (archive) — *?*
-- [ ] `F3.61` Interchange: import/export OpenTimelineIO / FCPXML / EDL — *?*
 
 ## Scope
 
-- **architect:** multiple timelines per project and project-file migration (ADR-0002); interchange format choice (OpenTimelineIO first).
-- **backend/frontend:** folders/tags/ratings in the media panel, timeline tabs, project snapshots, collect-files archive, OTIO/FCPXML/EDL import/export.
+- **architect:** where snapshots live and how they relate to autosave (task 0110).
+- **backend/frontend:** project snapshots, collect-files archive.
 
 ## Done when
 

@@ -1,7 +1,7 @@
 # ADR-0001: Tech stack — Rust + Tauri 2 + React 19 + wgpu
 
-- **Status:** Accepted, amended 2026-11-22 (Windows is the only platform, see "Amendment
-  2026-11-22" at the end)
+- **Status:** Accepted, amended 2026-11-22 (Windows is the only platform; private use, no code
+  signing; see the amendments at the end)
 - **Date:** 2026-11-21
 
 ## Context
@@ -41,8 +41,8 @@ FFmpeg (media I/O).**
 | Tests | `cargo test`, `insta` (snapshots), golden-frame tests; Vitest for the UI |
 | Installer | Tauri bundler → **NSIS** `.exe` (`currentUser` mode, no admin), WebView2 `embedBootstrapper` |
 | Updates | `tauri-plugin-updater` + GitHub Releases |
-| Code signing | Azure Trusted Signing (removes the SmartScreen warning) |
-| CI/CD | GitHub Actions on `windows-latest`: checks, NSIS installer + smoke test; `tauri-action` (build, sign, release) |
+| Code signing | None (private use, see "Amendment 2026-11-22: private use") |
+| CI/CD | GitHub Actions on `windows-latest`: checks, NSIS installer + smoke test; `tauri-action` (build, release) |
 
 ## Architecture
 
@@ -130,3 +130,16 @@ Decided by the user on 2026-11-22.
   Removing them is a separate, later decision (see the ADR-0005 amendment).
 - **Unchanged:** the stack, the architecture principles and the licensing and branding rules.
   Performance budgets are measured on Windows hardware, including a low-end integrated-GPU machine.
+
+## Amendment 2026-11-22: private use
+
+Decided by the user on 2026-11-22.
+
+- **Cutframe is for private, hobby use** (one person editing their own YouTube videos and Shorts), not
+  a commercial or publicly distributed product. `CLAUDE.md` ("Purpose") states which features this
+  rules out; the dropped rows are `n/a` in `docs/feature-catalog.md`.
+- **No code signing:** Azure Trusted Signing / Authenticode is dropped. The installer stays unsigned;
+  the SmartScreen warning on the user's own machine is accepted.
+- **Unchanged for now:** the auto-updater, the LGPL-only FFmpeg rule and the branding rules. LGPL
+  obligations only bite on distribution, so relaxing the FFmpeg licence rule (GPL encoders such as
+  x264/x265) would be a separate decision with its own ADR.

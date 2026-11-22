@@ -1,4 +1,4 @@
-# Task 0780: Smooth slow motion, motion blur, denoise, lens fixes
+# Task 0780: Smooth slow motion, motion blur, denoise
 
 **Tier:** 3 · **Agents:** `backend`, `frontend` · **Depends on:** `0770`
 **Spec:** `docs/feature-catalog.md` (feature IDs below), `docs/adr/`, `docs/design/`, `CLAUDE.md`
@@ -16,12 +16,10 @@ catalog, and drop anything already `done` from the scope.
 - [ ] `F3.36` Frame blending for speed changes — *?*
 - [ ] `F3.37` Motion blur — *?*
 - [ ] `F3.42` Video denoise — *?*
-- [ ] `F3.43` Deflicker — *?*
-- [ ] `F3.44` Lens distortion correction — *?*
 
 ## Scope
 
-- **backend:** optical-flow interpolation, frame blending, motion blur, temporal denoise, deflicker, lens distortion correction — GPU shaders or analysis jobs as appropriate.
+- **backend:** optical-flow interpolation, frame blending, motion blur, temporal denoise — GPU shaders or analysis jobs as appropriate.
 
 ## Done when
 
