@@ -48,6 +48,8 @@ Not yet dependencies (pick current versions when they land, not here): FFmpeg 7.
 | Other UI deps | `pnpm -r outdated`: nothing else outdated |
 | Actions | checkout v7, setup-node v7, pnpm/action-setup v6, setup-rust-toolchain v2, upload-artifact v7, tauri-action v1 (inputs used by `release.yml` unchanged), taiki-e/install-action v2 (latest major) + cargo-deny 0.22.0 (unchanged) |
 
+CI run 13 (2026-11-22, f5ba689): green, 0 annotations (no Node.js deprecation warnings).
+
 ## Scope
 
 - **devops:** `rust-toolchain.toml` + workspace `rust-version`; root `package.json` (`packageManager`,
