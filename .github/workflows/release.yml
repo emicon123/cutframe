@@ -30,6 +30,8 @@ jobs:
       # Code signing (Azure Trusted Signing) and the updater (latest.json) are added once the
       # signing account and the updater key exist. Until then releases are unsigned.
       - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: Cutframe ${{ github.ref_name }}
