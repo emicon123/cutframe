@@ -187,7 +187,19 @@ $vars = [ordered]@{
 if (-not $env:LIBCLANG_PATH) {
   $llvm = Join-Path $env:ProgramFiles 'LLVM\bin'
   if (Test-Path -LiteralPath (Join-Path $llvm 'libclang.dll')) { $vars['LIBCLANG_PATH'] = $llvm }
-  else { Write-Warning 'LIBCLANG_PATH is not set and LLVM was not found in Program Files; bindgen (rsmpeg) needs libclang. Install it with: winget install LLVM.LLVM' }
+  else { Write-Warning 'LIBCLANG_PATH is not set and LLVM was not found in Program Files; bindgen (rsmpeg) needs libclang. Install it with: winget install -e --id LLVM.LLVM --version 20.1.8' }
+}
+# bindgen 0.71 (pulled in by rusty_ffmpeg 0.16 / FFmpeg 7.1) emits forward-declared structs such as
+# AVFormatContext as opaque types with libclang 21 or newer, and rsmpeg then fails to compile.
+$libclangDir = if ($vars.Contains('LIBCLANG_PATH')) { $vars['LIBCLANG_PATH'] } else { $env:LIBCLANG_PATH }
+if ($libclangDir) {
+  $libclang = Join-Path $libclangDir 'libclang.dll'
+  if (Test-Path -LiteralPath $libclang -PathType Leaf) {
+    $major = (Get-Item -LiteralPath $libclang).VersionInfo.FileMajorPart
+    if ($major -ge 21) {
+      Write-Warning "libclang $major found in $libclangDir; the FFmpeg bindings need LLVM 20 or older (bindgen 0.71). Install it with: winget install -e --id LLVM.LLVM --version 20.1.8"
+    }
+  }
 }
 
 foreach ($name in $vars.Keys) { Set-Item -Path "env:$name" -Value $vars[$name] }
