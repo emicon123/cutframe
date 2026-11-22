@@ -5,11 +5,20 @@ import type { MediaSortKey, SortDirection } from "@/features/media-bin/browse";
 
 export type MediaLayout = "grid" | "list";
 
+/** What fills the window: the home screen (recent projects) or the editor (design `home-screen.md` §7). */
+export type View = "home" | "editor";
+
 /** The collapsible side panels that menu actions toggle. */
 export type PanelKey = "mediaBin" | "inspector";
 
 /** Editor layout and dialog toggles opened from the main menu or a shortcut. Not part of the model. */
 type UiStore = {
+  view: View;
+  /**
+   * `false` until startup has fetched the first state and opened the launch path (if any), so a
+   * project double-clicked in Explorer opens without the home screen flashing first.
+   */
+  started: boolean;
   historyPanelOpen: boolean;
   shortcutsOpen: boolean;
   projectSettingsOpen: boolean;
@@ -24,6 +33,8 @@ type UiStore = {
   collapsedPanels: Readonly<Record<PanelKey, boolean>>;
   /** Changes when the panel layout is reset, so the panel groups remount with default sizes. */
   layoutVersion: number;
+  setView: (view: View) => void;
+  setStarted: () => void;
   setHistoryPanelOpen: (open: boolean) => void;
   setShortcutsOpen: (open: boolean) => void;
   setProjectSettingsOpen: (open: boolean) => void;
@@ -36,6 +47,8 @@ type UiStore = {
 };
 
 export const useUiStore = create<UiStore>()((set) => ({
+  view: "home",
+  started: false,
   historyPanelOpen: false,
   shortcutsOpen: false,
   projectSettingsOpen: false,
@@ -46,6 +59,8 @@ export const useUiStore = create<UiStore>()((set) => ({
   preferencesOpen: false,
   collapsedPanels: { mediaBin: false, inspector: false },
   layoutVersion: 0,
+  setView: (view) => set({ view }),
+  setStarted: () => set({ started: true }),
   setHistoryPanelOpen: (historyPanelOpen) => set({ historyPanelOpen }),
   setShortcutsOpen: (shortcutsOpen) => set({ shortcutsOpen }),
   setProjectSettingsOpen: (projectSettingsOpen) => set({ projectSettingsOpen }),

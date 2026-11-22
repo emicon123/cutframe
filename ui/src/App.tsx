@@ -4,6 +4,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { EditorLayout } from "@/features/editor/EditorLayout";
 import { installShortcuts } from "@/features/editor/shortcuts";
 import { ShortcutsDialog } from "@/features/editor/ShortcutsDialog";
+import { HomeScreen } from "@/features/home/HomeScreen";
 import { PreferencesDialog } from "@/features/preferences/PreferencesDialog";
 import { loadPreferences } from "@/features/preferences/preferencesStore";
 import { ProjectSettingsDialog } from "@/features/project/ProjectSettingsDialog";
@@ -22,10 +23,14 @@ export function App() {
   useWindowTitle();
   const settingsOpen = useUiStore((s) => s.projectSettingsOpen);
   const setSettingsOpen = useUiStore((s) => s.setProjectSettingsOpen);
+  const view = useUiStore((s) => s.view);
+  // Nothing until startup has opened the launch path, so it does not flash the home screen.
+  const started = useUiStore((s) => s.started);
 
   return (
     <TooltipProvider delayDuration={400}>
-      <EditorLayout />
+      {/* Home unmounts the editor, and with it the native preview (`setPreviewVisible(false)`). */}
+      {view === "editor" ? <EditorLayout /> : started && <HomeScreen />}
       <ProjectSettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
       {/* Before ShortcutsDialog, which Preferences → Shortcuts opens on top of it. */}
       <PreferencesDialog />

@@ -2,6 +2,7 @@ import { create, type StoreApi, type UseBoundStore } from "zustand";
 
 import { commands, type RecoveryEntry_Serialize } from "@/bindings";
 import { describeError, logError } from "@/ipc/errors";
+import { useUiStore } from "@/stores/uiStore";
 
 import { fileActions } from "./fileActions";
 
@@ -15,6 +16,8 @@ export type RecoveryDeps = {
   /** Runs the action behind the unsaved-changes prompt; `true` when it ran (`replaceGuarded`). */
   replaceGuarded: (action: () => Promise<unknown>) => Promise<boolean>;
   logError: (error: unknown) => void;
+  /** Shows the editor after a restore (the dialog is offered over the home screen too). */
+  showEditor: () => void;
 };
 
 export type RecoveryState = {
@@ -84,7 +87,9 @@ export function createRecovery(deps: RecoveryDeps): Recovery {
     restore: (id) =>
       step(async () => {
         const ran = await deps.replaceGuarded(() => deps.restoreRecovery(id));
-        if (ran) store.setState({ entries: [] });
+        if (!ran) return;
+        store.setState({ entries: [] });
+        deps.showEditor();
       }),
     discard: (id) =>
       step(async () => {
@@ -104,4 +109,5 @@ export const recovery = createRecovery({
   discardRecovery: (id) => commands.discardRecovery(id),
   replaceGuarded: (action) => fileActions.replaceGuarded(action),
   logError,
+  showEditor: () => useUiStore.getState().setView("editor"),
 });

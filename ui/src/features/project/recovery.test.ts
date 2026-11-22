@@ -53,6 +53,7 @@ function fake(options: {
       return true;
     },
     logError: (error) => calls.push(`log ${String(error)}`),
+    showEditor: () => calls.push("showEditor"),
   };
 }
 
@@ -87,7 +88,7 @@ describe("recovery", () => {
     const recovery = createRecovery(deps);
     await recovery.load();
     await recovery.restore("a");
-    expect(deps.calls).toEqual(["listRecovery", "guard", "restoreRecovery a"]);
+    expect(deps.calls).toEqual(["listRecovery", "guard", "restoreRecovery a", "showEditor"]);
     expect(recovery.store.getState()).toMatchObject({ entries: [], error: null, busy: false });
   });
 

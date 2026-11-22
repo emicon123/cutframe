@@ -31,6 +31,8 @@ export const en = {
     help: "Help",
   },
   file: {
+    /** File → Home: closes the project (unsaved prompt) and shows the home screen. */
+    home: "Home",
     new: "New",
     open: "Open…",
     save: "Save",
@@ -49,6 +51,46 @@ export const en = {
     save: "Save",
     discard: "Don't save",
     cancel: "Cancel",
+  },
+  home: {
+    title: "Projects",
+    newProject: "New project",
+    open: "Open…",
+    recent: "Recent projects",
+    empty: "No recent projects yet",
+    emptyHint: "Create a new project or open one from a folder.",
+    /** Placeholder label of a card whose cover could not be loaded. */
+    noCover: "No cover",
+    missing: "Missing",
+    missingHint: "The file was moved or deleted",
+    modified: (date: string) => `Modified ${date}`,
+    /** Name of a duplicated project, passed to `duplicateProjectFile`. */
+    copyName: (name: string) => `${name} copy`,
+    cardMenu: (name: string) => `Actions for “${name}”`,
+    openItem: (name: string) => `Open “${name}”`,
+    actions: {
+      open: "Open",
+      rename: "Rename…",
+      duplicate: "Duplicate",
+      reveal: "Show in Explorer",
+      delete: "Delete…",
+      remove: "Remove from list",
+    },
+    rename: {
+      title: "Rename project",
+      description: "Renames the project and its file.",
+      label: "Name",
+      apply: "Rename",
+      cancel: "Cancel",
+      /** `invalidEdit` from `renameProjectFile`. */
+      conflict: "A project with this name already exists or the name is empty",
+    },
+    delete: {
+      title: (name: string) => `Move “${name}” to the Recycle Bin?`,
+      description: "You can restore it from the Recycle Bin.",
+      confirm: "Move to Recycle Bin",
+      cancel: "Cancel",
+    },
   },
   recovery: {
     title: "Recover unsaved work",
