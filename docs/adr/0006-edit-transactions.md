@@ -1,6 +1,6 @@
 # ADR-0006: Edit transactions for gestures and compound edits
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-21
 
 ## Context

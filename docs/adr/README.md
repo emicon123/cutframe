@@ -12,4 +12,4 @@ Sections: Status, Date, Context, Decision, Rationale (incl. rejected options), C
 | [0003](0003-ipc-conventions.md) | IPC conventions | Proposed |
 | [0004](0004-threading-and-model-ownership.md) | Threading and model ownership | Proposed |
 | [0005](0005-preview-presentation-per-platform.md) | Preview presentation per platform | Proposed |
-| [0006](0006-edit-transactions.md) | Edit transactions for gestures and compound edits | Proposed |
+| [0006](0006-edit-transactions.md) | Edit transactions for gestures and compound edits | Accepted |
