@@ -31,6 +31,20 @@ pub struct HistoryState {
     pub undo_label: Option<HistoryLabel>,
     /// Key of the entry `redo` would re-apply. The UI translates it.
     pub redo_label: Option<HistoryLabel>,
+    /// Every history entry, oldest first: the applied ones, then the undone ones `redo` can
+    /// re-apply. At most `DEFAULT_HISTORY_LIMIT` (500); older entries are dropped. An open
+    /// gesture is not an entry.
+    pub entries: Vec<HistoryEntryView>,
+    /// How many of `entries` are applied: 0 = the oldest state in the history, `entries.length`
+    /// = nothing to redo. Pass a value in `0..=entries.length` to `jumpToHistory`.
+    pub current: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryEntryView {
+    /// Key of the edit (e.g. `addTrack`). The UI translates it.
+    pub label: HistoryLabel,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -104,6 +118,12 @@ impl ProjectState {
                 can_redo: doc.can_redo(),
                 undo_label: doc.undo_label(),
                 redo_label: doc.redo_label(),
+                entries: doc
+                    .history_labels()
+                    .map(|label| HistoryEntryView { label })
+                    .collect(),
+                // Capped by `DEFAULT_HISTORY_LIMIT`, far below `u32::MAX`.
+                current: u32::try_from(doc.history_cursor()).unwrap_or(u32::MAX),
             },
             file_path: file_path.map(|p| p.to_string_lossy().into_owned()),
             dirty,

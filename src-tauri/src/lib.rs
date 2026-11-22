@@ -38,6 +38,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             commands::cancel_gesture,
             commands::undo,
             commands::redo,
+            commands::jump_to_history,
             commands::get_app_info,
             commands::set_preview_rect,
             commands::set_preview_visible,

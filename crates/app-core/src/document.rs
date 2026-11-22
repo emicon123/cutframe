@@ -128,6 +128,48 @@ impl Document {
         self.redo.last().map(|e| e.command.label())
     }
 
+    /// Keys of every history entry, oldest first: the applied entries, then the undone ones that
+    /// `redo` can re-apply. [`Document::history_cursor`] of them are applied.
+    pub fn history_labels(&self) -> impl Iterator<Item = HistoryLabel> + '_ {
+        let applied = self.undo.iter();
+        let undone = self.redo.iter().rev();
+        applied.chain(undone).map(|e| e.command.label())
+    }
+
+    /// Number of applied history entries: 0 is the oldest state still in the history, and
+    /// [`Document::history_len`] means nothing to redo.
+    pub fn history_cursor(&self) -> usize {
+        self.undo.len()
+    }
+
+    /// Number of history entries, applied and undone.
+    pub fn history_len(&self) -> usize {
+        self.undo.len() + self.redo.len()
+    }
+
+    /// Moves through the history until `target` entries are applied: the same as that many
+    /// `undo` or `redo` steps, as one call. An open gesture is cancelled first, since its live
+    /// value is not a history entry; the jump then starts from the gesture's base.
+    ///
+    /// Returns `false` if nothing changed (already there, no gesture open). Fails with
+    /// [`CommandError::HistoryOutOfRange`] if `target > history_len()`; then nothing changes,
+    /// not even the gesture.
+    pub fn jump_to(&mut self, target: usize) -> Result<bool, CommandError> {
+        let len = self.history_len();
+        if target > len {
+            return Err(CommandError::HistoryOutOfRange { index: target, len });
+        }
+        let mut changed = self.gesture_cancel();
+        while self.undo.len() > target && self.undo() {
+            changed = true;
+        }
+        // `redo` returns `false` (and drops the redo stack) only for a buggy command; stop there.
+        while self.undo.len() < target && self.redo() {
+            changed = true;
+        }
+        Ok(changed)
+    }
+
     /// Key of the open gesture, if any.
     pub fn gesture_label(&self) -> Option<HistoryLabel> {
         self.gesture.as_ref().map(|g| g.label)
@@ -273,8 +315,10 @@ fn applied(project: &Project, command: &mut dyn Command) -> Result<Project, Comm
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::{AddTrack, Batch, RemoveTrack, RenameProject, RenameTrack};
-    use crate::model::{TrackId, TrackKind};
+    use crate::command::{
+        AddTrack, Batch, RemoveTrack, RenameProject, RenameTrack, SetProjectSettings,
+    };
+    use crate::model::{ProjectSettings, TrackId, TrackKind};
     use crate::serialization;
 
     fn rename(name: &str) -> Box<dyn Command> {
@@ -681,6 +725,100 @@ mod tests {
         assert_eq!(doc.position(), before);
     }
 
+    #[test]
+    fn history_lists_applied_then_undone_entries() {
+        let mut doc = Document::new(Project::new("Test"));
+        assert_eq!(doc.history_labels().count(), 0);
+        assert_eq!((doc.history_cursor(), doc.history_len()), (0, 0));
+
+        doc.execute(Box::new(AddTrack::new(TrackKind::Text, None)))
+            .unwrap();
+        doc.execute(rename("A")).unwrap();
+        doc.execute(Box::new(SetProjectSettings::new(ProjectSettings {
+            width: 1280,
+            ..doc.project().settings
+        })))
+        .unwrap();
+        doc.undo();
+        doc.undo();
+
+        let labels: Vec<_> = doc.history_labels().collect();
+        assert_eq!(
+            labels,
+            [
+                HistoryLabel::AddTrack,
+                HistoryLabel::RenameProject,
+                HistoryLabel::SetProjectSettings
+            ]
+        );
+        assert_eq!((doc.history_cursor(), doc.history_len()), (1, 3));
+
+        doc.gesture_update(rename("Live")).unwrap();
+        assert_eq!(doc.history_len(), 3, "a gesture is not an entry");
+        doc.gesture_commit(rename("Done")).unwrap();
+        let labels: Vec<_> = doc.history_labels().collect();
+        assert_eq!(
+            labels,
+            [HistoryLabel::AddTrack, HistoryLabel::RenameProject]
+        );
+        assert_eq!(
+            doc.history_cursor(),
+            2,
+            "a new edit drops the undone entries"
+        );
+    }
+
+    #[test]
+    fn jump_to_moves_back_and_forward() {
+        let mut doc = Document::new(Project::new("Test"));
+        let mut states = vec![doc.snapshot()];
+        let mut positions = vec![doc.position()];
+        for name in ["A", "B", "C"] {
+            doc.execute(rename(name)).unwrap();
+            states.push(doc.snapshot());
+            positions.push(doc.position());
+        }
+
+        for (target, changed) in [(1, true), (3, true), (0, true), (2, true), (2, false)] {
+            assert_eq!(doc.jump_to(target), Ok(changed), "target {target}");
+            assert_eq!(*doc.snapshot(), *states[target]);
+            assert_eq!(doc.position(), positions[target]);
+            assert_eq!(doc.history_cursor(), target);
+            assert_eq!(doc.history_len(), 3, "jumps keep every entry");
+        }
+    }
+
+    #[test]
+    fn jump_out_of_range_changes_nothing() {
+        let mut doc = Document::new(Project::new("Test"));
+        doc.execute(rename("A")).unwrap();
+        doc.gesture_update(rename("Live")).unwrap();
+        assert_eq!(
+            doc.jump_to(2),
+            Err(CommandError::HistoryOutOfRange { index: 2, len: 1 })
+        );
+        assert_eq!(doc.project().name, "Live");
+        assert!(doc.has_gesture(), "the gesture stays open");
+    }
+
+    #[test]
+    fn jump_cancels_an_open_gesture_first() {
+        let mut doc = Document::new(Project::new("Test"));
+        doc.execute(rename("A")).unwrap();
+        doc.execute(rename("B")).unwrap();
+
+        doc.gesture_update(rename("Live")).unwrap();
+        assert!(doc.jump_to(2).unwrap(), "cancelling is a change");
+        assert!(!doc.has_gesture());
+        assert_eq!(doc.project().name, "B");
+
+        doc.gesture_update(rename("Live")).unwrap();
+        assert!(doc.jump_to(0).unwrap());
+        assert!(!doc.has_gesture());
+        assert_eq!(doc.project().name, "Test");
+        assert_eq!(doc.history_len(), 2, "the gesture recorded nothing");
+    }
+
     mod properties {
         use proptest::prelude::*;
 
@@ -691,11 +829,19 @@ mod tests {
             Rename(String),
             AddTrack,
             RemoveTrack(usize),
-            Update { track: bool, name: String },
-            Commit { track: bool, name: String },
+            Update {
+                track: bool,
+                name: String,
+            },
+            Commit {
+                track: bool,
+                name: String,
+            },
             Cancel,
             Undo,
             Redo,
+            /// Target as a fraction of the history length (0..=8 → 0..=len), sometimes beyond it.
+            Jump(usize),
         }
 
         fn name() -> impl Strategy<Value = String> {
@@ -713,6 +859,7 @@ mod tests {
                 Just(Op::Cancel),
                 Just(Op::Undo),
                 Just(Op::Redo),
+                (0usize..10).prop_map(Op::Jump),
             ]
         }
 
@@ -821,8 +968,25 @@ mod tests {
                                 }
                             }
                         }
+                        Op::Jump(step) => {
+                            let len = states.len() - 1;
+                            let target = step * len / 8;
+                            let result = doc.jump_to(target);
+                            if target > len {
+                                prop_assert_eq!(
+                                    result,
+                                    Err(CommandError::HistoryOutOfRange { index: target, len })
+                                );
+                            } else {
+                                let had_gesture = gesture.take().is_some();
+                                prop_assert_eq!(result, Ok(had_gesture || target != cursor));
+                                cursor = target;
+                            }
+                        }
                     }
 
+                    prop_assert_eq!(doc.history_len(), states.len() - 1);
+                    prop_assert_eq!(doc.history_cursor(), cursor);
                     prop_assert_eq!(doc.gesture_label(), gesture);
                     prop_assert_eq!(doc.has_gesture(), gesture.is_some());
                     prop_assert_eq!(doc.position(), positions[cursor]);
@@ -837,6 +1001,50 @@ mod tests {
                 // Undoing everything returns to the start.
                 while doc.undo() {}
                 prop_assert_eq!(&*doc.snapshot(), &*states[0]);
+            }
+
+            /// A jump ends where the same number of single undo or redo steps ends: same project,
+            /// same position, same history.
+            #[test]
+            fn jump_equals_repeated_undo_redo(
+                names in prop::collection::vec("[a-c]{1,2}", 0..12),
+                undone in 0usize..12,
+                target in 0usize..12,
+                gesture in any::<bool>(),
+            ) {
+                let mut doc = Document::new(Project::new("Start"));
+                for name in &names {
+                    doc.execute(rename(name)).unwrap();
+                }
+                for _ in 0..undone {
+                    doc.undo();
+                }
+                if gesture {
+                    doc.gesture_update(rename("Live")).unwrap();
+                }
+                let start = doc.history_cursor();
+                let target = target.min(doc.history_len());
+
+                doc.jump_to(target).unwrap();
+                let jumped = (doc.snapshot(), doc.position(), doc.history_labels().collect::<Vec<_>>());
+                prop_assert!(!doc.has_gesture());
+
+                // Back to the start, then step: undo/redo first cancel the gesture (one extra step).
+                doc.jump_to(start).unwrap();
+                if gesture {
+                    doc.gesture_update(rename("Live")).unwrap();
+                    prop_assert!(doc.undo());
+                }
+                for _ in target..start {
+                    prop_assert!(doc.undo());
+                }
+                for _ in start..target {
+                    prop_assert!(doc.redo());
+                }
+                prop_assert_eq!(&*doc.snapshot(), &*jumped.0);
+                prop_assert_eq!(doc.position(), jumped.1);
+                prop_assert_eq!(doc.history_labels().collect::<Vec<_>>(), jumped.2);
+                prop_assert_eq!(doc.history_cursor(), target);
             }
         }
     }

@@ -23,6 +23,13 @@ export const commands = {
 	undo: (options?: InvokeOptions) => __TAURI_INVOKE<boolean>("undo", undefined, options),
 	/**  Returns `false` if there was nothing to redo. While a gesture is open, cancels it instead. */
 	redo: (options?: InvokeOptions) => __TAURI_INVOKE<boolean>("redo", undefined, options),
+	/**
+	 *  Moves through the history until `index` entries are applied (`history.current` becomes
+	 *  `index`): the same as that many undo or redo steps, with one `projectChanged`. An open gesture
+	 *  is cancelled first. Returns `false` if nothing changed (already there). Fails with
+	 *  `invalidEdit` if `index > history.entries.length`; then nothing changes.
+	 */
+	jumpToHistory: (index: number, options?: InvokeOptions) => __TAURI_INVOKE<boolean>("jump_to_history", { index }, options),
 	getAppInfo: (options?: InvokeOptions) => __TAURI_INVOKE<AppInfo_Serialize>("get_app_info", undefined, options),
 	/**
 	 *  Reports where the preview area is. In `native` mode the GPU window follows this rectangle.
@@ -146,6 +153,11 @@ export type GpuInfoView = {
 	software: boolean,
 };
 
+export type HistoryEntryView = {
+	/**  Key of the edit (e.g. `addTrack`). The UI translates it. */
+	label: HistoryLabel,
+};
+
 /**
  *  Stable key naming an undo/redo history entry, e.g. for an "Undo Add Track" menu item.
  * 
@@ -163,6 +175,17 @@ export type HistoryState_Deserialize = {
 	undoLabel?: HistoryLabel | null,
 	/**  Key of the entry `redo` would re-apply. The UI translates it. */
 	redoLabel?: HistoryLabel | null,
+	/**
+	 *  Every history entry, oldest first: the applied ones, then the undone ones `redo` can
+	 *  re-apply. At most `DEFAULT_HISTORY_LIMIT` (500); older entries are dropped. An open
+	 *  gesture is not an entry.
+	 */
+	entries: HistoryEntryView[],
+	/**
+	 *  How many of `entries` are applied: 0 = the oldest state in the history, `entries.length`
+	 *  = nothing to redo. Pass a value in `0..=entries.length` to `jumpToHistory`.
+	 */
+	current: number,
 };
 
 export type HistoryState_Serialize = {
@@ -172,6 +195,17 @@ export type HistoryState_Serialize = {
 	undoLabel: HistoryLabel | null,
 	/**  Key of the entry `redo` would re-apply. The UI translates it. */
 	redoLabel: HistoryLabel | null,
+	/**
+	 *  Every history entry, oldest first: the applied ones, then the undone ones `redo` can
+	 *  re-apply. At most `DEFAULT_HISTORY_LIMIT` (500); older entries are dropped. An open
+	 *  gesture is not an entry.
+	 */
+	entries: HistoryEntryView[],
+	/**
+	 *  How many of `entries` are applied: 0 = the oldest state in the history, `entries.length`
+	 *  = nothing to redo. Pass a value in `0..=entries.length` to `jumpToHistory`.
+	 */
+	current: number,
 };
 
 /**
@@ -377,6 +411,7 @@ export type MockCommandHandlers = {
     cancelGesture: () => null | Promise<null>,
     undo: () => boolean | Promise<boolean>,
     redo: () => boolean | Promise<boolean>,
+    jumpToHistory: (args: { index: number }) => boolean | Promise<boolean>,
     getAppInfo: () => AppInfo_Serialize | Promise<AppInfo_Serialize>,
     setPreviewRect: (args: { rect: PreviewRect }) => void | Promise<void>,
     setPreviewVisible: (args: { visible: boolean }) => void | Promise<void>,
@@ -423,6 +458,7 @@ export function mockCommands(handlers: Partial<MockCommandHandlers> = {}): void 
             case "cancel_gesture": return mockCommandHandler(mockHandlers.cancelGesture, "cancel_gesture", args);
             case "undo": return mockCommandHandler(mockHandlers.undo, "undo", args);
             case "redo": return mockCommandHandler(mockHandlers.redo, "redo", args);
+            case "jump_to_history": return mockCommandHandler(mockHandlers.jumpToHistory, "jump_to_history", args);
             case "get_app_info": return mockCommandHandler(mockHandlers.getAppInfo, "get_app_info", args);
             case "set_preview_rect": return mockCommandHandler(mockHandlers.setPreviewRect, "set_preview_rect", args);
             case "set_preview_visible": return mockCommandHandler(mockHandlers.setPreviewVisible, "set_preview_visible", args);

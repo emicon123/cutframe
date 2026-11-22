@@ -105,6 +105,22 @@ pub fn redo(app: AppHandle, state: State<'_, AppState>) -> Result<bool, IpcError
         .is_some())
 }
 
+/// Moves through the history until `index` entries are applied (`history.current` becomes
+/// `index`): the same as that many undo or redo steps, with one `projectChanged`. An open gesture
+/// is cancelled first. Returns `false` if nothing changed (already there). Fails with
+/// `invalidEdit` if `index > history.entries.length`; then nothing changes.
+#[tauri::command]
+#[specta::specta]
+pub fn jump_to_history(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    index: u32,
+) -> Result<bool, IpcError> {
+    Ok(state
+        .edit(&app, |doc| Ok(doc.jump_to(index as usize)?.then_some(())))?
+        .is_some())
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn get_app_info(app: AppHandle, state: State<'_, AppState>) -> AppInfo {
