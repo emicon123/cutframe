@@ -14,7 +14,8 @@
 
 Afterwards the user can assemble a YouTube video or Short on the timeline. They put media on a
 magnetic main track, add overlays (picture-in-picture, B-roll, images, colour cards) and music on
-other tracks, then select, move, trim, split, delete, ripple-delete, copy and paste clips. Video
+other tracks, then select, move, trim, split, delete, ripple-delete, copy and paste clips. Overlays, captions
+and music follow ripple edits on the main track, so they stay in sync with the speech under them. Video
 and its detached audio stay in sync, tracks can be muted, hidden and locked, and every clip has
 transform, opacity, crop and volume properties. Those properties are stored in a shape that later
 takes keyframes without a migration.
@@ -45,8 +46,8 @@ migration and the split of the work. The feature tasks implement it.
 | Move | drag a clip body | moves selection (and linked clips) in time and, on one track, vertically | one entry per drag |
 | Trim | drag a clip edge | changes start or end, clamped to source length and neighbours | one entry per drag |
 | Split | Ctrl+B | selection, or every clip under the playhead on unlocked tracks | one entry |
-| Delete | Delete / Backspace | removes the selection; leaves a gap except on the magnetic main track | one entry |
-| Ripple delete | Shift+Delete | removes and closes the gap on each affected track | one entry |
+| Delete | Delete / Backspace | removes the selection; leaves a gap, except on the magnetic main track, where it closes the gap and the clips on other tracks follow (§3.7) | one entry |
+| Ripple delete | Shift+Delete | removes and closes the gap on each affected track; for main-track clips the followers move, and the captions and B-roll entirely over a removed clip go with it (§3.7) | one entry |
 | Delete gap | click a gap, Delete | gap closes on that track | one entry |
 | Trim to playhead | Q (delete left), W (delete right) | selection, or the main-track clip under the playhead | one entry |
 | Copy / cut / paste / duplicate | Ctrl+C / Ctrl+X / Ctrl+V / Ctrl+D | §6.3 | cut, paste and duplicate: one entry each; copy: none |
@@ -203,9 +204,10 @@ tracks[m+1 ..]      audio section: Audio tracks only
 - **The main track always exists.** It cannot be removed (`CommandError::MainTrack`) or moved.
   It holds media clips (video, image) and colour clips.
 - **Overlay tracks** hold the same clip kinds as the main track (video tracks) or text clips (text
-  tracks). They never ripple because of edits on other tracks. Overlays stay where they are when
-  the main track closes a gap, as in the reference product. This is an open question for the user,
-  §14.
+  tracks). Their clips, and the clips on audio tracks, **follow the main track**. When a
+  main-track edit shifts content, every clip on an unlocked non-main track moves with the main
+  clip it sits over (§3.7). That keeps B-roll, captions and sound effects in sync with speech.
+  This was the user's decision on 2026-11-22.
 - **Audio tracks** hold media clips that have `audio` props and no `visual` props: audio-only
   media, or the detached audio of a video.
 - **Clip/track compatibility:**
@@ -221,14 +223,19 @@ tracks[m+1 ..]      audio section: Audio tracks only
   contiguous from time 0: `clips[0].start == 0` and `clips[i].start == clips[i-1].end()`. Every
   command that changes the main track ends with `repack_main()`, which recomputes the starts in
   list order. Moves on the main track therefore reorder clips, and deletes and trims ripple the
-  following main-track clips. Linked clips of a shifted clip shift with it (§3.5). Turning
-  magnetic on is a command that repacks. Turning it off changes nothing else.
-- **Lock** (F1.52). A command that would change a clip on a locked track fails with
-  `CommandError::TrackLocked(TrackId)`. That includes a linked member on a locked track and a main
-  clip that a repack would shift. Commands that act on "every track" (split with nothing selected)
-  skip locked tracks. A locked track is never a drop or paste target, so paste falls back to a new
-  track. Lock, mute and hide do not stop the track itself from being reordered, renamed or
-  toggled.
+  following main-track clips. Clips on the other tracks follow (§3.7). Turning magnetic on is a
+  command that repacks, and the followers move with it. Turning it off changes nothing else.
+  Delete on the magnetic main track always closes the gap, and magnetic is on for new projects.
+  Both were the user's decisions on 2026-11-22.
+- **Lock** (F1.52). A command that would directly change a clip on a locked track fails with
+  `CommandError::TrackLocked(TrackId)`. Directly means the clip was selected, is a linked member
+  of a selected clip, or is a main clip that a repack would shift. Linked clips must stay in sync,
+  so a locked linked member fails the edit rather than being left behind. **Clips on locked tracks
+  never follow the main track** (§3.7): locking the music track means "do not touch my music",
+  and ripples leave it exactly where it is. Commands that act on "every track" (split with
+  nothing selected) skip locked tracks. A locked track is never a drop, paste or bump target, so
+  paste falls back to a new track. Lock, mute and hide do not stop the track itself from being
+  reordered, renamed or toggled.
 - **Muted and hidden** only affect rendering: hidden means no visuals, muted means no audio. They
   never affect editing.
 - **Empty tracks** (F1.28): a command that moves or removes clips also removes the overlay and
@@ -282,11 +289,15 @@ Rules for linked edits:
 - **Trim:** the same edge moves by the same delta on every member whose edge was at the same time
   as the dragged clip's edge. The delta is clamped to the tightest member, so the group stays in
   sync.
-- **Ripple on the main track:** a linked member of a shifted main clip shifts by the same amount.
-- **Overlap:** if a member would then overlap a clip on its own track, the command fails with
-  `CommandError::Overlap`. During a drag the last valid state stays visible (ADR-0006), and the UI
-  shows a toast with the translated error kind. KISS: there is no automatic track creation for
-  pushed members.
+- **Ripple on the main track:** a linked member of a shifted main clip shifts by exactly the same
+  amount, through the link and not through anchoring (§3.7). A link group that is entirely off
+  the main track follows as one unit, using the anchor of its earliest-starting member.
+- **Overlap in a direct edit:** if a member of a moved or trimmed group would overlap a clip on
+  its own track, the command fails with `CommandError::Overlap`, like any other move into an
+  occupied spot. During a drag the last valid state stays visible (ADR-0006), and the UI shows a
+  toast with the translated error kind.
+- **Overlap from following:** a collision caused by following a ripple is resolved by bumping
+  (§3.7), never by failing.
 
 ### 3.6 Keyframe-ready clip properties (F1.70–F1.78, F2.53–F2.59)
 
@@ -366,6 +377,100 @@ pub struct AudioProps {
   by effect id and version (ADR-0002 §6). Effect parameters use the same `Animated<T>`. Speed is
   added by task 0370 (§3.2). Text style is added by task 0510.
 
+### 3.7 Following the main track (anchoring)
+
+The user decided on 2026-11-22 that overlays, text and audio follow ripple edits on the main
+track. Every clip on a non-main track is **anchored** to the main track at its start time. A
+command that changes the main track repositions the anchored clips in the same command, so the
+whole edit is one history entry and one gesture.
+
+**Anchors are derived, not stored.** An anchor is computed from the state *before* the edit,
+every time a command needs one. Nothing is added to the file. Why not a stored `anchor: ClipId +
+offset`:
+
+- **Undo and redo are already exact.** Commands restore the previous state, and the anchors
+  follow from that state.
+- **Nothing can dangle.** A stored anchor goes stale when its clip is deleted, split, moved off
+  the main track or trimmed short. That would need a new invariant, a repair step in every main
+  edit, and a value for every migrated clip. Deriving the anchor removes all of that.
+- **Moving an overlay re-anchors it automatically.** It belongs to whatever main clip lies under
+  its new start. Splitting an anchor needs no rule either, because the next edit resolves to the
+  half under the clip's start.
+- **The derived anchor matches what a stored one would do in every single edit.** Within one
+  command, the anchors are fixed from the base state. In a gesture that is the gesture's base
+  (ADR-0006), so updates are consistent.
+
+**Resolution.** `anchor_of(t)` for a clip starting at `t`, against the main track before the edit:
+
+| Case | Anchor | New start after the main-track edit |
+|---|---|---|
+| A main clip `A` contains `t` (`A.start <= t < A.end`) | `Inside { A, content }`. `content` is the source time under `t` for media, or the offset `t - A.start` for image and colour clips | `A'.start + clamp(content - A'.content_at_start, 0, A'.duration)`. The clip stays on the same moment of `A`'s content, so a start trim of `A` that does not cut that moment keeps the B-roll over the same word. If that content was trimmed away, the clip is clamped to `A`'s new start or end |
+| `t` is in a gap before main clip `N` (only possible with magnetic off, including before the first clip) | `Gap { next: N }` | `t + (N'.start - N.start)`, but never before the new end of the main clip before the gap (or 0) |
+| `t >= ` the end of the main track | `AfterEnd` | `t + (mainEnd' - mainEnd)`. An end card after the main video keeps its distance to the end |
+| The main track is empty | none | unchanged |
+
+- **The anchor is removed** when a main clip is deleted, cut, or moved off the main track, or
+  when media removal deletes it. Its anchored clips then go to the **removal point**: where the
+  removed clip's start now lies, which is the new end of the main clip before it (0 if none).
+  Exception: a **ripple delete or cut** (Shift+Delete, and Delete on the magnetic main track) also
+  deletes the anchored clips that lay **entirely** inside the removed clip (`A.start <= start` and
+  `end <= A.end`). Captions and B-roll of a removed sentence go with it. A music bed that started
+  at 0 and runs past the clip stays, and only moves to the removal point (0). A link group is
+  deleted this way only if all its members lie inside. `RemoveClipsOfMedia` never deletes
+  followers, because the user was asked only about clips that use the media.
+- **The music bed case.** A bed starting at 0 is anchored to the first main clip. Cutting or
+  trimming later main clips never moves it. Trimming the start of the first clip keeps it at 0
+  (clamped), because the magnetic main track keeps starting at 0. Only deleting the first clip
+  moves it, to the removal point, which is still 0.
+- **Who follows:** every clip on an unlocked overlay, text or audio track, except linked members
+  of main clips (they follow through the link, §3.5) and the clips the command moves itself.
+  Clips on locked tracks never follow (§3.3).
+- **Clips move as whole clips.** Start changes, duration and `source_in` do not, so following
+  never changes a clip's content.
+- **Collisions: bumping, deterministic and never silent data loss.** Placement is done per track.
+  First, the clips that do not move stay where they are. Then the moved clips are placed in order
+  of new start, earliest first, with ties broken by old start and then by `ClipId`. A moved clip
+  that would overlap a clip already placed is **bumped**: it keeps its new time and goes to the
+  nearest unlocked track of the same kind in the same section where the range is free. Overlays
+  search upward first, then downward. Audio searches downward first, then upward. A track holding
+  another member of its link group is skipped. If no track fits, a new track is created directly
+  above (overlay, text) or below (audio) the original. Sync is kept, nothing is deleted or
+  trimmed, the result is visible and one undo reverts it. New tracks appear in gesture drafts,
+  and empty ones are removed on commit only (§3.3).
+- **Which commands use it:** every command that changes main-track clip positions or content
+  ranges. That covers `AddClips` (insert and drop on the main track), `MoveClips` and `TrimClip`
+  of main clips, `DeleteClips` and `CutClips` of main clips, `DeleteGap` on the main track,
+  `TrimToPlayhead`, `PasteClips` and `DuplicateClips` onto the main track, `SetMagnetic(true)` and
+  `RemoveClipsOfMedia`. `SplitClips`, `ReplaceClipMedia` and append do not shift the main track,
+  so nothing follows.
+- **Implementation shape.** One helper, `follow_main(before: &Project, after: &mut Project,
+  removed: RemovedMainClips, delete_inside: bool)`. It resolves anchors in `before`, compares the
+  main track before and after, repositions and bumps. Commands call it after their own main-track
+  change. Commands that use it record the previous `tracks` for `revert`. That is simple and
+  exact, and costs about as much as the clone `Document` already makes.
+
+```mermaid
+flowchart TD
+  start["Non-main clip on an unlocked track"] --> linked{"Linked to a main clip?"}
+  linked -- yes --> vialink["Shift by that main clip's delta, through the link"]
+  linked -- no --> resolve{"anchor_of start, in the state before the edit"}
+  resolve -- "inside main clip A" --> alive{"A still on the main track?"}
+  alive -- yes --> content["Same content moment of A, clamped to A's new range"]
+  alive -- no --> inside{"Ripple delete and clip entirely inside A?"}
+  inside -- yes --> del["Deleted with A"]
+  inside -- no --> point["Move to the removal point"]
+  resolve -- "gap before N" --> gap["Shift by N's delta, not before the gap's new start"]
+  resolve -- "after end" --> tail["Shift by the change of the main track end"]
+  vialink --> place["Place per track: fixed clips first, then by new start"]
+  content --> place
+  point --> place
+  gap --> place
+  tail --> place
+  place --> free{"Range free on its track?"}
+  free -- yes --> done["Stays on its track"]
+  free -- no --> bump["Bump to the nearest free compatible track, or a new adjacent track"]
+```
+
 ## 4. Edit commands (`app-core`)
 
 All commands are in `crates/app-core/src/command/` (the backend may split `command.rs` into a
@@ -376,26 +481,29 @@ never leaves an invariant from §3.4 broken. Compound edits build on shared help
 
 `G` = runs as an ADR-0006 gesture (`EditPhase`). All others are one-shot `execute`.
 
-| # | Command (`HistoryLabel`) | G | Parameters | Behaviour and invariants |
-|---|---|---|---|---|
-| 4.1 | `AddClips` (`addClips`) | | `sources: Vec<NewClipSource>`, `placement: Placement` | Places the clips one after another. `NewClipSource` is `Media(MediaId) \| Color(Rgba8)`. Placement: `Append` (end of the main track; audio-only media at the end of the first unlocked audio track, which is created if missing), `Insert { at }` (main track, at the clip boundary nearest `at`, ripples), `Drop { track: TrackTarget, start }`. On a non-magnetic track an overlapping drop fails with `Overlap`. Media clips get the full source range, images `DEFAULT_IMAGE_DURATION`, colour clips 5 s. Returns the new `ClipId`s. |
-| 4.2 | `MoveClips` (`moveClips`) | G | `clips`, `anchor: ClipId`, `start: Time`, `track: TrackTarget` | The anchor goes to `start` on `track`, and the others keep their time offset from the anchor. A vertical move is allowed only when every selected clip is on one track, otherwise the move is time-only. Linked members follow in time (§3.5). On a magnetic main track `start` becomes an insertion index (the number of remaining clips whose midpoint is before `start`), followed by a repack. Elsewhere: `start >= 0` and no overlap, else `Overlap`. Moving a clip off the main track repacks the main track. |
-| 4.3 | `TrimClip` (`trimClip`) | G | `clip`, `edge: Edge` (`start` / `end`), `time: Time` | Moves one edge to `time`, **clamped** (not rejected) to: source bounds (`source_in >= 0`, source end `<= media.duration`; none for images, colour and text), at least one frame, the neighbours on a non-magnetic track, and the linked members (§3.5). A start trim changes `source_in` by the same delta. On the magnetic main track the clip keeps its position and the following clips ripple. Keyframes are retimed. |
-| 4.4 | `SplitClips` (`splitClips`) | | `clips` (empty means every clip under `at` on unlocked tracks), `at: Time` | Splits each clip whose interior contains `at`, with both halves at least one frame long, otherwise the clip is skipped. The right half gets a new id, `source_in += at - start`, partitioned keyframes and the same props. Linked members split too, and the right halves share one new `LinkId`. Returns the right halves' ids. Fails with `NothingToSplit` if no clip was split. |
-| 4.5 | `DeleteClips` (`deleteClips`, `rippleDeleteClips`) | | `clips`, `ripple: bool` | Removes the clips and their linked members. The main track repacks when magnetic, so Delete is always ripple there. With `ripple`, each affected track closes the deleted spans: later clips shift left by the deleted length before them, and linked members of shifted clips shift too. Normalises links and removes emptied tracks. |
-| 4.6 | `DeleteGap` (`deleteGap`) | | `track`, `at: Time` | Finds the gap that contains `at` (between two clips, or before the first clip) and shifts the following clips on that track, and their linked members, left by its length. Fails with `NoGap` otherwise. |
-| 4.7 | `TrimToPlayhead` (`trimToPlayhead`) | | `clips` (empty means the main-track clip under `at`), `at`, `side: Side` (`left` = Q, `right` = W) | `left`: the start edge moves to `at`. `right`: the end edge moves to `at`. Same clamping and ripple rules as `TrimClip`. Clips that `at` does not cross are skipped. |
-| 4.8 | `PasteClips` (`pasteClips`, `duplicateClips`) | | `items: ClipboardContent`, `at: Time` | §6.3. New ids for every clip, and a new `LinkId` per copied group. Returns the new ids. |
-| 4.9 | `RemoveClipsOfMedia` (in the media design's batch) | | `media: MediaId` | Removes every clip whose source is `media` and clears a `CanvasBackground::Image` that uses it (back to black). Repacks the main track and normalises links. **No IPC command of its own**: the media design's remove-media `Batch` uses it (§3.1). It succeeds when nothing references the media. |
-| 4.10 | `SetClipProperty` (`setClipProperty`) | G | `clips`, `value: PropertyValue` | Sets one property on every listed clip that has it (visual or audio), and fails with `PropertyNotApplicable` if none has it. Range-checked, `InvalidValue` otherwise. Tier 1 sets `Animated.value`. With keyframes present, task 0520 defines "set at playhead". |
-| 4.11 | `ResetClipProperties` (`resetClipProperties`) | | `clips`, `properties: Option<Vec<PropertyKey>>` (None = all) | Restores defaults (F1.84). |
-| 4.12 | `LinkClips` / `UnlinkClips` (`linkClips`, `unlinkClips`) | | `clips` | Link: at least two clips on pairwise different tracks, else `InvalidLink`. Existing links of these clips are replaced. |
-| 4.13 | `DetachAudio` (`detachAudio`) | | `clips` | §3.5. Skips clips without `audio`. Returns the new audio clip ids. |
-| 4.14 | `ReplaceClipMedia` (`replaceClipMedia`) | | `clip`, `media: MediaId` | Keeps start, duration, link and props. Keeps `source_in` if the new media is long enough from there, else uses 0. Fails with `MediaTooShort` if the media is shorter than the clip, and with `TrackKindMismatch` if the media cannot live on that track. `audio` becomes `None` if the new media has no audio. It stays `None` if the audio was detached. Otherwise it becomes `Some(previous or default)`. |
-| 4.15 | `SetTrackFlag` (`setTrackMuted`, `setTrackHidden`, `setTrackLocked`) | | `track`, `flag: TrackFlag`, `value: bool` | Changing a flag to the value it already has records nothing (the handler returns `Ok(None)`). |
-| 4.16 | `MoveTrack` (`moveTrack`) | | `track`, `index: u32` | Within the track's own section only. The main track does not move (`MainTrack`). |
-| 4.17 | `SetMagnetic` (`setMagnetic`) | | `on: bool` | `on` repacks the main track, `off` only clears the flag. It fails with `TrackLocked` if the repack would move a locked clip. |
-| 4.18 | `RemoveTrack` (existing) | | | Now fails with `MainTrack` for the main track. |
+The last column marks the commands that call `follow_main` (§3.7) when they change the main
+track (`F`). Followers move in the same command, so in the same history entry and gesture.
+
+| # | Command (`HistoryLabel`) | G | Parameters | Behaviour and invariants | F |
+|---|---|---|---|---|---|
+| 4.1 | `AddClips` (`addClips`) | | `sources: Vec<NewClipSource>`, `placement: Placement` | Places the clips one after another. `NewClipSource` is `Media(MediaId) \| Color(Rgba8)`. Placement: `Append` (end of the main track; audio-only media at the end of the first unlocked audio track, which is created if missing), `Insert { at }` (main track, at the clip boundary nearest `at`, ripples), `Drop { track: TrackTarget, start }`. On a non-magnetic track an overlapping drop fails with `Overlap`. Media clips get the full source range, images `DEFAULT_IMAGE_DURATION`, colour clips 5 s. Returns the new `ClipId`s. | F |
+| 4.2 | `MoveClips` (`moveClips`) | G | `clips`, `anchor: ClipId`, `start: Time`, `track: TrackTarget` | The anchor goes to `start` on `track`, and the others keep their time offset from the anchor. A vertical move is allowed only when every selected clip is on one track, otherwise the move is time-only. Linked members follow in time (§3.5). On a magnetic main track `start` becomes an insertion index (the number of remaining clips whose midpoint is before `start`), followed by a repack. Elsewhere: `start >= 0` and no overlap, else `Overlap`. Moving a clip off the main track repacks the main track. | F |
+| 4.3 | `TrimClip` (`trimClip`) | G | `clip`, `edge: Edge` (`start` / `end`), `time: Time` | Moves one edge to `time`, **clamped** (not rejected) to: source bounds (`source_in >= 0`, source end `<= media.duration`; none for images, colour and text), at least one frame, the neighbours on a non-magnetic track, and the linked members (§3.5). A start trim changes `source_in` by the same delta. On the magnetic main track the clip keeps its position and the following clips ripple. Keyframes are retimed. | F |
+| 4.4 | `SplitClips` (`splitClips`) | | `clips` (empty means every clip under `at` on unlocked tracks), `at: Time` | Splits each clip whose interior contains `at`, with both halves at least one frame long, otherwise the clip is skipped. The right half gets a new id, `source_in += at - start`, partitioned keyframes and the same props. Linked members split too, and the right halves share one new `LinkId`. Returns the right halves' ids. Fails with `NothingToSplit` if no clip was split. |  |
+| 4.5 | `DeleteClips` (`deleteClips`, `rippleDeleteClips`) | | `clips`, `ripple: bool` | Removes the clips and their linked members. The main track repacks when magnetic, so Delete is always ripple there. With `ripple`, each affected track closes the deleted spans: later clips shift left by the deleted length before them, and linked members of shifted clips shift too. On overlay and audio tracks, ripple closes only that track. On the main track, followers move, and with ripple the clips entirely inside a removed main clip are deleted too (§3.7). Normalises links and removes emptied tracks. | F |
+| 4.6 | `DeleteGap` (`deleteGap`) | | `track`, `at: Time` | Finds the gap that contains `at` (between two clips, or before the first clip) and shifts the following clips on that track, and their linked members, left by its length. Fails with `NoGap` otherwise. | F |
+| 4.7 | `TrimToPlayhead` (`trimToPlayhead`) | | `clips` (empty means the main-track clip under `at`), `at`, `side: Side` (`left` = Q, `right` = W) | `left`: the start edge moves to `at`. `right`: the end edge moves to `at`. Same clamping and ripple rules as `TrimClip`. Clips that `at` does not cross are skipped. | F |
+| 4.8 | `PasteClips` (`pasteClips`, `duplicateClips`) | | `items: ClipboardContent`, `at: Time` | §6.3. New ids for every clip, and a new `LinkId` per copied group. Returns the new ids. | F |
+| 4.9 | `RemoveClipsOfMedia` (in the media design's batch) | | `media: MediaId` | Removes every clip whose source is `media` and clears a `CanvasBackground::Image` that uses it (back to black). Repacks the main track, moves followers to the removal point (never deletes them, §3.7) and normalises links. **No IPC command of its own**: the media design's remove-media `Batch` uses it (§3.1). It succeeds when nothing references the media. | F |
+| 4.10 | `SetClipProperty` (`setClipProperty`) | G | `clips`, `value: PropertyValue` | Sets one property on every listed clip that has it (visual or audio), and fails with `PropertyNotApplicable` if none has it. Range-checked, `InvalidValue` otherwise. Tier 1 sets `Animated.value`. With keyframes present, task 0520 defines "set at playhead". |  |
+| 4.11 | `ResetClipProperties` (`resetClipProperties`) | | `clips`, `properties: Option<Vec<PropertyKey>>` (None = all) | Restores defaults (F1.84). |  |
+| 4.12 | `LinkClips` / `UnlinkClips` (`linkClips`, `unlinkClips`) | | `clips` | Link: at least two clips on pairwise different tracks, else `InvalidLink`. Existing links of these clips are replaced. |  |
+| 4.13 | `DetachAudio` (`detachAudio`) | | `clips` | §3.5. Skips clips without `audio`. Returns the new audio clip ids. |  |
+| 4.14 | `ReplaceClipMedia` (`replaceClipMedia`) | | `clip`, `media: MediaId` | Keeps start, duration, link and props. Keeps `source_in` if the new media is long enough from there, else uses 0. Fails with `MediaTooShort` if the media is shorter than the clip, and with `TrackKindMismatch` if the media cannot live on that track. `audio` becomes `None` if the new media has no audio. It stays `None` if the audio was detached. Otherwise it becomes `Some(previous or default)`. |  |
+| 4.15 | `SetTrackFlag` (`setTrackMuted`, `setTrackHidden`, `setTrackLocked`) | | `track`, `flag: TrackFlag`, `value: bool` | Changing a flag to the value it already has records nothing (the handler returns `Ok(None)`). |  |
+| 4.16 | `MoveTrack` (`moveTrack`) | | `track`, `index: u32` | Within the track's own section only. The main track does not move (`MainTrack`). |  |
+| 4.17 | `SetMagnetic` (`setMagnetic`) | | `on: bool` | `on` repacks the main track, `off` only clears the flag. It fails with `TrackLocked` if the repack would move a locked clip. | F |
+| 4.18 | `RemoveTrack` (existing) | | | Now fails with `MainTrack` for the main track. |  |
 
 ```rust
 pub enum TrackTarget { Existing(TrackId), New { index: u32 } }  // New: created at `index`, in a
@@ -615,6 +723,8 @@ and export agree:
   5. Project gains `mainTrack`, `background: { kind: "color", color: "#000000ff" }` and `magnetic`.
      `magnetic` is `true` if the main track is empty or already contiguous from 0, else `false`,
      so the migrated file always validates.
+  6. **Anchors:** nothing to migrate. Anchors are derived from positions (§3.7), so migrated clips
+     follow the main track from their first edit on.
 - **Fixtures:** the existing `project-v1.json` is kept forever and loads through the chain. It
   becomes a colour clip on the main track. Add `project-v2.json` (or whatever the new version is)
   written by the new code: overlay, main and audio sections, a media clip with a link pair,
@@ -652,6 +762,9 @@ Example v2 clip, with media fields as assumed in §3.1:
   panel in a release build on the iGPU reference laptop.
 - **Repack:** `repack_main` is O(n) in main-track clips. Linked-member lookups use a per-command
   `HashMap<LinkId, Vec<(track, index)>>` built once, not a scan per clip.
+- **Following:** `follow_main` is O(n log n) in non-main clips: a binary search on the main track
+  per clip, then a sort per track for placement. It is part of the 4 ms edit budget, and the
+  benchmark adds a ripple delete on the main track with 500 followers.
 
 ## 11. Test plan
 
@@ -660,11 +773,30 @@ Example v2 clip, with media fields as assumed in §3.1:
   overlap rejected, trim clamped at source end and at a neighbour, split skipped at edges, ripple
   shifting linked members, `TrackLocked`, `MainTrack`, paste falling back to new tracks, paste
   link regrouping, `RemoveClipsOfMedia` inside a `Batch` with a stand-in media removal.
+- **Following (§3.7), unit tests:**
+  - every row of the resolution table;
+  - the music bed at 0 stays put when later main clips are cut, trimmed or ripple-deleted;
+  - a start trim of the anchor keeps a B-roll clip on the same content moment;
+  - a ripple delete deletes the captions entirely inside the removed clip and moves partial ones
+    to the removal point;
+  - `RemoveClipsOfMedia` never deletes followers;
+  - a split anchor resolves to the right half on the next edit;
+  - locked tracks stay bit-identical;
+  - bumping is deterministic (same input, same tracks), skips locked tracks and tracks holding a
+    link-group member, and creates an adjacent track when nothing fits.
 - **`app-core` proptest:** generate valid projects and random command sequences (add, move, trim,
   split, delete, ripple, paste, link, detach, flags, magnetic on/off). After each step
   `validate()` holds: no overlap, a contiguous main track when magnetic, link rules, ranges. Undo
   of everything gives the start state, and redo of everything gives the end state. This is the
   "no operation leaves overlaps or gaps" gate of task 0280.
+- **`app-core` proptest, following:** for a random main-track ripple command (insert, move,
+  trim, delete, delete gap, magnetic on), check these properties:
+  - **Offset preserved.** Every follower that resolved `Inside` a surviving anchor and was not
+    clamped keeps its offset exactly: `new.start - A'.start == old.start - A.start`, adjusted
+    only by the anchor's own `source_in` change.
+  - **No shape change.** No follower changes duration or `source_in`.
+  - **Groups stay together.** Link groups keep their internal offsets.
+  - **Nothing lost.** The clip count changes only by the clips the command deletes.
 - **Gesture tests (`Document`):** a `MoveClips` drag of 100 updates plus a commit is one history
   entry. An update into an overlap keeps the previous state. Cancel restores the base. Emptied
   tracks are removed only on commit.
@@ -699,7 +831,7 @@ sequenceDiagram
     T->>S: candidates, targets, threshold
     S-->>T: snapped start
     T->>C: move_clips(clips, anchor, start, track, Update)
-    C->>D: gesture_update(MoveClips from base)
+    C->>D: gesture_update(MoveClips from base, followers repositioned)
     alt valid
       D-->>C: Ok, draft published
       C-->>T: project-changed with the draft
@@ -798,15 +930,15 @@ Order: backend first in every task (commands, regenerated `bindings.ts`, then te
 then frontend.
 
 1. **0260 (backend):** the model of §3 (types, `Project::validate`, migration, fixtures, view
-   types, specta), helpers, `AddClips`, `add_track` section clamping, `RemoveTrack` main-track
+   types, specta), helpers including `follow_main` (§3.7, already needed by insert-at-playhead), `AddClips`, `add_track` section clamping, `RemoveTrack` main-track
    guard, `RemoveClipsOfMedia` wired into the media design's remove-media batch. **(frontend):**
    drag from the media panel and Explorer, `+`, drop preview, main-track styling.
 2. **0270 (backend):** `MoveClips`, `TrimClip` as gestures with `remove_emptied_tracks` on commit,
-   link expansion. **(frontend):** `selectionStore`, hit-testing, drag controller, `snapping.ts`,
+   link expansion, followers through `follow_main` when main clips move or are trimmed. **(frontend):** `selectionStore`, hit-testing, drag controller, `snapping.ts`,
    clip labels.
 3. **0280 (backend):** `SplitClips`, `DeleteClips` (ripple), `DeleteGap`, `TrimToPlayhead`,
-   `SetMagnetic`, the clipboard and `PasteClips` (paste, duplicate, cut), and the proptest
-   sequence gate. **(frontend):** shortcuts, toolbar, magnetic toggle.
+   `SetMagnetic`, the clipboard and `PasteClips` (paste, duplicate, cut), deleting followers on
+   ripple delete, and the proptest gates (sequence and following). **(frontend):** shortcuts, toolbar, magnetic toggle.
 4. **0290 (backend):** `LinkClips`, `UnlinkClips`, `DetachAudio`, `ReplaceClipMedia`,
    `SetTrackFlag`, `MoveTrack`. **(frontend):** track headers, reorder by drag, context menus.
 5. **0300 (frontend):** filmstrips and waveforms use `source.sourceIn` and the clip duration to
@@ -818,15 +950,14 @@ then frontend.
 8. **0370:** volume and fades are already in `AudioProps`, so it only adds mixer use and the
    inspector. Speed and reverse add a field and a migration and change `Clip::source_time`.
 
-## 14. Open questions for the user
+## 14. Decisions (user, 2026-11-22)
 
-1. **Should overlays and music follow ripple edits on the main track?** The design keeps them
-   where they are (like the reference product), and only linked clips follow. The alternative,
-   shifting every clip that starts after the edit point, keeps B-roll in sync with speech, but it
-   needs collision rules on every track.
-2. **Is Delete on the main track always a ripple while magnetic is on?** That is what this design
-   assumes, as in the reference product.
-3. **Default for new projects: magnetic on?** This design says yes.
+1. **Overlays, text and audio follow ripple edits on the main track**, to keep B-roll and captions
+   in sync with speech. This is implemented by derived anchoring (§3.7).
+2. **Delete on the magnetic main track always closes the gap** (ripple), and the followers move.
+3. **Magnetic is on by default** for new projects.
+
+No open questions remain.
 
 ## Risks
 
@@ -835,5 +966,8 @@ then frontend.
   project.
 - **Schema step collision with the media migration.** Both bump the version. Whichever lands
   second takes the next number and its fixture (§9).
+- **Following surprises.** Bumped clips and followers deleted with a removed clip are visible
+  and undo in one step, but they could surprise the user. If they do, the rules in §3.7 are
+  the place to tune; the model does not change.
 - **Clone cost** grows with props per clip. The ADR-0003 benchmark decides. The fallback is
   ADR-0006's structural sharing, with no API change.
