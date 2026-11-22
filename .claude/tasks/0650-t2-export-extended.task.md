@@ -18,6 +18,11 @@ catalog, and drop anything already `done` from the scope.
 - [ ] `F2.104` Social presets (vertical 1080×1920, square, etc.) — *?*
 - [ ] `F2.105` Video cover / thumbnail: pick a frame or image, add text, embed in file and use in recent projects — *?*
 
+Note (task 0380, `docs/design/export.md`): task 0390 already ships the Shorts (1080×1920) preset
+and shows the estimated file size (`check_export.estimatedBytes`), so audit F2.102 and F2.104 first.
+Range export adds a frame sub-range to `ExportPlan.frames` (design §4.1); saved presets are
+`VideoExportSettings` values in the UI preferences.
+
 ## Scope
 
 - **backend:** range export, size estimate, cover frame embedded in MP4 and used by the home screen.

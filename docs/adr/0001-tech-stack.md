@@ -144,3 +144,12 @@ Decided by the user on 2026-11-22.
 - **Unchanged for now:** the auto-updater, the LGPL-only FFmpeg rule and the branding rules. LGPL
   obligations only bite on distribution, so relaxing the FFmpeg licence rule (GPL encoders such as
   x264/x265) would be a separate decision with its own ADR.
+
+## Amendment 2026-11-22: encoder chain (task 0380)
+
+- The H.264 encoder chain is NVENC → Quick Sync → AMF → Media Foundation (hardware, then
+  Microsoft's software encoder) → OpenH264; HEVC uses the hardware encoders only. Details, probing
+  and fallback rules: `docs/design/export.md`.
+- OpenH264 is compiled into the pinned LGPL FFmpeg build, so Cisco's patent licence does not cover
+  it. Accepted for private use (amendment above); review F28 must be reopened before any public
+  release.
