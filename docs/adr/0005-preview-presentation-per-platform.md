@@ -1,7 +1,8 @@
 # ADR-0005: Preview presentation per platform
 
 - **Status:** Accepted (2026-11-22, after the spike results below), amended 2026-11-22 (the Linux
-  `frames` mode is legacy, see "Amendment 2026-11-22" at the end)
+  `frames` mode is legacy, see "Amendment 2026-11-22" at the end) and 2026-11-22 (render on change,
+  preview resolution, full screen, see "Amendment 2026-11-22: render graph and playback")
 - **Date:** 2026-11-21
 
 ## Context
@@ -147,3 +148,33 @@ development and CI, and Linux ARM64 is no longer a development or CI platform.
   development machine, so the hide/show protocol is verified on Windows directly.
 - §6 (renderer independence) is unchanged: renderers still encode into any `wgpu::TextureView`,
   because export and the `--smoke-test`/GPU tests use offscreen targets.
+
+## Amendment 2026-11-22: render graph and playback
+
+Accepted for task 0310. Details are in `docs/design/render-graph.md` §7–§8 and
+`docs/design/playback.md` §5. Rules 1–6 stand; this adds to them.
+
+1. **When the preview draws (review F14).** While paused, the render thread draws only when an
+   input changes (snapshot, playhead or skim, size, quality or zoom, visibility, a frame it waited
+   for, device reset) and presents nothing otherwise. During playback it stays vsync-paced
+   (`AutoVsync`, maximum frame latency 2, unchanged), composites only when the project frame or the
+   plan changes, and presents a scale pass of the last canvas on every vsync. The stage-0
+   "continuous while visible" loop is historical.
+2. **Surface format.** The surface uses a non-sRGB 8-bit format (`Bgra8Unorm`). The working values
+   of the render graph are already display-referred R'G'B', so an `*Srgb` surface would encode them
+   twice.
+3. **Render resolution.** The canvas is composited at `min(canvas, fitted preview size × zoom) ×
+   quality` (quality: full, half, quarter; F1.61) and scaled to the window in the present pass.
+   The UI sets quality and zoom with fire-and-forget commands (`set_preview_quality`,
+   `set_preview_view`).
+4. **Engine overlays.** Anything the engine draws for editing (selection handles and guides from
+   task 0360) is drawn in the present pass, after the shared render graph, so export never contains
+   it. This keeps rule 4 (nothing in the DOM over the preview) and rule 3 of `CLAUDE.md` together.
+5. **Full screen (F1.63)** is the main window in full-screen mode with the UI's preview area
+   covering the whole webview; the child window follows the reported rectangle as always. No
+   second top-level window (rejected option above). The remaining spike check "full-screen keeps
+   the preview aligned" applies to this.
+6. **Remaining check, made concrete:** the performance re-measure "when video playback lands" is
+   the 0330 budget in `docs/design/playback.md` §11, including 4K HEVC 10-bit HLG on the iGPU.
+7. The pointer-input open question above is unchanged; task 0360 decides it.
+

@@ -16,7 +16,7 @@ Dragging and scaling in the player is the main way people place overlays.
 ## Scope
 
 - **architect (short note):** pointer input over the native preview window (review: input pass-through decision, ADR-0005).
-- **frontend/backend:** handles overlay for the selected clip, drag/scale/rotate as `set_clip_property` gestures (`position`, `scale`, `rotation`; `docs/design/timeline-editing.md` §4.10), click to select the clip under the pointer (selection is UI state, §6.1), snapping guides.
+- **frontend/backend:** handles overlay for the selected clip, drawn by the engine in the preview's present pass after the shared render graph, so export never contains it (`docs/design/render-graph.md` §8, ADR-0005 amendment 2026-11-22 §4); hit-testing uses the `LayerPlan.transform` of the current plan; drag/scale/rotate as `set_clip_property` gestures (`position`, `scale`, `rotation`; `docs/design/timeline-editing.md` §4.10), click to select the clip under the pointer (selection is UI state, §6.1), snapping guides.
 
 ## Done when
 

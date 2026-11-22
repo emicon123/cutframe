@@ -17,12 +17,16 @@ Users need to trade quality for smoothness and see the frame large.
 
 ## Scope
 
-- **backend:** preview resolution scale (full/half/quarter); full-screen presentation of the native preview window; a source-preview mode that plays one media asset (by `MediaId`) instead of the timeline (F1.17).
-- **frontend:** quality menu, fit/zoom levels, full-screen toggle (Esc to exit), hover skimming on the timeline with a toggle (hide the native window correctly, ADR-0005 airspace helper, review F11).
+Design: `docs/design/render-graph.md` §8 (quality, zoom, full screen) and `docs/design/playback.md` §4.2, §8 (skim, playback target); ADR-0005 amendment of 2026-11-22.
+
+- **backend:** preview resolution scale: composite at `min(canvas, fitted preview size × zoom) × quality` (full/half/quarter) with `set_preview_quality`; zoom levels and pan in the present pass with `set_preview_view`; `set_skim(Option<Time>)` (paused only, no audio); a source-preview mode `set_playback_target(Media { media })` that plays one media asset (single-layer plan, its default audio stream) instead of the timeline (F1.17), keeping the timeline playhead.
+- **backend:** full screen needs no engine change: the main window goes full screen and the child window follows the reported rectangle (ADR-0005 amendment 2026-11-22, §5).
+- **frontend:** quality menu (persisted as a preference), fit/zoom levels, full-screen toggle (main window full screen through the Tauri window API with the `core:window:allow-set-fullscreen` capability, preview area fills the webview, Esc to exit, Space plays), hover skimming on the timeline with a toggle (hide the native window correctly, ADR-0005 airspace helper, review F11), source preview from the media panel and back to the timeline.
 
 ## Done when
 
-- switching quality during playback takes effect without a stall
+- switching quality during playback takes effect without a stall (no decoder restart)
+- full-screen preview stays aligned (closes the remaining ADR-0005 spike check)
 - every feature above works end-to-end in `pnpm dev` and has tests (`app-core` unit/property tests for commands, Vitest for UI logic, golden frames for rendering)
 - each row above is updated in `docs/feature-catalog.md` (status + short evidence note); partial rows say what is missing
 - `pnpm check` passes; after any IPC change `pnpm bindings` is re-run and `ui/src/bindings.ts` committed
