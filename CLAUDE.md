@@ -135,3 +135,11 @@ Release), and the tag must match the workspace version in `Cargo.toml`.
 
 - Work happens on `main`; confirm no other agent is active before creating or switching branches.
 - Use **Conventional Commits** (`feat:`, `fix:`, `chore:`, ...).
+- **Committing and pushing to `main` is pre-approved**: no need to ask the user first. Commit
+  finished work once the quality gates pass (`pnpm check`; for CI/packaging changes also the
+  relevant installer/CI path), then `git push origin main`.
+- Several sessions share this checkout: stage only the files your task changed (`git add <paths>`,
+  never `git add -A` / `git add .`), and do not commit other sessions' uncommitted work.
+- Before pushing, `git pull --rebase origin main`; if the rebase conflicts, stop and ask.
+- Still ask first: force pushes, rewriting pushed history, deleting branches, and creating, moving
+  or deleting `v*` tags (a tag starts a release).
