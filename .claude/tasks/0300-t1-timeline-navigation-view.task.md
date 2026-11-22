@@ -17,7 +17,7 @@ Finish timeline ergonomics: zoom controls, keyboard navigation and clip thumbnai
 ## Scope
 
 - **frontend:** zoom slider and zoom-to-fit (Ctrl+wheel exists); frame step, previous/next edit, Home/End.
-- **frontend:** filmstrips and waveforms on clips from `media://`, drawn on the canvas with caching per zoom level.
+- **frontend:** filmstrips and waveforms on clips from `media://`, drawn on the canvas with caching per zoom level; the source range of a clip is `source.sourceIn .. sourceIn + duration` (`docs/design/timeline-editing.md` §3.2).
 
 ## Done when
 

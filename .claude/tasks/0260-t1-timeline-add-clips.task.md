@@ -18,12 +18,17 @@ Core MVP step: media panel → timeline.
 
 ## Scope
 
-- **backend:** commands to add clips from media (append, insert at playhead, drop at a time/track), auto-create tracks on drop into empty space and remove empty ones (one undo step via `Batch`).
-- **frontend:** drag from media panel and from Explorer onto the timeline with a drop preview; `+` button on media items.
+Design: `docs/design/timeline-editing.md` (§3 model, §4.1, §9 migration, §13 step 1).
+
+- **backend (model first):** the clip/track model of §3: `ClipSource` (media + `sourceIn` / colour / text), `LinkId`, keyframe-ready `VisualProps`/`AudioProps` (`Animated<T>`), `Project.mainTrack`/`magnetic`/`background`, `Track.locked`; extended `Project::validate`; schema bump + migration + fixtures (§9; if the media migration landed first, this is the next step); view types and specta; shared helpers (`place_clip`, `repack_main`, `normalize_links`, `follow_main`: clips on unlocked non-main tracks follow main-track ripples via derived anchors, with bumping on collision, §3.7).
+- **backend:** `add_clips(sources, placement)` (append / insert at playhead / drop on a track or a new track, one undo step); `add_track` clamps into the right section; the main track cannot be removed; emptied tracks are removed on commit; `RemoveClipsOfMedia` added to the remove-media batch from task 0230.
+- **frontend:** drag from media panel and from Explorer onto the timeline with a drop preview (Explorer drop = import entry + add entry); `+` button on media items; main track drawn distinctly.
 
 ## Done when
 
-- a short edit can be assembled from the media panel with drag and drop; every step undoes in one go
+- a short edit can be assembled from the media panel with drag and drop; every step undoes in one go (a drop from Explorer is the import step plus the add step)
+- inserting on the main track shifts the overlays, text and audio after the insert point in the same undo step
+- the v1 fixture loads through the migration chain and the new fixture round-trips
 - every feature above works end-to-end in `pnpm dev` and has tests (`app-core` unit/property tests for commands, Vitest for UI logic, golden frames for rendering)
 - each row above is updated in `docs/feature-catalog.md` (status + short evidence note); partial rows say what is missing
 - `pnpm check` passes; after any IPC change `pnpm bindings` is re-run and `ui/src/bindings.ts` committed

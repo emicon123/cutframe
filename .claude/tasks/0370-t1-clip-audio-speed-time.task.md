@@ -1,6 +1,6 @@
 # Task 0370: Volume, fades, speed, reverse, freeze frame
 
-**Tier:** 1 · **Agents:** `backend`, `frontend` · **Depends on:** `0330`
+**Tier:** 1 · **Agents:** `backend`, `frontend` · **Depends on:** `0330`, `0260`
 **Spec:** `docs/feature-catalog.md` (feature IDs below), `docs/adr/`, `docs/design/`, `CLAUDE.md`
 
 ## Why
@@ -19,6 +19,7 @@ Remaining basic clip properties for an MVP edit.
 
 ## Scope
 
+- **design note:** volume and fades are already `AudioProps` (`volume`, `fadeIn`, `fadeOut`) since 0260 and are set with `set_clip_property`; speed and reverse are new clip fields with a schema migration and change only `Clip::source_time` / `source_end` (`docs/design/timeline-editing.md` §3.2).
 - **backend:** clip volume and fades in the mixer; constant speed with duration update and pitch-preserving time-stretch (permissive-licence library or own implementation; no GPL); reverse (reverse decode or cached render); freeze frame insert; image default duration from preferences.
 - **frontend:** inspector controls and timeline speed badge.
 

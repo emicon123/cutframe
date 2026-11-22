@@ -18,7 +18,9 @@ Video with sound must stay in sync while editing; tracks need mute/hide/lock.
 
 ## Scope
 
-- **backend:** linked A/V groups move/trim together with a link toggle; detach audio; replace clip media keeping position/duration/effects; track mute/hide/lock commands (fields exist in the model); reorder tracks.
+Design: `docs/design/timeline-editing.md` (§3.3, §3.5, §4.12–4.16).
+
+- **backend:** a video clip plays its own audio until it is detached; `detach_audio` creates a linked audio clip; `link_clips` / `unlink_clips` (the link toggle). Move/trim/split/delete link expansion already lands in 0270/0280; this task adds the commands that create and remove links. `replace_clip_media` keeping position/duration/props; `set_track_flag` (mute/hide/lock; `locked` exists since 0260 and every command already honours it: direct edits on locked tracks fail, and locked tracks never follow main-track ripples); `move_track` within its section (overlays / main / audio).
 - **frontend:** track header buttons, drag to reorder tracks, right-click context menus on clips and tracks.
 
 ## Done when

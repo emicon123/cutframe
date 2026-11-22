@@ -18,8 +18,10 @@ Basic direct manipulation on the canvas timeline.
 
 ## Scope
 
-- **backend:** move/trim commands as ADR-0006 gestures (`Update` per frame, `Commit` on pointer-up, cancel on Escape), clamped to source length.
-- **frontend:** hit-testing in `features/timeline/` (pure geometry functions with Vitest), selection (click, Ctrl/Shift, marquee, Ctrl+A, Esc), drag to move between tracks, edge trim, snapping to playhead/edges with toggle; clip labels with duration.
+Design: `docs/design/timeline-editing.md` (§4.2–4.3, §6.1–6.2, §12).
+
+- **backend:** `move_clips` (anchor + absolute start + `TrackTarget`; overlap is rejected; reorder on the magnetic main track) and `trim_clip` (absolute edge time, clamped to source length, one frame, neighbours and linked clips) as ADR-0006 gestures (`Update` per frame, `Commit` on pointer-up, cancel on Escape); linked clips follow; when a main clip moves or is trimmed, the clips anchored to it on other tracks follow in the same gesture (`follow_main`, §3.7); emptied tracks removed on commit only.
+- **frontend:** hit-testing in `features/timeline/` (pure geometry functions with Vitest); selection in a UI-only `selectionStore` (click, Ctrl/Shift, marquee, Ctrl+A, Esc; linked groups selected together; pruned on `project-changed`); drag to move between tracks, edge trim; `snapping.ts` (playhead/edges/0, 8 px, frame grid, Alt bypass) with toggle as a UI preference; clip labels with duration.
 
 ## Done when
 
