@@ -19,6 +19,7 @@ use crate::jobs::JobManager;
 use crate::preferences::{Preferences, Startup};
 use crate::preview::Preview;
 use crate::previews::{self, Previews};
+use crate::recent::{RecentEntry, RecentStore};
 use crate::recovery::{RecoveryStore, Restored};
 
 #[derive(Debug)]
@@ -40,6 +41,10 @@ pub struct AppState {
     preferences: PreferencesState,
     /// Project path from this process's command line, until the UI takes it.
     launch_path: Mutex<Option<PathBuf>>,
+    /// Recent projects for the home screen (design `home-screen.md` §4).
+    recent: RecentStore,
+    /// Serializes every read-modify-write of the recent list.
+    recent_lock: tauri::async_runtime::Mutex<()>,
 }
 
 /// The preferences in effect and where they live (design `preferences.md` §4).
@@ -185,7 +190,42 @@ impl AppState {
                 PathBuf::new(),
             ),
             launch_path: Mutex::new(None),
+            recent: RecentStore::new(Path::new("")),
+            recent_lock: tauri::async_runtime::Mutex::new(()),
         }
+    }
+
+    /// Keeps the recent list in `store` instead of the working directory.
+    pub fn with_recent(mut self, store: RecentStore) -> Self {
+        self.recent = store;
+        self
+    }
+
+    pub fn recent(&self) -> &RecentStore {
+        &self.recent
+    }
+
+    /// Hold this while using [`AppState::recent`].
+    pub fn recent_lock(&self) -> &tauri::async_runtime::Mutex<()> {
+        &self.recent_lock
+    }
+
+    /// Records an open or save of `path` in the recent list. A failure is only logged: it never
+    /// fails the open or save.
+    pub async fn record_recent(&self, entry: RecentEntry) {
+        let _recording = self.recent_lock.lock().await;
+        let store = self.recent.clone();
+        let recorded = tauri::async_runtime::spawn_blocking(move || store.record(entry)).await;
+        match recorded {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => tracing::warn!(%err, "cannot record the recent project"),
+            Err(err) => tracing::warn!(%err, "cannot record the recent project"),
+        }
+    }
+
+    /// The open project's file, if it has one.
+    pub fn open_file(&self) -> Option<PathBuf> {
+        self.lock().file_path.clone()
     }
 
     /// Uses the preferences read at startup instead of the defaults.

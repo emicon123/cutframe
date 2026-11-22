@@ -354,6 +354,19 @@ impl MediaAsset {
     }
 }
 
+/// The content hash of the project's cover image for the home screen (design `home-screen.md`
+/// §3): the fingerprint hash of the first media asset, in import order, that has a poster.
+///
+/// Clips do not reference media yet; task 0260 changes the rule to "the media of the first clip on
+/// the top video track", here and nowhere else.
+pub fn cover_hash(project: &crate::model::Project) -> Option<&str> {
+    project
+        .media
+        .iter()
+        .find(|asset| asset.has_poster())
+        .map(|asset| asset.fingerprint.hash.as_str())
+}
+
 impl MediaAsset {
     /// The file name, from the absolute path (either separator).
     pub fn file_name(&self) -> &str {
@@ -591,6 +604,27 @@ mod tests {
     fn with_video(mut asset: MediaAsset, edit: impl FnOnce(&mut VideoStreamInfo)) -> MediaAsset {
         edit(asset.info.video.as_mut().expect("has video"));
         asset
+    }
+
+    #[test]
+    fn the_cover_is_the_first_asset_with_a_poster() {
+        let mut project = crate::model::Project::new("Cover");
+        assert_eq!(cover_hash(&project), None, "no media");
+
+        project.media = vec![samples::audio(1)];
+        assert_eq!(cover_hash(&project), None, "audio has no poster");
+
+        let image = samples::image(2);
+        project.media.push(image.clone());
+        assert_eq!(
+            cover_hash(&project),
+            Some(image.fingerprint.hash.as_str()),
+            "an image is a cover"
+        );
+
+        let (first, second) = (samples::video(3), samples::video(4));
+        project.media = vec![samples::audio(1), first.clone(), second, image];
+        assert_eq!(cover_hash(&project), Some(first.fingerprint.hash.as_str()));
     }
 
     #[test]

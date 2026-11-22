@@ -163,6 +163,39 @@ impl From<crate::recovery::Entry> for RecoveryEntry {
     }
 }
 
+/// A project on the home screen's recent list, newest first (design `home-screen.md` §5).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RecentProject {
+    /// Absolute path of the project file; pass it back to the recent-project commands.
+    pub path: String,
+    /// The project's name at the last open or save (model data, not translated).
+    pub name: String,
+    /// The project's duration at that time, flicks.
+    pub duration: Time,
+    /// Unix milliseconds of the last open, save or duplicate by this app.
+    pub opened_at_ms: i64,
+    /// The file's modification time in Unix milliseconds; `null` = the file is missing or
+    /// unreachable (show it as missing, offer only `removeRecentProject`).
+    pub modified_ms: Option<i64>,
+    /// Content hash of the cover: `media://cover/<hash>` (404 = show a placeholder).
+    pub cover: Option<String>,
+}
+
+impl From<crate::recent::Listed> for RecentProject {
+    fn from(listed: crate::recent::Listed) -> Self {
+        let entry = listed.entry;
+        Self {
+            path: entry.path,
+            name: entry.name,
+            duration: entry.duration,
+            opened_at_ms: entry.opened_at_ms,
+            modified_ms: listed.modified_ms,
+            cover: entry.cover,
+        }
+    }
+}
+
 /// One imported media item as the media panel shows it. No fingerprint, size or mtime crosses
 /// IPC (design §4).
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]

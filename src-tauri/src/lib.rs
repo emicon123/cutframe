@@ -11,6 +11,7 @@ mod preview;
 mod previews;
 mod project_file;
 mod protocol;
+mod recent;
 mod recovery;
 mod smoke_test;
 mod state;
@@ -33,6 +34,7 @@ use crate::ipc::events::{
 use crate::jobs::{JobManager, Priority, TauriJobHost};
 use crate::preview::Preview;
 use crate::previews::Previews;
+use crate::recent::RecentStore;
 use crate::recovery::RecoveryStore;
 use crate::state::{AppState, PreferencesState};
 
@@ -77,6 +79,12 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             commands::set_preferences,
             commands::get_cache_info,
             commands::clear_cache,
+            commands::list_recent_projects,
+            commands::remove_recent_project,
+            commands::rename_project_file,
+            commands::duplicate_project_file,
+            commands::trash_project_file,
+            commands::reveal_project_file,
         ])
         .events(collect_events![
             ProjectChanged,
@@ -170,10 +178,9 @@ pub fn run() {
                 .ok_or("main window missing from tauri.conf.json")?;
             let project = Project::new(commands::DEFAULT_PROJECT_NAME);
             let preview = Preview::create(&main, &project.settings);
-            let recovery = RecoveryStore::new(
-                app.path().app_data_dir()?.join("recovery"),
-                uuid::Uuid::now_v7(),
-            );
+            let app_data_dir = app.path().app_data_dir()?;
+            let recent = RecentStore::new(&app_data_dir);
+            let recovery = RecoveryStore::new(app_data_dir.join("recovery"), uuid::Uuid::now_v7());
             let jobs = JobManager::new(Arc::new(TauriJobHost::new(app.handle().clone())));
             let preferences = load_preferences(app.handle())?;
             let interval = preferences.get().autosave_duration();
@@ -190,11 +197,13 @@ pub fn run() {
                 app.handle(),
                 Arc::clone(&previews),
                 spawner,
+                recent.covers_dir().to_path_buf(),
             )));
             app.manage(
                 AppState::new(project, preview, recovery.clone(), jobs, previews)
                     .with_preferences(preferences)
-                    .with_launch_path(launch_path),
+                    .with_launch_path(launch_path)
+                    .with_recent(recent),
             );
             start_autosave(app.handle(), recovery, interval);
 

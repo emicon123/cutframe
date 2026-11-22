@@ -12,7 +12,7 @@ pub mod time;
 pub mod validate;
 
 pub use document::{Document, EditPhase, HistoryPosition};
-pub use media::{MediaAsset, MediaId, MediaKind};
+pub use media::{MediaAsset, MediaId, MediaKind, cover_hash};
 pub use model::{Clip, ClipId, Project, ProjectId, ProjectSettings, Track, TrackId, TrackKind};
 pub use time::{FLICKS_PER_SECOND, FrameRate, MAX_IPC_FLICKS, Rational, Time};
 pub use validate::ValidationError;
