@@ -3,6 +3,10 @@
 **Tier:** 1 · **Agents:** `backend`, `frontend` · **Depends on:** `0230`, `0100`
 **Spec:** `docs/design/media-import.md` (§6.6, §12 task 0240), `docs/feature-catalog.md` (feature IDs below), `docs/adr/`, `CLAUDE.md`
 
+> **Closed 2026-11-22 without the manual check (user's standing decision).** `pnpm check` and a `pnpm dev`
+> start passed on Windows; the end-to-end relink flow in `pnpm dev` (move a media folder, Search folder…,
+> Locate… with a mismatching file, a changed file) was not done by hand.
+
 ## Why
 
 Projects break when media moves; relink is expected in every editor.
