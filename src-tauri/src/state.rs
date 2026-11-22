@@ -1,7 +1,8 @@
 //! Application state shared by commands, the media protocol and the preview.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock};
+use std::time::Duration;
 
 use app_core::command::CommandError;
 use app_core::serialization::CURRENT_SCHEMA_VERSION;
@@ -14,6 +15,7 @@ use crate::autosave::{AutosaveHandle, Msg};
 use crate::ipc::IpcError;
 use crate::ipc::events::ProjectChanged;
 use crate::ipc::types::ProjectState;
+use crate::preferences::{Preferences, Startup};
 use crate::preview::Preview;
 use crate::recovery::{RecoveryStore, Restored};
 
@@ -29,6 +31,91 @@ pub struct AppState {
     recovery: RecoveryStore,
     /// Set in `setup` once the autosave thread runs; tests run without it.
     autosave: OnceLock<AutosaveHandle>,
+    preferences: PreferencesState,
+    /// Project path from this process's command line, until the UI takes it.
+    launch_path: Mutex<Option<PathBuf>>,
+}
+
+/// The preferences in effect and where they live (design `preferences.md` §4).
+#[derive(Debug)]
+pub struct PreferencesState {
+    current: RwLock<Preferences>,
+    /// `preferences.json` in the app config directory.
+    path: PathBuf,
+    /// The app's cache directory, used when `cacheDir` is not set.
+    app_cache_dir: PathBuf,
+    /// The effective cache root (`.../cutframe-cache`).
+    cache_root: RwLock<PathBuf>,
+    /// The file came from another schema version: the next write keeps it as a backup.
+    backup_of_version: Mutex<Option<u32>>,
+    /// Serializes writes of the file and changes of the cache root.
+    write_lock: tauri::async_runtime::Mutex<()>,
+}
+
+impl PreferencesState {
+    pub fn new(startup: Startup, path: PathBuf, app_cache_dir: PathBuf) -> Self {
+        let cache_root = startup.preferences.cache_root(&app_cache_dir);
+        Self {
+            current: RwLock::new(startup.preferences),
+            path,
+            app_cache_dir,
+            cache_root: RwLock::new(cache_root),
+            backup_of_version: Mutex::new(startup.backup_of_version),
+            write_lock: tauri::async_runtime::Mutex::new(()),
+        }
+    }
+
+    pub fn get(&self) -> Preferences {
+        self.current
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn app_cache_dir(&self) -> &Path {
+        &self.app_cache_dir
+    }
+
+    pub fn cache_root(&self) -> PathBuf {
+        self.cache_root
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Hold this while writing the file or using the cache root.
+    pub fn write_lock(&self) -> &tauri::async_runtime::Mutex<()> {
+        &self.write_lock
+    }
+
+    /// The backup to make on the next write (see [`crate::preferences::write`]).
+    pub fn backup_of_version(&self) -> Option<u32> {
+        *self
+            .backup_of_version
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Records that `preferences` were written and the cache root exists. Returns the previous
+    /// preferences.
+    pub fn replace(&self, preferences: Preferences, cache_root: PathBuf) -> Preferences {
+        *self
+            .backup_of_version
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
+        *self
+            .cache_root
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = cache_root;
+        std::mem::replace(
+            &mut *self.current.write().unwrap_or_else(PoisonError::into_inner),
+            preferences,
+        )
+    }
 }
 
 /// What a save writes, taken under the lock and written without it.
@@ -75,7 +162,49 @@ impl AppState {
             preview,
             recovery,
             autosave: OnceLock::new(),
+            preferences: PreferencesState::new(
+                Startup {
+                    preferences: Preferences::default(),
+                    backup_of_version: None,
+                },
+                PathBuf::new(),
+                PathBuf::new(),
+            ),
+            launch_path: Mutex::new(None),
         }
+    }
+
+    /// Uses the preferences read at startup instead of the defaults.
+    pub fn with_preferences(mut self, preferences: PreferencesState) -> Self {
+        self.preferences = preferences;
+        self
+    }
+
+    /// Records the project path from the command line for [`AppState::take_launch_path`].
+    pub fn with_launch_path(self, path: Option<PathBuf>) -> Self {
+        *self
+            .launch_path
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = path;
+        self
+    }
+
+    pub fn preferences(&self) -> &PreferencesState {
+        &self.preferences
+    }
+
+    /// The command-line project path, once; later calls return `None`.
+    pub fn take_launch_path(&self) -> Option<PathBuf> {
+        self.launch_path
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
+
+    /// Tells the autosave thread the new interval (`None` = off, which also deletes the own
+    /// autosave).
+    pub fn set_autosave_interval(&self, interval: Option<Duration>) {
+        self.notify_autosave(Msg::SetInterval(interval));
     }
 
     pub fn recovery(&self) -> &RecoveryStore {
@@ -372,6 +501,47 @@ mod tests {
         session
             .edit(|doc| doc.execute(Box::new(RenameProject::new(name))).map(Some))
             .expect("rename");
+    }
+
+    fn app_state() -> AppState {
+        let recovery = crate::recovery::RecoveryStore::new(PathBuf::new(), uuid::Uuid::now_v7());
+        AppState::new(Project::new("Test"), None, recovery)
+    }
+
+    #[test]
+    fn the_launch_path_is_taken_once() {
+        let path = PathBuf::from("/p/launched.cutframe");
+        let state = app_state().with_launch_path(Some(path.clone()));
+        assert_eq!(state.take_launch_path(), Some(path));
+        assert_eq!(state.take_launch_path(), None);
+        assert_eq!(app_state().take_launch_path(), None);
+    }
+
+    #[test]
+    fn replacing_preferences_clears_the_pending_backup() {
+        let app_cache = std::env::temp_dir();
+        let prefs = PreferencesState::new(
+            Startup {
+                preferences: Preferences::default(),
+                backup_of_version: Some(7),
+            },
+            PathBuf::from("preferences.json"),
+            app_cache.clone(),
+        );
+        assert_eq!(
+            prefs.cache_root(),
+            Preferences::default().cache_root(&app_cache)
+        );
+        assert_eq!(prefs.backup_of_version(), Some(7));
+        let next = Preferences {
+            autosave_interval: None,
+            ..Preferences::default()
+        };
+        let previous = prefs.replace(next.clone(), PathBuf::from("/c/cutframe-cache"));
+        assert_eq!(previous, Preferences::default());
+        assert_eq!(prefs.get(), next);
+        assert_eq!(prefs.cache_root(), PathBuf::from("/c/cutframe-cache"));
+        assert_eq!(prefs.backup_of_version(), None);
     }
 
     #[test]

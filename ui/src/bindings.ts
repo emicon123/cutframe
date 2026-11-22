@@ -30,6 +30,10 @@ export const commands = {
 	 *  `invalidEdit` if `index > history.entries.length`; then nothing changes.
 	 */
 	jumpToHistory: (index: number, options?: InvokeOptions) => __TAURI_INVOKE<boolean>("jump_to_history", { index }, options),
+	/**
+	 *  App version and the GPU capability report. Call once at startup; afterwards listen to
+	 *  `appInfoChanged`.
+	 */
 	getAppInfo: (options?: InvokeOptions) => __TAURI_INVOKE<AppInfo_Serialize>("get_app_info", undefined, options),
 	/**
 	 *  Reports where the preview area is. In `native` mode the GPU window follows this rectangle.
@@ -93,10 +97,33 @@ export const commands = {
 	 *  instance is never touched.
 	 */
 	discardRecovery: (id: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("discard_recovery", { id }, options),
+	/**
+	 *  The project path passed on the command line at startup (a double-clicked project file), once;
+	 *  later calls return `None`. Call after the first project state, before the recovery check.
+	 */
+	takeLaunchPath: (options?: InvokeOptions) => __TAURI_INVOKE<string | null>("take_launch_path", undefined, options),
+	/**  The preferences in effect (read at startup). */
+	getPreferences: (options?: InvokeOptions) => __TAURI_INVOKE<Preferences_Serialize>("get_preferences", undefined, options),
+	/**
+	 *  Validates and replaces all preferences, writes the file, applies them (autosave interval, cache
+	 *  folder) and returns what is now in effect. Fails with `invalidEdit` (the message names the
+	 *  field) when a value is out of range or `schemaVersion` is not current, and with `io` when the
+	 *  file or the cache folder cannot be written; then nothing changes. Not an undo step.
+	 */
+	setPreferences: (preferences: Preferences_Deserialize, options?: InvokeOptions) => __TAURI_INVOKE<Preferences_Serialize>("set_preferences", { preferences }, options),
+	/**  The effective cache folder and what it holds. */
+	getCacheInfo: (options?: InvokeOptions) => __TAURI_INVOKE<CacheInfo>("get_cache_info", undefined, options),
+	/**
+	 *  Deletes everything inside the cache folder (never the folder itself or anything outside it).
+	 *  Returns the info after clearing.
+	 */
+	clearCache: (options?: InvokeOptions) => __TAURI_INVOKE<CacheInfo>("clear_cache", undefined, options),
 };
 
 /** Events */
 export const events = {
+	appInfoChanged: makeEvent<AppInfoChanged_Serialize, AppInfoChanged_Deserialize>("app-info-changed"),
+	openFileRequested: makeEvent<OpenFileRequested, OpenFileRequested>("open-file-requested"),
 	projectChanged: makeEvent<ProjectChanged_Serialize, ProjectChanged_Deserialize>("project-changed"),
 	quitRequested: makeEvent<QuitRequested, QuitRequested>("quit-requested"),
 };
@@ -107,16 +134,50 @@ export const PROJECT_FILE_EXTENSION = "cutframe" as const;
 /* Types */
 export type AppInfo = AppInfo_Serialize | AppInfo_Deserialize;
 
+/**
+ *  The GPU or the preview mode changed at runtime: the GPU was lost and the preview restarted
+ *  (`gpu.fallback` is `deviceLost`), or it gave up (`previewMode` is `unavailable`). Replaces the
+ *  `AppInfo` from `getAppInfo`. Rare.
+ */
+export type AppInfoChanged = AppInfoChanged_Serialize | AppInfoChanged_Deserialize;
+
+/**
+ *  The GPU or the preview mode changed at runtime: the GPU was lost and the preview restarted
+ *  (`gpu.fallback` is `deviceLost`), or it gave up (`previewMode` is `unavailable`). Replaces the
+ *  `AppInfo` from `getAppInfo`. Rare.
+ */
+export type AppInfoChanged_Deserialize = AppInfo_Deserialize;
+
+/**
+ *  The GPU or the preview mode changed at runtime: the GPU was lost and the preview restarted
+ *  (`gpu.fallback` is `deviceLost`), or it gave up (`previewMode` is `unavailable`). Replaces the
+ *  `AppInfo` from `getAppInfo`. Rare.
+ */
+export type AppInfoChanged_Serialize = AppInfo_Serialize;
+
 export type AppInfo_Deserialize = {
 	version: string,
-	gpu?: GpuInfoView | null,
+	/**  `None` when no GPU could be initialized at startup. */
+	gpu?: GpuInfoView_Deserialize | null,
+	/**  `unavailable` also after the preview gave up following repeated GPU losses. */
 	previewMode: PreviewMode,
 };
 
 export type AppInfo_Serialize = {
 	version: string,
-	gpu: GpuInfoView | null,
+	/**  `None` when no GPU could be initialized at startup. */
+	gpu: GpuInfoView_Serialize | null,
+	/**  `unavailable` also after the preview gave up following repeated GPU losses. */
 	previewMode: PreviewMode,
+};
+
+/**  The cache folder and what it holds. */
+export type CacheInfo = {
+	/**  The effective cache root (`<folder>/cutframe-cache`); the app only deletes inside it. */
+	path: string,
+	/**  Total size in bytes, as a decimal string (64-bit, ADR-0003 §3). */
+	sizeBytes: string,
+	files: number,
 };
 
 /**  Identifies a clip within a project. */
@@ -147,10 +208,59 @@ export type FrameRateRepr = {
 	den: number,
 };
 
-export type GpuInfoView = {
+/**  Kind of GPU. The UI translates the key. */
+export type GpuDeviceType = "discrete" | "integrated" | "virtual" | "software" | "other";
+
+/**  Why the GPU in use is not the first choice. The UI translates the key. */
+export type GpuFallback = 
+/**  `WGPU_FORCE_FALLBACK_ADAPTER` forced software rendering. */
+"forcedByEnv" | 
+/**  A preferred GPU cannot present to the preview window. */
+"preferredCannotPresent" | 
+/**  No hardware GPU: software rendering. */
+"noHardwareAdapter" | 
+/**  The GPU stopped responding at runtime and the preview was restarted on this adapter. */
+"deviceLost";
+
+/**  The GPU capability report (status bar, Preferences → Performance). */
+export type GpuInfoView = GpuInfoView_Serialize | GpuInfoView_Deserialize;
+
+/**  The GPU capability report (status bar, Preferences → Performance). */
+export type GpuInfoView_Deserialize = {
+	/**  Adapter name as the driver reports it (data, not translated). */
 	adapter: string,
+	/**  Graphics API, e.g. `Dx12` (data, not translated). */
 	backend: string,
+	/**  Software rasterizer (WARP): slower. */
 	software: boolean,
+	deviceType: GpuDeviceType,
+	/**  Driver description; may be empty. */
+	driver: string,
+	/**  `false`: no adapter can present to the native preview window; it renders offscreen only. */
+	presentsToWindow: boolean,
+	/**  Why this is not the first-choice adapter; `None` = it is. */
+	fallback?: GpuFallback | null,
+	/**  Hardware video decoders/encoders. Always `None` until media decoding exists. */
+	videoAcceleration?: VideoAccelerationView | null,
+};
+
+/**  The GPU capability report (status bar, Preferences → Performance). */
+export type GpuInfoView_Serialize = {
+	/**  Adapter name as the driver reports it (data, not translated). */
+	adapter: string,
+	/**  Graphics API, e.g. `Dx12` (data, not translated). */
+	backend: string,
+	/**  Software rasterizer (WARP): slower. */
+	software: boolean,
+	deviceType: GpuDeviceType,
+	/**  Driver description; may be empty. */
+	driver: string,
+	/**  `false`: no adapter can present to the native preview window; it renders offscreen only. */
+	presentsToWindow: boolean,
+	/**  Why this is not the first-choice adapter; `None` = it is. */
+	fallback: GpuFallback | null,
+	/**  Hardware video decoders/encoders. Always `None` until media decoding exists. */
+	videoAcceleration: VideoAccelerationView | null,
 };
 
 export type HistoryEntryView = {
@@ -232,6 +342,52 @@ export type IpcError =
 { kind: "invalidProject"; message: string } | 
 /**  Any other file-system failure: permission denied, disk full, file locked. */
 { kind: "io"; message: string };
+
+/**
+ *  A second launch of the app passed a project path (e.g. a double-click in Explorer). The window
+ *  was already brought to the front. Open it like File → Open, after the unsaved-changes prompt;
+ *  ignore it while another file action or prompt is running.
+ */
+export type OpenFileRequested = {
+	/**  Absolute path as given on the command line; not checked (opening reports errors). */
+	path: string,
+};
+
+export type Preferences = Preferences_Serialize | Preferences_Deserialize;
+
+export type Preferences_Deserialize = {
+	/**  Always the current version when sent or written; `setPreferences` rejects any other. */
+	schemaVersion?: number,
+	/**  Flicks between autosaves, a whole number of seconds in 15 s ..= 3,600 s; `None` = off. */
+	autosaveInterval?: Time | null,
+	/**  Flicks, 0.1 s ..= 600 s. Used when an image is added to the timeline. */
+	defaultImageDuration?: Time,
+	/**  Flicks, 0.1 s ..= 10 s. Used when a transition is added. */
+	defaultTransitionDuration?: Time,
+	language?: UiLanguage,
+	/**
+	 *  Absolute folder that holds the cache; `None` = the app's cache directory. The app only
+	 *  deletes inside its `cutframe-cache` subfolder.
+	 */
+	cacheDir?: string | null,
+};
+
+export type Preferences_Serialize = {
+	/**  Always the current version when sent or written; `setPreferences` rejects any other. */
+	schemaVersion: number,
+	/**  Flicks between autosaves, a whole number of seconds in 15 s ..= 3,600 s; `None` = off. */
+	autosaveInterval: Time | null,
+	/**  Flicks, 0.1 s ..= 600 s. Used when an image is added to the timeline. */
+	defaultImageDuration: Time,
+	/**  Flicks, 0.1 s ..= 10 s. Used when a transition is added. */
+	defaultTransitionDuration: Time,
+	language: UiLanguage,
+	/**
+	 *  Absolute folder that holds the cache; `None` = the app's cache directory. The app only
+	 *  deletes inside its `cutframe-cache` subfolder.
+	 */
+	cacheDir: string | null,
+};
 
 /**  How the preview reaches the screen on this platform. */
 export type PreviewMode = 
@@ -373,6 +529,15 @@ export type TrackView = {
 	clips: ClipView[],
 };
 
+/**  UI language. The UI picks its translation table by this key. */
+export type UiLanguage = "en";
+
+/**  Hardware video codecs, by FFmpeg name (e.g. `h264_d3d11va`). Not filled yet. */
+export type VideoAccelerationView = {
+	decoders: string[],
+	encoders: string[],
+};
+
 /* Tauri Specta runtime */
 type EventEmit<T> = [T] extends [null] ? () => Promise<void> : (payload: T) => Promise<void>;
 
@@ -424,6 +589,11 @@ export type MockCommandHandlers = {
     listRecovery: () => RecoveryEntry_Serialize[] | Promise<RecoveryEntry_Serialize[]>,
     restoreRecovery: (args: { id: string }) => null | Promise<null>,
     discardRecovery: (args: { id: string }) => null | Promise<null>,
+    takeLaunchPath: () => string | null | Promise<string | null>,
+    getPreferences: () => Preferences_Serialize | Promise<Preferences_Serialize>,
+    setPreferences: (args: { preferences: Preferences_Deserialize }) => Preferences_Serialize | Promise<Preferences_Serialize>,
+    getCacheInfo: () => CacheInfo | Promise<CacheInfo>,
+    clearCache: () => CacheInfo | Promise<CacheInfo>,
 };
 
 /**
@@ -471,6 +641,11 @@ export function mockCommands(handlers: Partial<MockCommandHandlers> = {}): void 
             case "list_recovery": return mockCommandHandler(mockHandlers.listRecovery, "list_recovery", args);
             case "restore_recovery": return mockCommandHandler(mockHandlers.restoreRecovery, "restore_recovery", args);
             case "discard_recovery": return mockCommandHandler(mockHandlers.discardRecovery, "discard_recovery", args);
+            case "take_launch_path": return mockCommandHandler(mockHandlers.takeLaunchPath, "take_launch_path", args);
+            case "get_preferences": return mockCommandHandler(mockHandlers.getPreferences, "get_preferences", args);
+            case "set_preferences": return mockCommandHandler(mockHandlers.setPreferences, "set_preferences", args);
+            case "get_cache_info": return mockCommandHandler(mockHandlers.getCacheInfo, "get_cache_info", args);
+            case "clear_cache": return mockCommandHandler(mockHandlers.clearCache, "clear_cache", args);
             default: throw new Error(`No mock handler registered for command '${cmd}'`);
         }
     }, { shouldMockEvents: true });

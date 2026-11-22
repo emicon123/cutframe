@@ -3,21 +3,42 @@
 //! (Linux development mode, see ADR-0001).
 //!
 //! All communication goes through a channel, so callers never block on rendering.
+//!
+//! When the GPU device is lost (driver reset, TDR), the thread recreates the context on the same
+//! window following [`after_device_loss`] and reports the new GPU through the `on_gpu_changed`
+//! callback.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use arc_swap::ArcSwap;
 use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 use crate::render::{
-    GpuContext, GpuError, GpuInfo, OFFSCREEN_FORMAT, OffscreenFrame, PatternParams, TestPattern,
-    render_offscreen,
+    AdapterMode, FallbackReason, GpuContext, GpuError, GpuInfo, OFFSCREEN_FORMAT, OffscreenFrame,
+    PatternParams, TestPattern, render_offscreen,
 };
 
+/// Called on the preview thread after the GPU changed at runtime: the new report, and whether the
+/// preview still renders (`false` = it gave up after repeated device losses).
+pub type GpuChanged = Box<dyn Fn(GpuInfo, bool) + Send>;
+
+/// What to recreate after the `losses`-th device loss of this preview: the first gives the
+/// (possibly reset) hardware another chance, the second uses the software rasterizer, and after
+/// that the preview stops (`None`).
+pub fn after_device_loss(losses: u32) -> Option<AdapterMode> {
+    match losses {
+        0 | 1 => Some(AdapterMode::Auto),
+        2 => Some(AdapterMode::SoftwareOnly),
+        _ => None,
+    }
+}
+
 /// Raw handles of a native window to render into.
+#[derive(Clone, Copy)]
 struct NativeWindow {
     window: RawWindowHandle,
     display: Option<RawDisplayHandle>,
@@ -35,6 +56,10 @@ enum Message {
     },
     SetVisible(bool),
     SetCanvasAspect(f32),
+    /// The device of context `generation` was lost (sent by its device-lost callback).
+    DeviceLost {
+        generation: u32,
+    },
     RenderFrame {
         width: u32,
         height: u32,
@@ -47,9 +72,10 @@ enum Message {
 #[derive(Debug)]
 pub struct PreviewHandle {
     tx: Sender<Message>,
-    gpu_info: GpuInfo,
-    /// True when the native window has a surface the adapter presents to.
-    has_window: bool,
+    /// The current GPU; replaced by the preview thread after a device loss.
+    gpu_info: Arc<ArcSwap<GpuInfo>>,
+    /// False once the preview gave up after repeated device losses.
+    available: Arc<AtomicBool>,
     /// Frames presented to the native window so far.
     presented: Arc<AtomicU64>,
     thread: Option<JoinHandle<()>>,
@@ -61,6 +87,7 @@ impl std::fmt::Debug for Message {
             Message::Resize { .. } => "Resize",
             Message::SetVisible(_) => "SetVisible",
             Message::SetCanvasAspect(_) => "SetCanvasAspect",
+            Message::DeviceLost { .. } => "DeviceLost",
             Message::RenderFrame { .. } => "RenderFrame",
             Message::Shutdown => "Shutdown",
         })
@@ -69,14 +96,16 @@ impl std::fmt::Debug for Message {
 
 impl PreviewHandle {
     /// Starts the preview thread for offscreen rendering and initializes the GPU on it.
-    pub fn spawn(canvas_aspect: f32) -> Result<Self, GpuError> {
-        Self::spawn_inner(canvas_aspect, None)
+    /// `on_gpu_changed` is called after a runtime device loss (see [`GpuChanged`]).
+    pub fn spawn(canvas_aspect: f32, on_gpu_changed: GpuChanged) -> Result<Self, GpuError> {
+        Self::spawn_inner(canvas_aspect, None, on_gpu_changed)
     }
 
     /// Starts the preview thread rendering into a native window. The GPU adapter is chosen so
     /// that it can present to this window (see [`GpuContext::with_window`]). Rendering is paused
     /// and the window is 1 x 1 pixels until [`Self::resize`] and [`Self::set_visible`] are
     /// called. [`Self::has_window`] reports whether the window could be attached.
+    /// `on_gpu_changed` is called after a runtime device loss (see [`GpuChanged`]).
     ///
     /// # Safety
     /// `window` (and `display`, if given) must be valid handles, and the window must stay alive
@@ -85,60 +114,70 @@ impl PreviewHandle {
         canvas_aspect: f32,
         window: RawWindowHandle,
         display: Option<RawDisplayHandle>,
+        on_gpu_changed: GpuChanged,
     ) -> Result<Self, GpuError> {
-        Self::spawn_inner(canvas_aspect, Some(NativeWindow { window, display }))
+        Self::spawn_inner(
+            canvas_aspect,
+            Some(NativeWindow { window, display }),
+            on_gpu_changed,
+        )
     }
 
-    fn spawn_inner(canvas_aspect: f32, window: Option<NativeWindow>) -> Result<Self, GpuError> {
+    fn spawn_inner(
+        canvas_aspect: f32,
+        window: Option<NativeWindow>,
+        on_gpu_changed: GpuChanged,
+    ) -> Result<Self, GpuError> {
         let (tx, rx) = unbounded();
         let (ready_tx, ready_rx) = bounded(1);
         let presented = Arc::new(AtomicU64::new(0));
-        let counter = Arc::clone(&presented);
+        let available = Arc::new(AtomicBool::new(true));
+        let shared = Shared {
+            presented: Arc::clone(&presented),
+            available: Arc::clone(&available),
+            tx: tx.clone(),
+            on_gpu_changed,
+        };
         let thread = thread::Builder::new()
             .name("preview-render".into())
-            .spawn(move || {
-                let gpu = match window {
-                    // SAFETY: the caller of `spawn_with_window` guarantees the handles are valid
-                    // and outlive the preview thread.
-                    Some(window) => unsafe {
-                        GpuContext::with_window(wgpu::SurfaceTargetUnsafe::RawHandle {
-                            raw_display_handle: window.display,
-                            raw_window_handle: window.window,
-                        })
-                    },
-                    None => GpuContext::new().map(|gpu| (gpu, None)),
-                };
-                match gpu {
+            .spawn(
+                move || match create_gpu(window.as_ref(), AdapterMode::Auto) {
                     Ok((gpu, surface)) => {
-                        let render = RenderLoop::new(gpu, canvas_aspect, surface, counter);
-                        let _ = ready_tx.send(Ok((render.gpu.info(), render.window.is_some())));
+                        let render = RenderLoop::new(gpu, canvas_aspect, surface, window, shared);
+                        let _ = ready_tx.send(Ok(Arc::clone(&render.info)));
                         render.run(&rx);
                     }
                     Err(err) => {
                         let _ = ready_tx.send(Err(err));
                     }
-                }
-            })
+                },
+            )
             .expect("failed to spawn the preview thread");
-        let (gpu_info, has_window) = ready_rx
+        let gpu_info = ready_rx
             .recv()
             .expect("preview thread exited during GPU initialization")?;
         Ok(Self {
             tx,
             gpu_info,
-            has_window,
+            available,
             presented,
             thread: Some(thread),
         })
     }
 
-    pub fn gpu_info(&self) -> &GpuInfo {
-        &self.gpu_info
+    /// The GPU in use now. Changes after a runtime device loss.
+    pub fn gpu_info(&self) -> Arc<GpuInfo> {
+        self.gpu_info.load_full()
     }
 
     /// Whether the native window passed to [`Self::spawn_with_window`] is rendered into.
     pub fn has_window(&self) -> bool {
-        self.has_window
+        self.gpu_info.load().presents_to_window
+    }
+
+    /// False once the preview stopped after repeated device losses (nothing is drawn any more).
+    pub fn is_available(&self) -> bool {
+        self.available.load(Ordering::Relaxed)
     }
 
     /// Number of frames presented to the native window so far.
@@ -177,11 +216,64 @@ impl PreviewHandle {
         response.recv_timeout(timeout).ok()
     }
 
+    /// Test-only: behaves as if the current device was lost.
+    #[cfg(test)]
+    fn simulate_device_lost(&self, generation: u32) {
+        self.send(Message::DeviceLost { generation });
+    }
+
     fn send(&self, message: Message) {
         if self.tx.send(message).is_err() {
             tracing::error!("preview thread is not running");
         }
     }
+}
+
+/// Creates a context for `window` (or offscreen) restricted to `mode`.
+fn create_gpu(
+    window: Option<&NativeWindow>,
+    mode: AdapterMode,
+) -> Result<(GpuContext, Option<wgpu::Surface<'static>>), GpuError> {
+    match window {
+        // SAFETY: the caller of `spawn_with_window` guarantees the handles are valid and outlive
+        // the preview thread.
+        Some(window) => unsafe {
+            GpuContext::with_window(
+                wgpu::SurfaceTargetUnsafe::RawHandle {
+                    raw_display_handle: window.display,
+                    raw_window_handle: window.window,
+                },
+                mode,
+            )
+        },
+        None => GpuContext::new_with(mode).map(|gpu| (gpu, None)),
+    }
+}
+
+/// Sends [`Message::DeviceLost`] when `gpu`'s device is lost. Our own drop (`Destroyed`) is not
+/// a loss. GPU errors are logged instead of panicking: after a loss, surface calls may fail until
+/// the context is recreated.
+fn watch_device(gpu: &GpuContext, generation: u32, tx: &Sender<Message>) {
+    let tx = tx.clone();
+    gpu.device.set_device_lost_callback(move |reason, message| {
+        if reason == wgpu::DeviceLostReason::Destroyed {
+            return;
+        }
+        tracing::error!(?reason, %message, "GPU device lost");
+        let _ = tx.send(Message::DeviceLost { generation });
+    });
+    gpu.device.on_uncaptured_error(Arc::new(|err| {
+        tracing::error!(%err, "GPU error in the preview");
+    }));
+}
+
+/// The parts of the render loop shared with the [`PreviewHandle`].
+struct Shared {
+    presented: Arc<AtomicU64>,
+    available: Arc<AtomicBool>,
+    /// The loop's own channel, for device-lost callbacks.
+    tx: Sender<Message>,
+    on_gpu_changed: GpuChanged,
 }
 
 impl Drop for PreviewHandle {
@@ -338,12 +430,22 @@ struct RenderLoop {
     gpu: GpuContext,
     /// Adapter of `gpu`, cached for the present-rate log.
     adapter: wgpu::AdapterInfo,
+    /// Increases with every recreated context; stale device-lost messages are ignored.
+    generation: u32,
+    /// Device losses so far (see [`after_device_loss`]).
+    losses: u32,
+    /// The report published to the handle.
+    info: Arc<ArcSwap<GpuInfo>>,
+    /// The native window, kept to recreate the surface after a device loss.
+    native: Option<NativeWindow>,
+    /// Last size from [`Message::Resize`], in physical pixels.
+    size: (u32, u32),
     started: Instant,
     canvas_aspect: f32,
     offscreen_pattern: Option<TestPattern>,
     window: Option<WindowTarget>,
     visible: bool,
-    presented: Arc<AtomicU64>,
+    shared: Shared,
     present_stats: PresentStats,
 }
 
@@ -352,21 +454,80 @@ impl RenderLoop {
         gpu: GpuContext,
         canvas_aspect: f32,
         surface: Option<wgpu::Surface<'static>>,
-        presented: Arc<AtomicU64>,
+        native: Option<NativeWindow>,
+        shared: Shared,
     ) -> Self {
         let window = surface.and_then(|surface| WindowTarget::new(&gpu, surface, 1, 1));
+        watch_device(&gpu, 0, &shared.tx);
+        let info = Arc::new(ArcSwap::from_pointee(report(&gpu, window.is_some())));
         Self {
             adapter: gpu.adapter.get_info(),
             gpu,
+            generation: 0,
+            losses: 0,
+            info,
+            native,
+            size: (1, 1),
             started: Instant::now(),
             canvas_aspect,
             offscreen_pattern: None,
             window,
             // Paused until the shell shows the window.
             visible: false,
-            presented,
+            shared,
             present_stats: PresentStats::new(),
         }
+    }
+
+    /// Recreates the context after a device loss, following [`after_device_loss`], and reports
+    /// the result through `on_gpu_changed`. Gives up (stops drawing) when the policy says so.
+    fn recover(&mut self) {
+        // A window takes one swap chain at a time: drop the old surface before creating a new one.
+        self.window = None;
+        self.offscreen_pattern = None;
+        self.present_stats.reset();
+        loop {
+            self.losses += 1;
+            let Some(mode) = after_device_loss(self.losses) else {
+                tracing::error!(
+                    losses = self.losses,
+                    "GPU lost repeatedly; the preview is unavailable"
+                );
+                self.shared.available.store(false, Ordering::Relaxed);
+                let mut info = GpuInfo::clone(&self.info.load());
+                info.presents_to_window = false;
+                (self.shared.on_gpu_changed)(info, false);
+                return;
+            };
+            match create_gpu(self.native.as_ref(), mode) {
+                Ok((mut gpu, surface)) => {
+                    gpu.fallback = Some(FallbackReason::DeviceLost);
+                    self.generation += 1;
+                    watch_device(&gpu, self.generation, &self.shared.tx);
+                    // The lost context is dropped here.
+                    self.gpu = gpu;
+                    self.adapter = self.gpu.adapter.get_info();
+                    let (width, height) = self.size;
+                    self.window = surface
+                        .and_then(|surface| WindowTarget::new(&self.gpu, surface, width, height));
+                    let info = report(&self.gpu, self.window.is_some());
+                    tracing::warn!(
+                        adapter = %info.adapter, ?mode, losses = self.losses,
+                        "GPU context recreated after a device loss"
+                    );
+                    self.info.store(Arc::new(info.clone()));
+                    (self.shared.on_gpu_changed)(info, true);
+                    return;
+                }
+                Err(err) => {
+                    tracing::error!(%err, ?mode, "cannot recreate the GPU context");
+                }
+            }
+        }
+    }
+
+    fn gave_up(&self) -> bool {
+        !self.shared.available.load(Ordering::Relaxed)
     }
 
     fn run(mut self, rx: &Receiver<Message>) {
@@ -407,6 +568,7 @@ impl RenderLoop {
     fn handle(&mut self, message: Message) -> bool {
         match message {
             Message::Resize { width, height } => {
+                self.size = (width.max(1), height.max(1));
                 if let Some(target) = &mut self.window {
                     target.config.width = width.max(1);
                     target.config.height = height.max(1);
@@ -419,11 +581,20 @@ impl RenderLoop {
                 self.present_stats.reset();
             }
             Message::SetCanvasAspect(aspect) => self.canvas_aspect = aspect,
+            Message::DeviceLost { generation } => {
+                if generation == self.generation && !self.gave_up() {
+                    self.recover();
+                }
+            }
             Message::RenderFrame {
                 width,
                 height,
                 reply,
             } => {
+                if self.gave_up() {
+                    // Dropping `reply` answers "no frame" right away.
+                    return true;
+                }
                 let time = self.elapsed();
                 let pattern = self
                     .offscreen_pattern
@@ -486,7 +657,7 @@ impl RenderLoop {
         );
         self.gpu.queue.submit([encoder.finish()]);
         self.gpu.queue.present(frame);
-        self.presented.fetch_add(1, Ordering::Relaxed);
+        self.shared.presented.fetch_add(1, Ordering::Relaxed);
         if let Some(report) = self.present_stats.record(Instant::now()) {
             tracing::debug!(
                 frames = report.frames,
@@ -515,13 +686,98 @@ impl RenderLoop {
     }
 }
 
+/// The report for `gpu`; `presents` = it renders into the native window.
+fn report(gpu: &GpuContext, presents: bool) -> GpuInfo {
+    GpuInfo {
+        presents_to_window: presents,
+        ..gpu.info()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn ignore_gpu_changes() -> GpuChanged {
+        Box::new(|_, _| {})
+    }
+
+    #[test]
+    fn device_loss_policy_retries_hardware_then_software_then_stops() {
+        assert_eq!(after_device_loss(1), Some(AdapterMode::Auto));
+        assert_eq!(after_device_loss(2), Some(AdapterMode::SoftwareOnly));
+        assert_eq!(after_device_loss(3), None);
+        assert_eq!(after_device_loss(u32::MAX), None);
+    }
+
+    /// Runs the recovery path on an offscreen preview: the context is recreated, the callback
+    /// reports `DeviceLost`, and frames still render. Repeated losses end with an unavailable
+    /// preview that answers frame requests with `None`.
+    #[test]
+    fn recovers_from_a_lost_device() {
+        let (changed_tx, changed) = unbounded();
+        let on_changed: GpuChanged = Box::new(move |info, available| {
+            let _ = changed_tx.send((info, available));
+        });
+        let preview = match PreviewHandle::spawn(16.0 / 9.0, on_changed) {
+            Ok(preview) => preview,
+            Err(err) => {
+                eprintln!("skipping GPU test: {err}");
+                return;
+            }
+        };
+        assert_ne!(
+            preview.gpu_info().fallback,
+            Some(FallbackReason::DeviceLost)
+        );
+
+        preview.simulate_device_lost(0);
+        let (info, available) = changed
+            .recv_timeout(Duration::from_secs(30))
+            .expect("gpu changed");
+        assert!(available);
+        assert_eq!(info.fallback, Some(FallbackReason::DeviceLost));
+        assert_eq!(*preview.gpu_info(), info);
+        assert!(preview.is_available());
+        let frame = preview
+            .render_frame(64, 36, Duration::from_secs(30))
+            .expect("frame after recovery");
+        assert_eq!(frame.rgba.len(), 64 * 36 * 4);
+
+        // A stale message from the replaced context is ignored.
+        preview.simulate_device_lost(0);
+        assert!(
+            preview
+                .render_frame(8, 8, Duration::from_secs(30))
+                .is_some()
+        );
+        assert!(changed.try_recv().is_err());
+
+        // Second loss: software only (may be missing on this machine, which counts as a third
+        // loss); then the preview gives up.
+        preview.simulate_device_lost(1);
+        let (_, available) = changed
+            .recv_timeout(Duration::from_secs(30))
+            .expect("gpu changed");
+        if available {
+            assert!(preview.gpu_info().software);
+            preview.simulate_device_lost(2);
+            let (_, available) = changed
+                .recv_timeout(Duration::from_secs(30))
+                .expect("gpu changed");
+            assert!(!available);
+        }
+        assert!(!preview.is_available());
+        assert!(
+            preview
+                .render_frame(8, 8, Duration::from_secs(30))
+                .is_none()
+        );
+    }
+
     #[test]
     fn renders_frames_on_request() {
-        let preview = match PreviewHandle::spawn(16.0 / 9.0) {
+        let preview = match PreviewHandle::spawn(16.0 / 9.0, ignore_gpu_changes()) {
             Ok(preview) => preview,
             Err(err) => {
                 eprintln!("skipping GPU test: {err}");
