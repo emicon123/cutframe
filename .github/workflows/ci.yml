@@ -59,13 +59,19 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: actions-rust-lang/setup-rust-toolchain@v1 # reads rust-toolchain.toml (incl. clippy)
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+
+      # cfg(windows) code (preview/windows.rs, the MSVC branch of build.rs) is only compiled here.
+      # Runs before the tests to fail fast; it shares build scripts and proc macros with them.
+      # No `cargo fmt` here: rustfmt ignores cfg, so the Linux job already covers these files.
+      - name: Clippy (Windows-only code)
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Tests (GPU tests run on WARP)
         run: cargo test --workspace
