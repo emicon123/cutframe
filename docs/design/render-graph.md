@@ -228,7 +228,7 @@ None of these change the contract of §4.1.
 pub struct OfflineRenderer { /* Compositor, readers with FetchPolicy::Exact, targets reused per size (F48) */ }
 
 impl OfflineRenderer {
-    pub fn new(gpu: Arc<GpuContext>, media: MediaPaths) -> Self;
+    pub fn new(gpu: Arc<GpuContext>, media: MediaPaths, options: OfflineOptions) -> Self;
 
     /// Renders project frame `n` at `size` (normally the canvas size) and returns it in `format`.
     /// Blocks until every source frame is decoded. Same pixels as the preview at full quality.
@@ -238,7 +238,23 @@ impl OfflineRenderer {
         n: i64,
         size: (u32, u32),
         format: OutputFormat,
-    ) -> Result<RenderedFrame, RenderError>;
+    ) -> Result<RenderedFrame<'_>, RenderError>;
+}
+
+/// Reader limits and thread priority; export uses `max_readers: 4, max_hw_readers: 2` and
+/// below-normal priority so it does not starve the preview (export.md).
+pub struct OfflineOptions {
+    pub max_readers: usize,
+    pub max_hw_readers: usize,
+    pub below_normal_priority: bool,
+}
+
+/// Borrows the renderer, so the canvas cannot be overwritten while it is in use.
+pub enum RenderedFrame<'a> {
+    /// Tight RGBA8 rows, `size.0 * 4` bytes each.
+    Rgba8(&'a [u8]),
+    /// The canvas; its commands are already submitted. Valid until the next `render_frame`.
+    Gpu(&'a wgpu::TextureView),
 }
 
 pub enum OutputFormat {
@@ -668,8 +684,8 @@ frames per property.
 
 **0360:** the present-pass overlay for handles and guides.
 
-**0380 (architect):** the encoder pass after `OutputFormat::GpuCanvas`, export error handling for
-`RenderError`.
+**0390 (backend):** the NV12 pass of `docs/design/export.md` §4.3 after `OutputFormat::GpuCanvas`,
+and export error handling for `RenderError` (designed in export.md, task 0380).
 
 ## Risks
 

@@ -92,6 +92,7 @@ pub struct TransportShared {
     pub skim: AtomicI64,       // i64::MIN = none
     pub started: AtomicBool,   // preroll finished: the callback may consume the ring
 }
+// `TransportShared::is_playing()` is a cheap read of `state`; the export throttle uses it.
 ```
 
 ```mermaid
@@ -294,6 +295,10 @@ seek backwards to a packet before the target, decode, drop samples before the ta
 timestamps (with `origin`, media-import.md §5), flush `swresample` on every seek. Reuse and
 prefetch follow the same rules as video readers (§7), so a split point plays without a seek and a
 jump cut is pre-seeked.
+
+Audio readers and the `PcmProvider` must be constructible and usable on any thread, not only on
+the feeder: export owns its own set on the export thread and calls `mix_block` with
+`frames = 1024` (`docs/design/export.md`).
 
 ### 6.5 Audio scrubbing (F1.69)
 
