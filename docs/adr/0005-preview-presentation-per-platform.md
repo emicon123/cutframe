@@ -76,7 +76,7 @@ first. `RUST_LOG=info,engine::preview=debug` logs `preview present rate` every 5
 | Minimize, restore, maximize, full-screen | Pass, full-screen not checked | Restore from minimized returns to maximized with the preview aligned. The app has no full-screen mode yet. |
 | Hiding for an overlapping dialog | Not checked | The UI has no dialog or menu that overlaps the preview yet. |
 | Present rate on an integrated GPU, UI responsive | Pass, with caveat | See the table below. Every interval on the iGPU stayed below the 60 Hz frame budget (16.7 ms). Process CPU time about 2–3 s over about 20 s including start-up. The UI stayed interactive during the splitter drag; responsiveness was not measured numerically. Only the stage-0 test pattern is rendered, so decode and compositing load is not measured. |
-| CI `--smoke-test` presents into the child window on WARP | Pass | Commits `e1c7aa3`, `936f8bd`: CI fails unless the log shows `mode=Native`, `backend=Dx12` and at least 30 presented frames. CI was green on `main` at `cad6858`. |
+| CI `--smoke-test` presents into the child window on WARP | Pass | Commits `e1c7aa3`, `936f8bd`: CI fails unless the log shows `mode=Native`, `backend=Dx12` and at least 30 presented frames. The Windows job passed on `main` (run 45017240951, `8ca0c64`): `adapter=Microsoft Basic Render Driver backend=Dx12 software=true mode=Native presented=30`. The overall CI run was red for an unrelated reason (`cargo deny` on the Linux ARM64 job). |
 
 Present rate, `AutoVsync`, 165 Hz display, three 5 s windows per run:
 
