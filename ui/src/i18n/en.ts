@@ -18,13 +18,22 @@ export const en = {
   },
   /** Key names used to display shortcuts, e.g. "Ctrl+Shift+S". */
   keys: { ctrl: "Ctrl", shift: "Shift", separator: "+" },
+  /** Main menu bar titles. */
+  menu: {
+    bar: "Main menu",
+    file: "File",
+    edit: "Edit",
+    view: "View",
+    help: "Help",
+  },
   file: {
-    menu: "File",
     new: "New",
     open: "Open…",
     save: "Save",
     saveAs: "Save As…",
+    importMedia: "Import Media…",
     projectSettings: "Project settings…",
+    exit: "Exit",
     /** Name of the project file type in the native open/save dialogs. */
     filterName: `${APP_NAME} project`,
     /** Save As file name when the project name has no usable characters. */
@@ -36,6 +45,17 @@ export const en = {
     save: "Save",
     discard: "Don't save",
     cancel: "Cancel",
+  },
+  recovery: {
+    title: "Recover unsaved work",
+    description: `${APP_NAME} did not close properly. These projects have changes that were not saved.`,
+    notSavedYet: "Not saved yet",
+    savedAt: (time: string) => `Autosaved ${time}`,
+    restore: "Restore",
+    discard: "Discard",
+    restoreItem: (name: string) => `Restore “${name}”`,
+    discardItem: (name: string) => `Discard “${name}”`,
+    later: "Later",
   },
   projectSettings: {
     title: "Project settings",
@@ -61,13 +81,35 @@ export const en = {
     cancel: "Cancel",
     close: "Close",
   },
-  topBar: {
+  edit: {
     undo: "Undo",
     redo: "Redo",
+    /** Menu item and tooltip naming the entry, e.g. "Undo Add Track". */
     undoAction: (label: string) => `Undo ${label}`,
     redoAction: (label: string) => `Redo ${label}`,
-    nothingToUndo: "Nothing to undo",
-    nothingToRedo: "Nothing to redo",
+  },
+  view: {
+    historyPanel: "History panel",
+    keyboardShortcuts: "Keyboard shortcuts",
+  },
+  /** Tooltip text: the action, then its shortcut, e.g. "Undo Add Track (Ctrl+Z)". */
+  tooltip: (label: string, shortcut: string) => (shortcut ? `${label} (${shortcut})` : label),
+  shortcutsDialog: {
+    title: "Keyboard shortcuts",
+    description: "Shortcuts do nothing while you type in a text field or a dialog is open.",
+    close: "Close",
+    /** Between alternative shortcuts of one action, e.g. "Ctrl+Shift+Z or Ctrl+Y". */
+    or: "or",
+  },
+  historyPanel: {
+    title: "History",
+    /** First row: the oldest state the history can go back to. */
+    start: "Start of history",
+    close: "Close history panel",
+    /** Screen-reader suffix of an undone entry that redo can re-apply. */
+    undone: "(undone)",
+  },
+  topBar: {
     export: "Export",
     exportSoon: "Export arrives in a later stage",
   },

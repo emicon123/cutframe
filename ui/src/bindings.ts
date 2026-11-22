@@ -23,6 +23,13 @@ export const commands = {
 	undo: (options?: InvokeOptions) => __TAURI_INVOKE<boolean>("undo", undefined, options),
 	/**  Returns `false` if there was nothing to redo. While a gesture is open, cancels it instead. */
 	redo: (options?: InvokeOptions) => __TAURI_INVOKE<boolean>("redo", undefined, options),
+	/**
+	 *  Moves through the history until `index` entries are applied (`history.current` becomes
+	 *  `index`): the same as that many undo or redo steps, with one `projectChanged`. An open gesture
+	 *  is cancelled first. Returns `false` if nothing changed (already there). Fails with
+	 *  `invalidEdit` if `index > history.entries.length`; then nothing changes.
+	 */
+	jumpToHistory: (index: number, options?: InvokeOptions) => __TAURI_INVOKE<boolean>("jump_to_history", { index }, options),
 	getAppInfo: (options?: InvokeOptions) => __TAURI_INVOKE<AppInfo_Serialize>("get_app_info", undefined, options),
 	/**
 	 *  Reports where the preview area is. In `native` mode the GPU window follows this rectangle.
@@ -68,6 +75,24 @@ export const commands = {
 	 *  `quitRequested` started (Save succeeded, or Don't save).
 	 */
 	confirmClose: (options?: InvokeOptions) => __TAURI_INVOKE<null>("confirm_close", undefined, options),
+	/**
+	 *  Autosaves left by instances that did not exit cleanly and that are newer than their project
+	 *  file, newest first. Prunes corrupt and stale entries as a side effect. A missing recovery
+	 *  directory gives an empty list. Call once at startup.
+	 */
+	listRecovery: (options?: InvokeOptions) => __TAURI_INVOKE<RecoveryEntry_Serialize[]>("list_recovery", undefined, options),
+	/**
+	 *  Opens recovery entry `id` in place of the open project: the history is empty, the project is
+	 *  dirty until saved, and `filePath` is the original file (or none). Emits `projectChanged`. Fails
+	 *  with `fileNotFound` when no such entry can be restored (gone, or owned by a running instance).
+	 *  Ask about unsaved changes first.
+	 */
+	restoreRecovery: (id: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("restore_recovery", { id }, options),
+	/**
+	 *  Deletes recovery entry `id`. Unknown or already deleted ids are fine; an entry of a running
+	 *  instance is never touched.
+	 */
+	discardRecovery: (id: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("discard_recovery", { id }, options),
 	/**
 	 *  Starts importing `paths` (files or folders) and returns the job id at once. Progress comes as
 	 *  `jobProgress`, per-file outcomes as `mediaJobReport`, the end as `jobFinished`; all files that
@@ -169,6 +194,11 @@ export type HdrTransfer = "pq" | "hlg" |
  */
 "dolbyVisionOnly";
 
+export type HistoryEntryView = {
+	/**  Key of the edit (e.g. `addTrack`). The UI translates it. */
+	label: HistoryLabel,
+};
+
 /**
  *  Stable key naming an undo/redo history entry, e.g. for an "Undo Add Track" menu item.
  * 
@@ -188,6 +218,17 @@ export type HistoryState_Deserialize = {
 	undoLabel?: HistoryLabel | null,
 	/**  Key of the entry `redo` would re-apply. The UI translates it. */
 	redoLabel?: HistoryLabel | null,
+	/**
+	 *  Every history entry, oldest first: the applied ones, then the undone ones `redo` can
+	 *  re-apply. At most `DEFAULT_HISTORY_LIMIT` (500); older entries are dropped. An open
+	 *  gesture is not an entry.
+	 */
+	entries: HistoryEntryView[],
+	/**
+	 *  How many of `entries` are applied: 0 = the oldest state in the history, `entries.length`
+	 *  = nothing to redo. Pass a value in `0..=entries.length` to `jumpToHistory`.
+	 */
+	current: number,
 };
 
 export type HistoryState_Serialize = {
@@ -197,6 +238,17 @@ export type HistoryState_Serialize = {
 	undoLabel: HistoryLabel | null,
 	/**  Key of the entry `redo` would re-apply. The UI translates it. */
 	redoLabel: HistoryLabel | null,
+	/**
+	 *  Every history entry, oldest first: the applied ones, then the undone ones `redo` can
+	 *  re-apply. At most `DEFAULT_HISTORY_LIMIT` (500); older entries are dropped. An open
+	 *  gesture is not an entry.
+	 */
+	entries: HistoryEntryView[],
+	/**
+	 *  How many of `entries` are applied: 0 = the oldest state in the history, `entries.length`
+	 *  = nothing to redo. Pass a value in `0..=entries.length` to `jumpToHistory`.
+	 */
+	current: number,
 };
 
 /**
@@ -510,6 +562,33 @@ export type RationalRepr = {
 	den: number,
 };
 
+/**  An autosave left by an instance that did not exit cleanly, offered for restore at startup. */
+export type RecoveryEntry = RecoveryEntry_Serialize | RecoveryEntry_Deserialize;
+
+/**  An autosave left by an instance that did not exit cleanly, offered for restore at startup. */
+export type RecoveryEntry_Deserialize = {
+	/**  Session id of the crashed instance; pass it to `restoreRecovery` / `discardRecovery`. */
+	id: string,
+	/**  The project's name (model data, not translated). */
+	projectName: string,
+	/**  The project's file at the time of the autosave; `None` = never saved. */
+	filePath?: string | null,
+	/**  When the autosave was taken, in Unix milliseconds. The UI formats it. */
+	savedAtMs: number,
+};
+
+/**  An autosave left by an instance that did not exit cleanly, offered for restore at startup. */
+export type RecoveryEntry_Serialize = {
+	/**  Session id of the crashed instance; pass it to `restoreRecovery` / `discardRecovery`. */
+	id: string,
+	/**  The project's name (model data, not translated). */
+	projectName: string,
+	/**  The project's file at the time of the autosave; `None` = never saved. */
+	filePath: string | null,
+	/**  When the autosave was taken, in Unix milliseconds. The UI formats it. */
+	savedAtMs: number,
+};
+
 export type Result<T, E> = ({ Ok: T }) & { Err?: never } | ({ Err: E }) & { Ok?: never };
 
 /**
@@ -571,6 +650,7 @@ export type MockCommandHandlers = {
     cancelGesture: () => null | Promise<null>,
     undo: () => boolean | Promise<boolean>,
     redo: () => boolean | Promise<boolean>,
+    jumpToHistory: (args: { index: number }) => boolean | Promise<boolean>,
     getAppInfo: () => AppInfo_Serialize | Promise<AppInfo_Serialize>,
     setPreviewRect: (args: { rect: PreviewRect }) => void | Promise<void>,
     setPreviewVisible: (args: { visible: boolean }) => void | Promise<void>,
@@ -580,6 +660,9 @@ export type MockCommandHandlers = {
     saveProjectAs: (args: { path: string }) => null | Promise<null>,
     setProjectSettings: (args: { settings: ProjectSettings }) => null | Promise<null>,
     confirmClose: () => null | Promise<null>,
+    listRecovery: () => RecoveryEntry_Serialize[] | Promise<RecoveryEntry_Serialize[]>,
+    restoreRecovery: (args: { id: string }) => null | Promise<null>,
+    discardRecovery: (args: { id: string }) => null | Promise<null>,
     importMedia: (args: { paths: string[] }) => JobId | Promise<JobId>,
     importMediaDialog: (args: { filterLabel: string }) => JobId | null | Promise<JobId | null>,
     cancelJob: (args: { id: JobId }) => null | Promise<null>,
@@ -617,6 +700,7 @@ export function mockCommands(handlers: Partial<MockCommandHandlers> = {}): void 
             case "cancel_gesture": return mockCommandHandler(mockHandlers.cancelGesture, "cancel_gesture", args);
             case "undo": return mockCommandHandler(mockHandlers.undo, "undo", args);
             case "redo": return mockCommandHandler(mockHandlers.redo, "redo", args);
+            case "jump_to_history": return mockCommandHandler(mockHandlers.jumpToHistory, "jump_to_history", args);
             case "get_app_info": return mockCommandHandler(mockHandlers.getAppInfo, "get_app_info", args);
             case "set_preview_rect": return mockCommandHandler(mockHandlers.setPreviewRect, "set_preview_rect", args);
             case "set_preview_visible": return mockCommandHandler(mockHandlers.setPreviewVisible, "set_preview_visible", args);
@@ -626,6 +710,9 @@ export function mockCommands(handlers: Partial<MockCommandHandlers> = {}): void 
             case "save_project_as": return mockCommandHandler(mockHandlers.saveProjectAs, "save_project_as", args);
             case "set_project_settings": return mockCommandHandler(mockHandlers.setProjectSettings, "set_project_settings", args);
             case "confirm_close": return mockCommandHandler(mockHandlers.confirmClose, "confirm_close", args);
+            case "list_recovery": return mockCommandHandler(mockHandlers.listRecovery, "list_recovery", args);
+            case "restore_recovery": return mockCommandHandler(mockHandlers.restoreRecovery, "restore_recovery", args);
+            case "discard_recovery": return mockCommandHandler(mockHandlers.discardRecovery, "discard_recovery", args);
             case "import_media": return mockCommandHandler(mockHandlers.importMedia, "import_media", args);
             case "import_media_dialog": return mockCommandHandler(mockHandlers.importMediaDialog, "import_media_dialog", args);
             case "cancel_job": return mockCommandHandler(mockHandlers.cancelJob, "cancel_job", args);

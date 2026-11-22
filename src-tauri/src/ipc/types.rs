@@ -35,6 +35,20 @@ pub struct HistoryState {
     pub undo_label: Option<HistoryLabel>,
     /// Key of the entry `redo` would re-apply. The UI translates it.
     pub redo_label: Option<HistoryLabel>,
+    /// Every history entry, oldest first: the applied ones, then the undone ones `redo` can
+    /// re-apply. At most `DEFAULT_HISTORY_LIMIT` (500); older entries are dropped. An open
+    /// gesture is not an entry.
+    pub entries: Vec<HistoryEntryView>,
+    /// How many of `entries` are applied: 0 = the oldest state in the history, `entries.length`
+    /// = nothing to redo. Pass a value in `0..=entries.length` to `jumpToHistory`.
+    pub current: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryEntryView {
+    /// Key of the edit (e.g. `addTrack`). The UI translates it.
+    pub label: HistoryLabel,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -111,9 +125,40 @@ impl ProjectState {
                 can_redo: doc.can_redo(),
                 undo_label: doc.undo_label(),
                 redo_label: doc.redo_label(),
+                entries: doc
+                    .history_labels()
+                    .map(|label| HistoryEntryView { label })
+                    .collect(),
+                // Capped by `DEFAULT_HISTORY_LIMIT`, far below `u32::MAX`.
+                current: u32::try_from(doc.history_cursor()).unwrap_or(u32::MAX),
             },
             file_path: file_path.map(|p| p.to_string_lossy().into_owned()),
             dirty,
+        }
+    }
+}
+
+/// An autosave left by an instance that did not exit cleanly, offered for restore at startup.
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct RecoveryEntry {
+    /// Session id of the crashed instance; pass it to `restoreRecovery` / `discardRecovery`.
+    pub id: Uuid,
+    /// The project's name (model data, not translated).
+    pub project_name: String,
+    /// The project's file at the time of the autosave; `None` = never saved.
+    pub file_path: Option<String>,
+    /// When the autosave was taken, in Unix milliseconds. The UI formats it.
+    pub saved_at_ms: i64,
+}
+
+impl From<crate::recovery::Entry> for RecoveryEntry {
+    fn from(entry: crate::recovery::Entry) -> Self {
+        Self {
+            id: entry.id,
+            project_name: entry.project_name,
+            file_path: entry.file_path.map(|p| p.to_string_lossy().into_owned()),
+            saved_at_ms: entry.saved_at_ms,
         }
     }
 }

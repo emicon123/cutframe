@@ -1,5 +1,6 @@
 //! Desktop shell: wires the engine and the project model to the UI through Tauri.
 
+mod autosave;
 mod ffmpeg_check;
 mod import;
 mod ipc;
@@ -7,6 +8,7 @@ mod jobs;
 mod preview;
 mod project_file;
 mod protocol;
+mod recovery;
 mod smoke_test;
 mod state;
 
@@ -21,6 +23,7 @@ use crate::ipc::commands;
 use crate::ipc::events::{JobFinished, JobProgress, MediaJobReport, ProjectChanged, QuitRequested};
 use crate::jobs::{JobManager, TauriJobHost};
 use crate::preview::Preview;
+use crate::recovery::RecoveryStore;
 use crate::state::AppState;
 
 /// Where the generated TypeScript bindings live. Committed to the repo.
@@ -41,6 +44,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             commands::cancel_gesture,
             commands::undo,
             commands::redo,
+            commands::jump_to_history,
             commands::get_app_info,
             commands::set_preview_rect,
             commands::set_preview_visible,
@@ -50,6 +54,9 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             commands::save_project_as,
             commands::set_project_settings,
             commands::confirm_close,
+            commands::list_recovery,
+            commands::restore_recovery,
+            commands::discard_recovery,
             commands::import_media,
             commands::import_media_dialog,
             commands::cancel_job,
@@ -116,8 +123,13 @@ pub fn run() {
                 .ok_or("main window missing from tauri.conf.json")?;
             let project = Project::new(commands::DEFAULT_PROJECT_NAME);
             let preview = Preview::create(&main, &project.settings);
+            let recovery = RecoveryStore::new(
+                app.path().app_data_dir()?.join("recovery"),
+                uuid::Uuid::now_v7(),
+            );
             let jobs = JobManager::new(Arc::new(TauriJobHost::new(app.handle().clone())));
-            app.manage(AppState::new(project, preview, jobs));
+            app.manage(AppState::new(project, preview, recovery.clone(), jobs));
+            start_autosave(app.handle(), recovery);
 
             if smoke_test {
                 smoke_test::run(app.handle().clone());
@@ -128,16 +140,41 @@ pub fn run() {
         .expect("error while running the application");
 }
 
+/// Takes this session's recovery lock and starts the autosave thread. Failures only disable
+/// autosave (logged); the app still starts.
+fn start_autosave(app: &tauri::AppHandle, recovery: RecoveryStore) {
+    tracing::info!(session = %recovery.session_id(), "recovery session");
+    let lock = recovery
+        .acquire_lock()
+        .inspect_err(|err| tracing::warn!(%err, "cannot lock the recovery directory"))
+        .ok();
+    let handle = app.clone();
+    let snapshot = move || handle.state::<AppState>().save_snapshot();
+    match autosave::spawn(recovery, lock, snapshot) {
+        Ok(autosave) => app.state::<AppState>().set_autosave(autosave),
+        Err(err) => tracing::error!(%err, "failed to start the autosave thread"),
+    }
+}
+
 /// Closing the main window with unsaved changes is stopped and handed to the UI, which asks
 /// Save / Don't save / Cancel and calls `confirm_close`. A clean project closes right away, even if
 /// the webview does not respond.
+///
+/// When the main window is gone (clean close, or `confirm_close` after Save / Don't save), the
+/// autosave thread deletes this session's recovery files.
 fn on_window_event(window: &Window, event: &WindowEvent) {
-    let WindowEvent::CloseRequested { api, .. } = event else {
-        return;
-    };
     if window.label() != MAIN_WINDOW {
         return;
     }
+    if let WindowEvent::Destroyed = event {
+        if let Some(state) = window.try_state::<AppState>() {
+            state.shutdown_autosave();
+        }
+        return;
+    }
+    let WindowEvent::CloseRequested { api, .. } = event else {
+        return;
+    };
     let Some(state) = window.try_state::<AppState>() else {
         return;
     };

@@ -20,7 +20,7 @@ const state: ProjectState = {
     tracks: [],
     media: [],
   },
-  history: { canUndo: false, canRedo: false, undoLabel: null, redoLabel: null },
+  history: { canUndo: false, canRedo: false, undoLabel: null, redoLabel: null, entries: [], current: 0 },
   filePath: null,
   dirty: true,
 };

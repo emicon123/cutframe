@@ -1,7 +1,7 @@
 //! Application state shared by commands, the media protocol and the preview.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use app_core::command::CommandError;
 use app_core::serialization::CURRENT_SCHEMA_VERSION;
@@ -10,11 +10,13 @@ use arc_swap::ArcSwap;
 use tauri::AppHandle;
 use tauri_specta::Event;
 
+use crate::autosave::{AutosaveHandle, Msg};
 use crate::ipc::IpcError;
 use crate::ipc::events::ProjectChanged;
 use crate::ipc::types::ProjectState;
 use crate::jobs::JobManager;
 use crate::preview::Preview;
+use crate::recovery::{RecoveryStore, Restored};
 
 #[derive(Debug)]
 pub struct AppState {
@@ -24,6 +26,10 @@ pub struct AppState {
     /// Serializes saves, so two saves never write the same file at once or mark clean out of order.
     save_lock: tauri::async_runtime::Mutex<()>,
     pub preview: Option<Preview>,
+    /// This process's recovery directory and session id.
+    recovery: RecoveryStore,
+    /// Set in `setup` once the autosave thread runs; tests run without it.
+    autosave: OnceLock<AutosaveHandle>,
     /// Background work (import now; previews and export later).
     pub jobs: JobManager,
 }
@@ -40,6 +46,8 @@ pub struct SaveSnapshot {
     pub file_path: Option<PathBuf>,
     /// Schema version the open file was loaded from.
     pub source_version: u32,
+    /// Unsaved changes at the time of the snapshot.
+    pub dirty: bool,
 }
 
 impl SaveSnapshot {
@@ -49,10 +57,20 @@ impl SaveSnapshot {
         (self.source_version < CURRENT_SCHEMA_VERSION && self.file_path.as_deref() == Some(path))
             .then_some(self.source_version)
     }
+
+    /// Identifies the saved state: equal keys mean equal content (generation, history position).
+    pub fn key(&self) -> (u64, HistoryPosition) {
+        (self.generation, self.position)
+    }
 }
 
 impl AppState {
-    pub fn new(project: Project, preview: Option<Preview>, jobs: JobManager) -> Self {
+    pub fn new(
+        project: Project,
+        preview: Option<Preview>,
+        recovery: RecoveryStore,
+        jobs: JobManager,
+    ) -> Self {
         let session = Session::new(project);
         let snapshot = ArcSwap::new(session.document.snapshot());
         if let Some(preview) = &preview {
@@ -63,7 +81,31 @@ impl AppState {
             snapshot,
             save_lock: tauri::async_runtime::Mutex::new(()),
             preview,
+            recovery,
+            autosave: OnceLock::new(),
             jobs,
+        }
+    }
+
+    pub fn recovery(&self) -> &RecoveryStore {
+        &self.recovery
+    }
+
+    /// Connects the autosave thread. Only the first call has an effect.
+    pub fn set_autosave(&self, handle: AutosaveHandle) {
+        let _ = self.autosave.set(handle);
+    }
+
+    /// Clean exit: lets the autosave thread delete this session's recovery files (waits ≤ 2 s).
+    pub fn shutdown_autosave(&self) {
+        if let Some(autosave) = self.autosave.get() {
+            autosave.shutdown();
+        }
+    }
+
+    fn notify_autosave(&self, msg: Msg) {
+        if let Some(autosave) = self.autosave.get() {
+            autosave.send(msg);
         }
     }
 
@@ -97,6 +139,8 @@ impl AppState {
             }
             session.state()
         };
+        // The user's file has it now. If edits came in during the write, the next tick rewrites.
+        self.notify_autosave(Msg::Discard);
         ProjectChanged(state).emit(app)?;
         Ok(())
     }
@@ -147,6 +191,31 @@ impl AppState {
             self.publish(&session.document);
             session.state()
         };
+        self.notify_autosave(Msg::Discard);
+        ProjectChanged(state).emit(app)?;
+        Ok(())
+    }
+
+    /// Replaces the open document with the recovery entry `old` and notifies the UI. Like
+    /// [`AppState::replace_project`], but the project stays dirty until it is saved, and the
+    /// autosave thread takes the entry over (writes it as this session's, deletes `old`).
+    pub fn replace_restored(
+        &self,
+        app: &AppHandle,
+        restored: Restored,
+        old: uuid::Uuid,
+    ) -> Result<(), IpcError> {
+        let state = {
+            let mut session = self.lock();
+            session.replace_restored(
+                restored.project,
+                restored.file_path,
+                restored.source_version,
+            );
+            self.publish(&session.document);
+            session.state()
+        };
+        self.notify_autosave(Msg::Adopt { old });
         ProjectChanged(state).emit(app)?;
         Ok(())
     }
@@ -157,6 +226,34 @@ impl AppState {
         if let Some(preview) = &self.preview {
             preview.set_canvas_aspect(&document.project().settings);
         }
+    }
+
+    #[cfg(test)]
+    pub fn test_edit(&self, edit: impl FnOnce(&mut Document) -> Result<Option<()>, CommandError>) {
+        let mut session = self.lock();
+        session.edit(edit).expect("edit");
+        self.publish(&session.document);
+    }
+
+    #[cfg(test)]
+    pub fn test_replace(&self, project: Project, file_path: Option<PathBuf>, source_version: u32) {
+        self.lock().replace(project, file_path, source_version);
+    }
+
+    #[cfg(test)]
+    pub fn test_replace_restored(
+        &self,
+        project: Project,
+        file_path: Option<PathBuf>,
+        source_version: u32,
+    ) {
+        self.lock()
+            .replace_restored(project, file_path, source_version);
+    }
+
+    #[cfg(test)]
+    pub fn test_mark_saved(&self, saved: &SaveSnapshot, path: PathBuf) {
+        assert!(self.lock().mark_saved(saved, path));
     }
 
     fn lock(&self) -> MutexGuard<'_, Session> {
@@ -180,7 +277,8 @@ struct Session {
     /// The file the project was opened from or last saved to.
     file_path: Option<PathBuf>,
     /// History position at the last save or open: the project is clean while it stays there.
-    saved_at: HistoryPosition,
+    /// `None` for a restored autosave until its first save: no undo or redo makes it clean.
+    saved_at: Option<HistoryPosition>,
     /// `schemaVersion` the open file was loaded from; current after the first save.
     source_version: u32,
     /// Increases when the document is replaced. History positions of different documents are
@@ -192,7 +290,7 @@ impl Session {
     fn new(project: Project) -> Self {
         let document = Document::new(project);
         Self {
-            saved_at: document.position(),
+            saved_at: Some(document.position()),
             document,
             revision: 0,
             file_path: None,
@@ -211,7 +309,7 @@ impl Session {
     }
 
     fn dirty(&self) -> bool {
-        self.document.position() != self.saved_at || self.document.has_gesture()
+        self.saved_at != Some(self.document.position()) || self.document.has_gesture()
     }
 
     fn save_snapshot(&self) -> SaveSnapshot {
@@ -223,6 +321,7 @@ impl Session {
             generation: self.generation,
             file_path: self.file_path.clone(),
             source_version: self.source_version,
+            dirty: self.dirty(),
         }
     }
 
@@ -231,7 +330,7 @@ impl Session {
         if saved.generation != self.generation {
             return false;
         }
-        self.saved_at = saved.position;
+        self.saved_at = Some(saved.position);
         self.file_path = Some(path);
         self.source_version = CURRENT_SCHEMA_VERSION;
         self.revision += 1;
@@ -252,17 +351,28 @@ impl Session {
 
     fn replace(&mut self, project: Project, file_path: Option<PathBuf>, source_version: u32) {
         self.document = Document::new(project);
-        self.saved_at = self.document.position();
+        self.saved_at = Some(self.document.position());
         self.file_path = file_path;
         self.source_version = source_version;
         self.generation += 1;
         self.revision += 1;
     }
+
+    /// [`Session::replace`] for a restored autosave: dirty until the first explicit save.
+    fn replace_restored(
+        &mut self,
+        project: Project,
+        file_path: Option<PathBuf>,
+        source_version: u32,
+    ) {
+        self.replace(project, file_path, source_version);
+        self.saved_at = None;
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use app_core::command::{AddTrack, RemoveTrack, RenameProject};
+    use app_core::command::{AddTrack, HistoryLabel, RemoveTrack, RenameProject};
     use app_core::{TrackId, TrackKind};
 
     use super::*;
@@ -366,6 +476,56 @@ mod tests {
         assert_eq!(session.state().revision, state.revision + 1);
     }
 
+    fn jump(session: &mut Session, index: usize) -> Option<()> {
+        session
+            .edit(|doc| Ok(doc.jump_to(index)?.then_some(())))
+            .expect("jump")
+    }
+
+    #[test]
+    fn a_history_jump_is_one_revision_and_keeps_dirty_tracking() {
+        let mut session = Session::new(Project::new("Test"));
+        for name in ["A", "B", "C"] {
+            rename(&mut session, name);
+        }
+        save(&mut session, "/p/a.cutframe");
+        let before = session.state().revision;
+
+        // Three undo steps, one change.
+        assert_eq!(jump(&mut session, 0), Some(()));
+        let state = session.state();
+        assert_eq!(state.revision, before + 1);
+        assert_eq!(state.project.name, "Test");
+        assert_eq!(state.history.current, 0);
+        assert_eq!(
+            state
+                .history
+                .entries
+                .iter()
+                .map(|e| e.label)
+                .collect::<Vec<_>>(),
+            [HistoryLabel::RenameProject; 3]
+        );
+        assert!(state.dirty);
+
+        // Already there: no change, no revision.
+        assert_eq!(jump(&mut session, 0), None);
+        assert_eq!(session.state().revision, before + 1);
+
+        // Back to the saved point is clean again.
+        assert_eq!(jump(&mut session, 3), Some(()));
+        let state = session.state();
+        assert_eq!(state.revision, before + 2);
+        assert_eq!((state.history.current, state.dirty), (3, false));
+
+        // Out of range: rejected, nothing changes.
+        assert_eq!(
+            session.edit(|doc| Ok(doc.jump_to(4)?.then_some(()))),
+            Err(CommandError::HistoryOutOfRange { index: 4, len: 3 })
+        );
+        assert_eq!(session.state().revision, before + 2);
+    }
+
     fn save(session: &mut Session, path: &str) -> SaveSnapshot {
         let saved = session.save_snapshot();
         assert!(session.mark_saved(&saved, PathBuf::from(path)));
@@ -447,6 +607,59 @@ mod tests {
         assert!(state.dirty);
         assert_eq!(state.file_path, None);
         assert_eq!(state.revision, revision);
+    }
+
+    #[test]
+    fn a_restored_session_is_dirty_until_saved() {
+        let mut session = Session::new(Project::new("Test"));
+        let original = PathBuf::from("/p/original.cutframe");
+        session.replace_restored(Project::new("Restored"), Some(original.clone()), 0);
+        let state = session.state();
+        assert!(state.dirty);
+        assert!(!state.history.can_undo && !state.history.can_redo);
+        assert_eq!(state.file_path.as_deref(), Some("/p/original.cutframe"));
+        assert_eq!(
+            session.save_snapshot().backup_of_version(&original),
+            Some(0),
+            "the first save still backs up the older file"
+        );
+
+        rename(&mut session, "A");
+        session.edit(|doc| Ok(doc.undo().then_some(()))).unwrap();
+        assert!(session.state().dirty, "undo does not make it clean");
+        session.edit(|doc| Ok(doc.redo().then_some(()))).unwrap();
+        assert!(session.state().dirty, "redo does not make it clean");
+        session.edit(|doc| Ok(doc.undo().then_some(()))).unwrap();
+
+        save(&mut session, "/p/original.cutframe");
+        assert!(!session.state().dirty);
+        rename(&mut session, "B");
+        session.edit(|doc| Ok(doc.undo().then_some(()))).unwrap();
+        assert!(!session.state().dirty, "clean at the saved point again");
+    }
+
+    #[test]
+    fn snapshot_key_and_dirty_follow_the_document() {
+        let mut session = Session::new(Project::new("Test"));
+        let clean = session.save_snapshot();
+        assert!(!clean.dirty);
+        rename(&mut session, "A");
+        let edited = session.save_snapshot();
+        assert!(edited.dirty);
+        assert_ne!(edited.key(), clean.key());
+        session
+            .edit(|doc| {
+                doc.gesture_update(Box::new(RenameProject::new("Live")))
+                    .map(Some)
+            })
+            .unwrap();
+        assert_eq!(
+            session.save_snapshot().key(),
+            edited.key(),
+            "gesture keeps the base key"
+        );
+        session.replace(Project::new("Other"), None, CURRENT_SCHEMA_VERSION);
+        assert_ne!(session.save_snapshot().key().0, edited.key().0);
     }
 
     #[test]

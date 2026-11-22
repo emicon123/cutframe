@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { events, mockCommands, type MockCommandHandlers } from "@/bindings";
+import { recovery } from "@/features/project/recovery";
 import { type ProjectState, useProjectStore } from "@/stores/projectStore";
 import { useAppStore } from "@/stores/appStore";
 
@@ -16,7 +17,7 @@ const project: ProjectState = {
     tracks: [],
     media: [],
   },
-  history: { canUndo: false, canRedo: false, undoLabel: null, redoLabel: null },
+  history: { canUndo: false, canRedo: false, undoLabel: null, redoLabel: null, entries: [], current: 0 },
   filePath: null,
   dirty: false,
 };
@@ -37,6 +38,7 @@ function mockStartup(
   extra: Partial<MockCommandHandlers> = {},
 ) {
   mockCommands({
+    listRecovery: () => [],
     ...extra,
     cancelGesture,
     getProject: () => {
@@ -91,5 +93,18 @@ describe("startProjectSync", () => {
     await vi.waitFor(() => expect(useProjectStore.getState().state?.revision).toBe(3));
     await events.quitRequested.emit();
     await vi.waitFor(() => expect(calls).toContain("confirmClose"));
+  });
+
+  it("offers crash recovery after the first state arrived", async () => {
+    const calls: string[] = [];
+    mockStartup(() => null, calls);
+    const load = vi.spyOn(recovery, "load").mockImplementation(() => {
+      calls.push(`load at revision ${useProjectStore.getState().state?.revision}`);
+      return Promise.resolve();
+    });
+
+    stop = startProjectSync();
+    await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+    expect(calls.at(-1)).toBe("load at revision 3");
   });
 });
