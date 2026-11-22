@@ -16,6 +16,8 @@ pub const EXIT_CODE: i32 = 6;
 /// Runs the check. Call once at startup, after tracing is initialised and before anything else
 /// uses FFmpeg. Exits the process with [`EXIT_CODE`] in release builds if the build is not allowed.
 pub fn check() {
+    // FFmpeg's own stderr log: errors only (the licence log below goes through tracing).
+    engine::media::ffmpeg::quiet_logging();
     let info = FfmpegInfo::linked();
     tracing::info!(
         version = %info.version,

@@ -13,6 +13,8 @@ app-core = { path = "crates/app-core" }
 engine = { path = "crates/engine" }
 
 arc-swap = "1.9"
+# Media fingerprints (CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception).
+blake3 = "1.8"
 bytemuck = { version = "1.25", features = ["derive"] }
 crossbeam-channel = "0.5"
 pollster = "1.0"

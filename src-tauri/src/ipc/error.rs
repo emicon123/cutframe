@@ -10,7 +10,7 @@ use crate::project_file::ReadError;
 /// `kind` is the stable key the UI branches on and translates; a variant is never renamed
 /// (ADR-0003 §4-5). `message` is English diagnostic text for logs only and is never shown to the
 /// user.
-#[derive(Debug, Clone, thiserror::Error, Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error, Serialize, Deserialize, specta::Type)]
 #[serde(tag = "kind", content = "message", rename_all = "camelCase")]
 pub enum IpcError {
     /// The edit was rejected (e.g. unknown track, empty name). The project is unchanged.
@@ -37,6 +37,9 @@ pub enum IpcError {
     /// Any other file-system failure: permission denied, disk full, file locked.
     #[error("{0}")]
     Io(String),
+    /// The job was cancelled with `cancel_job`; only used as a `job-finished` result.
+    #[error("{0}")]
+    Cancelled(String),
 }
 
 impl IpcError {
@@ -95,6 +98,7 @@ mod tests {
             (IpcError::ProjectTooNew("x".into()), "projectTooNew"),
             (IpcError::InvalidProject("x".into()), "invalidProject"),
             (IpcError::Io("x".into()), "io"),
+            (IpcError::Cancelled("x".into()), "cancelled"),
         ];
         for (error, kind) in cases {
             assert_eq!(

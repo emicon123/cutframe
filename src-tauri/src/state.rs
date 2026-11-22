@@ -13,6 +13,7 @@ use tauri_specta::Event;
 use crate::ipc::IpcError;
 use crate::ipc::events::ProjectChanged;
 use crate::ipc::types::ProjectState;
+use crate::jobs::JobManager;
 use crate::preview::Preview;
 
 #[derive(Debug)]
@@ -23,6 +24,8 @@ pub struct AppState {
     /// Serializes saves, so two saves never write the same file at once or mark clean out of order.
     save_lock: tauri::async_runtime::Mutex<()>,
     pub preview: Option<Preview>,
+    /// Background work (import now; previews and export later).
+    pub jobs: JobManager,
 }
 
 /// What a save writes, taken under the lock and written without it.
@@ -49,7 +52,7 @@ impl SaveSnapshot {
 }
 
 impl AppState {
-    pub fn new(project: Project, preview: Option<Preview>) -> Self {
+    pub fn new(project: Project, preview: Option<Preview>, jobs: JobManager) -> Self {
         let session = Session::new(project);
         let snapshot = ArcSwap::new(session.document.snapshot());
         if let Some(preview) = &preview {
@@ -60,6 +63,7 @@ impl AppState {
             snapshot,
             save_lock: tauri::async_runtime::Mutex::new(()),
             preview,
+            jobs,
         }
     }
 

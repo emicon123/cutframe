@@ -1,0 +1,116 @@
+{
+  "schemaVersion": 2,
+  "id": "019a9a10-5b3c-7e2f-8a41-0c2d3e4f5a60",
+  "name": "Fixture v2",
+  "settings": {
+    "width": 1080,
+    "height": 1920,
+    "frameRate": { "num": 30000, "den": 1001 },
+    "sampleRate": 48000
+  },
+  "tracks": [
+    {
+      "id": "019a9a10-5b3c-7e2f-8a41-0c2d3e4f5a61",
+      "kind": "video",
+      "name": "Video 1",
+      "muted": false,
+      "hidden": false,
+      "clips": []
+    },
+    {
+      "id": "019a9a10-5b3c-7e2f-8a41-0c2d3e4f5a62",
+      "kind": "audio",
+      "name": "Audio 1",
+      "muted": false,
+      "hidden": false,
+      "clips": []
+    }
+  ],
+  "media": [
+    {
+      "id": "019a9a10-5b3c-7e2f-8a41-0c2d3e4f5a6b",
+      "kind": "video",
+      "path": { "absolute": "C:\\Users\\me\\Videos\\IMG_0042.MOV", "relative": null },
+      "fingerprint": {
+        "size": 48213344,
+        "modified": 1763800000000,
+        "hash": "9f2c41d0e8a7b6c5d4e3f2a1b0c9d8e7"
+      },
+      "info": {
+        "container": "mov",
+        "origin": 0,
+        "duration": 7056000000,
+        "video": {
+          "streamIndex": 0,
+          "codec": "hevc",
+          "width": 1920,
+          "height": 1080,
+          "sampleAspect": { "num": 1, "den": 1 },
+          "rotation": "cw90",
+          "frameRate": { "num": 30000, "den": 1001 },
+          "pixelFormat": "yuv420p10le",
+          "bitDepth": 10,
+          "color": {
+            "primaries": "bt2020",
+            "transfer": "arib-std-b67",
+            "matrix": "bt2020nc",
+            "range": "tv"
+          },
+          "hdr": {
+            "transfer": "hlg",
+            "masteringMaxNits": null,
+            "maxCllNits": null,
+            "dolbyVision": { "profile": 8, "level": 4, "compatibilityId": 4 }
+          }
+        },
+        "audio": [{ "streamIndex": 1, "codec": "aac", "sampleRate": 44100, "channels": 2 }]
+      }
+    },
+    {
+      "id": "019a9a10-5b3c-7e2f-8a41-0c2d3e4f5a6c",
+      "kind": "audio",
+      "path": { "absolute": "C:\\Users\\me\\Music\\Zażółć gęślą jaźń.mp3", "relative": null },
+      "fingerprint": {
+        "size": 5120000,
+        "modified": 1763700000000,
+        "hash": "0a1b2c3d4e5f60718293a4b5c6d7e8f9"
+      },
+      "info": {
+        "container": "mp3",
+        "origin": 18375000,
+        "duration": 127008000000,
+        "video": null,
+        "audio": [{ "streamIndex": 0, "codec": "mp3", "sampleRate": 44100, "channels": 2 }]
+      }
+    },
+    {
+      "id": "019a9a10-5b3c-7e2f-8a41-0c2d3e4f5a6d",
+      "kind": "image",
+      "path": { "absolute": "C:\\Users\\me\\Pictures\\IMG_0043.JPG", "relative": null },
+      "fingerprint": {
+        "size": 3145728,
+        "modified": 1763800100000,
+        "hash": "fedcba98765432100123456789abcdef"
+      },
+      "info": {
+        "container": "image2",
+        "origin": 0,
+        "duration": null,
+        "video": {
+          "streamIndex": 0,
+          "codec": "mjpeg",
+          "width": 4032,
+          "height": 3024,
+          "sampleAspect": { "num": 1, "den": 1 },
+          "rotation": "cw90",
+          "frameRate": null,
+          "pixelFormat": "yuvj420p",
+          "bitDepth": 8,
+          "color": { "primaries": null, "transfer": null, "matrix": "bt470bg", "range": "pc" },
+          "hdr": null
+        },
+        "audio": []
+      }
+    }
+  ]
+}

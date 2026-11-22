@@ -79,6 +79,15 @@ impl fmt::Display for FfmpegProblem {
     }
 }
 
+/// Limits FFmpeg's own stderr logging to errors. Its default (`info`) prints a line for every
+/// probed stream and every "misdetection possible" guess, which floods the console during an
+/// import. Call once at startup; it is process-wide. Errors are still printed, and the app's own
+/// FFmpeg licence log goes through `tracing`, so it is not affected.
+pub fn quiet_logging() {
+    // SAFETY: sets a global integer; safe to call from any thread at any time.
+    unsafe { rsmpeg::ffi::av_log_set_level(rsmpeg::ffi::AV_LOG_ERROR as i32) };
+}
+
 /// True for the licence strings an LGPL build reports (`LGPL version 2.1 or later`,
 /// `LGPL version 3 or later`). GPL builds report `GPL version ...`, nonfree builds
 /// `nonfree and unredistributable`.
@@ -179,6 +188,14 @@ impl FfmpegInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quiet_logging_keeps_errors_only() {
+        quiet_logging();
+        // SAFETY: reads a global integer.
+        let level = unsafe { rsmpeg::ffi::av_log_get_level() };
+        assert_eq!(level, rsmpeg::ffi::AV_LOG_ERROR as i32);
+    }
 
     const LGPL_CONFIGURE: &str = "--prefix=/ffbuild/prefix --enable-version3 --disable-debug \
         --enable-shared --disable-static --enable-libopenh264 --disable-libx264 --disable-libx265 \

@@ -1,22 +1,22 @@
 //! The project model. Plain data: mutation happens only through [`crate::command::Command`]s.
 
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
+use crate::media::MediaAsset;
 use crate::time::{FrameRate, Time};
 
 macro_rules! id_type {
     ($(#[$meta:meta])* $name:ident) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, ::serde::Serialize, ::serde::Deserialize)]
         #[cfg_attr(feature = "specta", derive(specta::Type))]
         #[serde(transparent)]
-        pub struct $name(pub Uuid);
+        pub struct $name(pub ::uuid::Uuid);
 
         impl $name {
             /// A new time-ordered (UUID v7) identifier.
             pub fn new() -> Self {
-                Self(Uuid::now_v7())
+                Self(::uuid::Uuid::now_v7())
             }
         }
 
@@ -27,6 +27,7 @@ macro_rules! id_type {
         }
     };
 }
+pub(crate) use id_type;
 
 id_type!(
     /// Identifies a project across saves.
@@ -50,6 +51,8 @@ pub struct Project {
     pub settings: ProjectSettings,
     /// Top to bottom as shown in the timeline. Higher tracks composite over lower ones.
     pub tracks: Vec<Track>,
+    /// Imported media, in import order. The media panel sorts and filters its own view of it.
+    pub media: Vec<MediaAsset>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -134,6 +137,7 @@ impl Project {
                 Track::new(TrackKind::Video, "Video 1"),
                 Track::new(TrackKind::Audio, "Audio 1"),
             ],
+            media: Vec::new(),
         }
     }
 
@@ -143,6 +147,10 @@ impl Project {
 
     pub fn track_index(&self, id: TrackId) -> Option<usize> {
         self.tracks.iter().position(|t| t.id == id)
+    }
+
+    pub fn media_asset(&self, id: crate::media::MediaId) -> Option<&MediaAsset> {
+        self.media.iter().find(|m| m.id == id)
     }
 
     /// End of the last clip on any track.
