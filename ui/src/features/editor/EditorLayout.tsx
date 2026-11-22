@@ -3,11 +3,15 @@ import { Inspector } from "@/features/inspector/Inspector";
 import { MediaBin } from "@/features/media-bin/MediaBin";
 import { PreviewArea } from "@/features/preview/PreviewArea";
 import { Timeline } from "@/features/timeline/Timeline";
+import { useUiStore } from "@/stores/uiStore";
+
+import { HistoryPanel } from "./HistoryPanel";
 
 import { StatusBar } from "./StatusBar";
 import { TopBar } from "./TopBar";
 
 export function EditorLayout() {
+  const historyPanelOpen = useUiStore((s) => s.historyPanelOpen);
   return (
     <div className="flex h-full flex-col">
       <TopBar />
@@ -23,7 +27,17 @@ export function EditorLayout() {
             </ResizablePanel>
             <ResizableHandle />
             <ResizablePanel defaultSize="22%" minSize="14%" maxSize="40%">
-              <Inspector />
+              {/* Beside the preview, never over it: no preview occluder needed. */}
+              <div className="flex h-full flex-col">
+                <div className="min-h-0 flex-1">
+                  <Inspector />
+                </div>
+                {historyPanelOpen && (
+                  <div className="flex h-2/5 min-h-32 flex-col">
+                    <HistoryPanel />
+                  </div>
+                )}
+              </div>
             </ResizablePanel>
           </ResizablePanelGroup>
         </ResizablePanel>

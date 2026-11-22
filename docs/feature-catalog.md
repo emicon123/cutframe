@@ -68,9 +68,9 @@ inserted between existing ones.
 | F0.02 | Resizable, collapsible panels; layout persisted between sessions | Resizable via `ResizablePanelGroup`; not collapsible, sizes not persisted | partial |
 | F0.03 | Window size/position/maximised state persisted | | missing |
 | F0.04 | Dark theme (default), consistent design system | `index.html` `class="dark"`, Tailwind tokens + shadcn/ui | done |
-| F0.05 | Main menu / command bar (File, Edit, View, Help) with shortcuts shown | Top bar has only undo/redo and a disabled Export | missing |
-| F0.06 | Default keyboard shortcuts for all common actions | Only undo/redo (`shortcuts.ts`); registry is ready for more | partial |
-| F0.07 | Keyboard shortcut reference panel | | missing |
+| F0.05 | Main menu / command bar (File, Edit, View, Help) with shortcuts shown | `MainMenu` generated from the action registry (`features/editor/actions.ts`): File (New, Open…, Save, Save As…, Project settings…, Exit via the unsaved prompt), Edit (named Undo/Redo, History panel), View, Help; disabled states; Vitest tests; manual check in `pnpm dev` on Windows pending | done |
+| F0.06 | Default keyboard shortcuts for all common actions | Every existing action that needs one has a shortcut in the registry: Ctrl+N/O/S/Shift+S, Ctrl+Z, Ctrl+Shift+Z/Ctrl+Y, `?`/Ctrl+/; ignored in text fields and overlays; playback/edit shortcuts (Space, J/K/L, S, Delete, arrows) are registered with their features; Vitest tests; manual check in `pnpm dev` on Windows pending | done |
+| F0.07 | Keyboard shortcut reference panel | `ShortcutsDialog` (`?`, Ctrl+/, View/Help menu) generated from the registry, grouped by menu; hides the native preview while open; Vitest tests; manual check in `pnpm dev` on Windows pending | done |
 | F0.08 | Non-blocking notifications (toasts) and readable error dialogs | Last error shown in the status bar; no toasts or dialogs | partial |
 | F0.09 | Logging to a file in app data; "open logs folder" | `tracing` logs to stdout only; no file, no "open logs folder" | partial |
 | F0.10 | About dialog with version and third-party licence notices (FFmpeg LGPL notice, source offer) | LGPL compliance requirement; Version shown in the status bar only; no licence notices | missing |
@@ -103,8 +103,8 @@ inserted between existing ones.
 | F0.27 | Undo / redo for every model change (Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y) | Architecture rule 1; All 4 commands undoable (`Document`), history cap 500; Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y and top-bar buttons | done |
 | F0.28 | Continuous gestures (drag, slider) coalesce into one undo step | `Batch` + gestures (`EditPhase`, `cancel_gesture`) in `app-core`, UI gesture helper (task 0006); new drags must use it | done |
 | F0.29 | Multi-step operations are one atomic transaction | `Batch` command in `app-core` (task 0006) | done |
-| F0.30 | Undo/redo menu items show the action name | Undo/redo tooltips show `undoLabel`/`redoLabel` | done |
-| F0.31 | History panel (list of steps, jump back) | | missing |
+| F0.30 | Undo/redo menu items show the action name | Edit menu items and undo/redo tooltips show `undoLabel`/`redoLabel` | done |
+| F0.31 | History panel (list of steps, jump back) | `HistoryPanel` under the inspector (Edit/View → History panel): start row + translated entries, applied/undone styling, click → one `jumpToHistory`; `app-core` tests for jump = N undo/redo, Vitest tests for row mapping and jump index; manual check in `pnpm dev` on Windows pending | done |
 
 ### Preferences and storage
 

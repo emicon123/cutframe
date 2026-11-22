@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { findShortcut, isInOverlay, isTextEntry, type KeyInput, shortcutLabel } from "./shortcuts";
+import { type ProjectState, useProjectStore } from "@/stores/projectStore";
+import { useUiStore } from "@/stores/uiStore";
+
+import type { Action } from "./actions";
+import { findShortcut, handleShortcut, isInOverlay, isTextEntry, type KeyInput } from "./shortcuts";
 
 const key = (k: string, mods: Partial<KeyInput> = {}): KeyInput => ({
   key: k,
@@ -15,7 +19,7 @@ describe("findShortcut", () => {
   it("distinguishes undo and redo by Shift", () => {
     expect(findShortcut(key("z", { ctrlKey: true }))?.id).toBe("undo");
     expect(findShortcut(key("Z", { ctrlKey: true, shiftKey: true }))?.id).toBe("redo");
-    expect(findShortcut(key("y", { ctrlKey: true }))?.id).toBe("redo-alt");
+    expect(findShortcut(key("y", { ctrlKey: true }))?.id).toBe("redo");
   });
 
   it("treats Cmd like Ctrl and ignores Alt combinations", () => {
@@ -33,6 +37,14 @@ describe("findShortcut", () => {
   it("ignores plain keys", () => {
     expect(findShortcut(key("z"))).toBeUndefined();
   });
+
+  it("opens the shortcut reference with ? and Ctrl+/, with or without Shift", () => {
+    expect(findShortcut(key("?", { shiftKey: true }))?.id).toBe("keyboard-shortcuts");
+    expect(findShortcut(key("?"))?.id).toBe("keyboard-shortcuts");
+    expect(findShortcut(key("/", { ctrlKey: true }))?.id).toBe("keyboard-shortcuts");
+    expect(findShortcut(key("/", { ctrlKey: true, shiftKey: true }))?.id).toBe("keyboard-shortcuts");
+    expect(findShortcut(key("/"))).toBeUndefined();
+  });
 });
 
 describe("isTextEntry", () => {
@@ -44,11 +56,70 @@ describe("isTextEntry", () => {
   });
 });
 
-describe("shortcutLabel", () => {
-  it("formats modifiers and the key", () => {
-    expect(shortcutLabel("save")).toBe("Ctrl+S");
-    expect(shortcutLabel("save-as")).toBe("Ctrl+Shift+S");
-    expect(shortcutLabel("missing")).toBe("");
+describe("handleShortcut", () => {
+  const state = {
+    history: { canUndo: false, canRedo: false, undoLabel: null, redoLabel: null, entries: [], current: 0 },
+  } as unknown as ProjectState;
+
+  const press = (k: string, mods: Partial<KeyInput> = {}, target: EventTarget = document.body) => {
+    const event = new KeyboardEvent("keydown", { key: k, cancelable: true, ...mods });
+    Object.defineProperty(event, "target", { value: target });
+    return event;
+  };
+
+  const fake = (overrides: Partial<Action>): Action & { run: ReturnType<typeof vi.fn> } =>
+    ({
+      id: "save",
+      label: "Save",
+      shortcuts: [{ key: "s", ctrl: true }],
+      run: vi.fn(),
+      ...overrides,
+    }) as Action & { run: ReturnType<typeof vi.fn> };
+
+  afterEach(() => {
+    useProjectStore.setState({ state: null });
+    useUiStore.setState({ shortcutsOpen: false });
+  });
+
+  it("runs an enabled action and blocks the WebView default", () => {
+    const action = fake({});
+    const event = press("s", { ctrlKey: true });
+    handleShortcut(event, [action]);
+    expect(action.run).toHaveBeenCalledOnce();
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("does not run a disabled action", () => {
+    useProjectStore.setState({ state });
+    const action = fake({ enabled: (ctx) => ctx.canUndo });
+    handleShortcut(press("s", { ctrlKey: true }), [action]);
+    expect(action.run).not.toHaveBeenCalled();
+  });
+
+  it("ignores shortcuts in text fields but still blocks the default where asked", () => {
+    const input = document.createElement("input");
+    const plain = fake({});
+    const blocking = fake({ blockDefault: true });
+
+    const first = press("s", { ctrlKey: true }, input);
+    handleShortcut(first, [plain]);
+    expect(first.defaultPrevented).toBe(false);
+
+    const second = press("s", { ctrlKey: true }, input);
+    handleShortcut(second, [blocking]);
+    expect(second.defaultPrevented).toBe(true);
+    expect(plain.run).not.toHaveBeenCalled();
+    expect(blocking.run).not.toHaveBeenCalled();
+  });
+
+  it("opens the shortcut reference on ? from the registry", () => {
+    handleShortcut(press("?", { shiftKey: true }));
+    expect(useUiStore.getState().shortcutsOpen).toBe(true);
+  });
+
+  it("does not open the shortcut reference while typing ?", () => {
+    handleShortcut(press("?", { shiftKey: true }, document.createElement("textarea")));
+    expect(useUiStore.getState().shortcutsOpen).toBe(false);
   });
 });
 

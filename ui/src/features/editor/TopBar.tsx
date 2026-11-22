@@ -1,23 +1,23 @@
 import { Download, Redo2, Undo2 } from "lucide-react";
 
-import { commands } from "@/bindings";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { FileMenu } from "@/features/project/FileMenu";
-import { historyLabelText, t } from "@/i18n";
-import { run } from "@/stores/appStore";
+import { t } from "@/i18n";
 import { useProjectStore } from "@/stores/projectStore";
+
+import {
+  type ActionContext,
+  type ActionId,
+  actionTooltip,
+  getAction,
+  isEnabled,
+  useActionContext,
+} from "./actions";
+import { MainMenu } from "./MainMenu";
 
 export function TopBar() {
   const name = useProjectStore((s) => s.state?.project.name);
-  const history = useProjectStore((s) => s.state?.history);
-
-  const undoTip = history?.undoLabel
-    ? t.topBar.undoAction(historyLabelText(history.undoLabel))
-    : t.topBar.nothingToUndo;
-  const redoTip = history?.redoLabel
-    ? t.topBar.redoAction(historyLabelText(history.redoLabel))
-    : t.topBar.nothingToRedo;
+  const ctx = useActionContext();
 
   return (
     <header className="flex h-11 shrink-0 items-center gap-2 border-b bg-panel px-3">
@@ -27,25 +27,15 @@ export function TopBar() {
       <span className="truncate">{name}</span>
 
       <div className="ml-4">
-        <FileMenu />
+        <MainMenu />
       </div>
       <div className="flex items-center gap-0.5">
-        <HistoryButton
-          label={t.topBar.undo}
-          tip={`${undoTip} (Ctrl+Z)`}
-          disabled={!history?.canUndo}
-          onClick={() => void run(commands.undo())}
-        >
+        <ActionButton id="undo" ctx={ctx}>
           <Undo2 className="size-4" aria-hidden />
-        </HistoryButton>
-        <HistoryButton
-          label={t.topBar.redo}
-          tip={`${redoTip} (Ctrl+Shift+Z)`}
-          disabled={!history?.canRedo}
-          onClick={() => void run(commands.redo())}
-        >
+        </ActionButton>
+        <ActionButton id="redo" ctx={ctx}>
           <Redo2 className="size-4" aria-hidden />
-        </HistoryButton>
+        </ActionButton>
       </div>
 
       <Button className="ml-auto" size="sm" disabled title={t.topBar.exportSoon}>
@@ -56,30 +46,35 @@ export function TopBar() {
   );
 }
 
-function HistoryButton({
-  label,
-  tip,
-  disabled,
-  onClick,
+/** Icon button for a registered action; its tooltip shows the label and shortcut. */
+function ActionButton({
+  id,
+  ctx,
   children,
 }: {
-  label: string;
-  tip: string;
-  disabled: boolean;
-  onClick: () => void;
+  id: ActionId;
+  ctx: ActionContext;
   children: React.ReactNode;
 }) {
+  const action = getAction(id);
+  const disabled = !isEnabled(action, ctx);
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         {/* The span keeps the tooltip working while the button is disabled. */}
         <span tabIndex={disabled ? 0 : -1}>
-          <Button variant="ghost" size="icon" aria-label={label} disabled={disabled} onClick={onClick}>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label={action.label}
+            disabled={disabled}
+            onClick={action.run}
+          >
             {children}
           </Button>
         </span>
       </TooltipTrigger>
-      <TooltipContent>{tip}</TooltipContent>
+      <TooltipContent>{actionTooltip(action, ctx)}</TooltipContent>
     </Tooltip>
   );
 }
