@@ -96,6 +96,29 @@ describe("guardUnsaved (through newProject and requestClose)", () => {
   });
 });
 
+describe("replaceGuarded", () => {
+  it("runs the action after the prompt and resolves true", async () => {
+    const deps = fake({ dirty: true, choice: "discard" });
+    const ran = await createFileActions(deps).replaceGuarded(() => deps.newProject());
+    expect(ran).toBe(true);
+    expect(deps.calls).toEqual(["askUnsaved", "newProject"]);
+  });
+
+  it("resolves false when cancelled", async () => {
+    const deps = fake({ dirty: true, choice: "cancel" });
+    await expect(createFileActions(deps).replaceGuarded(() => deps.newProject())).resolves.toBe(false);
+    expect(deps.calls).toEqual(["askUnsaved"]);
+  });
+
+  it("passes a failure of the action on instead of reporting it", async () => {
+    const deps = fake({ failing: "newProject" });
+    await expect(createFileActions(deps).replaceGuarded(() => deps.newProject())).rejects.toThrow(
+      "newProject failed",
+    );
+    expect(deps.calls).toEqual(["newProject"]);
+  });
+});
+
 describe("openProject", () => {
   it("asks first, then opens the picked file", async () => {
     const deps = fake({ dirty: true, choice: "discard" });

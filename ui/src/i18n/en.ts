@@ -30,6 +30,17 @@ export const en = {
     discard: "Don't save",
     cancel: "Cancel",
   },
+  recovery: {
+    title: "Recover unsaved work",
+    description: `${APP_NAME} did not close properly. These projects have changes that were not saved.`,
+    notSavedYet: "Not saved yet",
+    savedAt: (time: string) => `Autosaved ${time}`,
+    restore: "Restore",
+    discard: "Discard",
+    restoreItem: (name: string) => `Restore “${name}”`,
+    discardItem: (name: string) => `Discard “${name}”`,
+    later: "Later",
+  },
   projectSettings: {
     title: "Project settings",
     description: "Canvas size and frame rate. Clip times are kept exactly.",

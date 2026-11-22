@@ -66,6 +66,12 @@ export type FileActions = {
   saveAs: () => Promise<boolean>;
   /** Answer to `quitRequested`: asks about unsaved changes, then closes the window. */
   requestClose: () => Promise<void>;
+  /**
+   * Replaces the open project with `action` behind the same unsaved-changes prompt as New/Open.
+   * Resolves `true` when `action` ran; a rejection of `action` is passed on to the caller (who
+   * shows it), not reported to the status bar.
+   */
+  replaceGuarded: (action: () => Promise<unknown>) => Promise<boolean>;
 };
 
 const FAILED: unique symbol = Symbol("failed");
@@ -115,12 +121,15 @@ export function createFileActions(deps: FileActionDeps): FileActions {
    * failed save aborts), Don't save (runs it) or Cancel (does nothing).
    */
   async function guardUnsaved(action: () => Promise<unknown>): Promise<void> {
-    if (deps.current()?.dirty) {
-      const choice = await deps.askUnsaved();
-      if (choice === "cancel") return;
-      if (choice === "save" && !(await save())) return;
-    }
-    await attempt(action);
+    if (await mayReplace()) await attempt(action);
+  }
+
+  /** Asks about unsaved changes; `true` when the open project may be replaced. */
+  async function mayReplace(): Promise<boolean> {
+    if (!deps.current()?.dirty) return true;
+    const choice = await deps.askUnsaved();
+    if (choice === "cancel") return false;
+    return choice === "discard" || (await save());
   }
 
   return {
@@ -135,6 +144,12 @@ export function createFileActions(deps: FileActionDeps): FileActions {
     save: () => exclusive(false, save),
     saveAs: () => exclusive(false, saveAs),
     requestClose: () => exclusive(undefined, () => guardUnsaved(() => deps.confirmClose())),
+    replaceGuarded: (action) =>
+      exclusive(false, async () => {
+        if (!(await mayReplace())) return false;
+        await action();
+        return true;
+      }),
   };
 }
 
