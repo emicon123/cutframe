@@ -22,6 +22,7 @@ Users pick clips visually; the media bin is an empty placeholder today.
 
 - **backend:** bounded `media://` handler pool with deferred responders and an in-flight map (review F12); routes `/poster/<id>`, `/filmstrip/<id>?tile=`, `/waveform/<id>` by id with `?v=` (design §4, §6.3).
 - **backend:** content-keyed disk cache under `app_local_data_dir()\cache\media\v1` (atomic writes, version folders, 2 GiB LRU eviction) and the poster/filmstrip/waveform generators; background preview job after import and after open (design §5, §6.4).
+- **backend:** HEIC tile-grid stitching (shared engine code; the 0220 probe only decodes the first tile) so HEIC posters show the whole upright photo; 0320 reuses it for image clips.
 - **backend:** `RemoveMedia` + `remove_media` (undoable; refuses with `MediaInUse` while clips use it, which can only happen from 0260 on), `reveal_media`.
 - **frontend:** grid and list views, hover-scrub skimming over filmstrip tiles, waveform items, sort/filter/search, remove with confirmation, Show in Explorer, background progress.
 - **moved out:** F1.17 (preview in the player) → 0340; F1.18 (used-in-timeline badge) and the "warn if used" path of F1.21 → 0260 (design §12).

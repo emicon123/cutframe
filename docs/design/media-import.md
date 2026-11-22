@@ -239,14 +239,19 @@ adds the media rules to it):
   `Audio` ⇒ `video` is `None`, `audio` not empty, `duration` is `Some(> 0)`;
   `Image` ⇒ `video` is `Some`, `duration` is `None`, `audio` is empty;
 - `width`, `height` > 0; every `Rational` has `num > 0` and `den > 0`; `bit_depth` in 8..=16;
-- `hdr` is `Some` exactly when `color.transfer` is `smpte2084` or `arib-std-b67` or a Dolby Vision
-  record exists; `DolbyVisionOnly` only with `dolby_vision.compatibility_id == 0`;
+- `hdr.transfer` equals `app_core::media::hdr_transfer(color.transfer, dolby_vision)`, the single
+  rule used by the probe and by `validate`: Dolby Vision with compatibility id 0 →
+  `DolbyVisionOnly`; else transfer `smpte2084` → `Pq`, `arib-std-b67` → `Hlg`; else Dolby Vision
+  compatibility id 1 → `Pq`, 4 → `Hlg`; anything else (SDR, or Dolby Vision with an SDR-compatible
+  base layer, id 2) → `hdr = None`;
 - `fingerprint.hash` is 32 lowercase hex chars; `path.absolute` is non-empty;
 - once clips reference media (design 0250), every reference resolves to an asset in `media`.
 
 **Derived values** (methods, not stored): `MediaAsset::file_name()` (from `path.absolute`) and
-`VideoStreamInfo::display_size()` (rotation swaps width/height, then the width is scaled by
-`sample_aspect` and rounded to even). Thumbnails and the render graph both use `display_size`.
+`VideoStreamInfo::display_size()`: first the stored width is scaled by `sample_aspect` (rounded
+to even), because the pixel aspect describes the coded picture before any rotation; then a quarter
+turn swaps width and height. The opposite order gives the wrong shape for a rotated anamorphic
+source. Thumbnails and the render graph both use `display_size`.
 
 **Commands** (each is one history entry):
 
@@ -273,9 +278,11 @@ pub fn import_media(app: AppHandle, state: State<AppState>, paths: Vec<String>) 
 
 /// Opens the native multi-select file dialog (Rust side, no dialog permission in the webview)
 /// and starts an import. `None` if the user cancelled the dialog. Async: it does not touch the
-/// Document while the dialog is open (ADR-0003 rejected-options note).
+/// Document while the dialog is open (ADR-0003 rejected-options note). `filter_label` is the
+/// translated name of the file-type filter ("Media files"): the UI supplies it, because a label
+/// chosen in Rust would be user-facing text from Rust (ADR-0003 §5).
 #[tauri::command] #[specta::specta]
-pub async fn import_media_dialog(app: AppHandle) -> Result<Option<JobId>, IpcError>;
+pub async fn import_media_dialog(app: AppHandle, filter_label: String) -> Result<Option<JobId>, IpcError>;
 
 /// Idempotent: unknown or finished ids are ignored.
 #[tauri::command] #[specta::specta]
@@ -300,12 +307,15 @@ pub fn relink_media_folder(app: AppHandle, state: State<AppState>, folder: Strin
 
 **Jobs** follow ADR-0003 §8 exactly: `JobId` (UUID v7), `JobProgress { job_id, stage, progress }`
 throttled to 10 Hz per job, and `JobFinished { job_id, result: Result<(), IpcError> }`. New
-`JobStage` keys: `probing`, `generatingPreviews`, `checkingMedia`, `searchingFolder`. Background
+`JobStage` keys: `probing` (0220), `generatingPreviews` (0230), `checkingMedia` and
+`searchingFolder` (0240). Each key is added by the task that first emits it. Background
 jobs that Rust starts by itself (preview generation, media check) use the same events, so the UI
 shows their progress by stage without having started them.
 
 Per-file results travel in one extra typed event, emitted just before `JobFinished` of the job it
-belongs to:
+belongs to. As with the stages, each variant below is added by the task that first produces it:
+0220 has `Added`, `AlreadyImported` and `Failed` with the import error kinds; `Relinked`,
+`FingerprintMismatch`, `NotFound` and `KindMismatch` arrive with 0240.
 
 ```rust
 /// event: media-job-report
@@ -335,8 +345,10 @@ pub enum MediaErrorKind {
     FileNotFound, AccessDenied, UnsupportedPath, // e.g. not valid UTF-8
     UnsupportedFormat, // no demuxer, or no video/audio stream
     UnsupportedCodec,  // a stream exists but this FFmpeg build cannot decode it
-    Damaged,           // demuxer or decoder fails on the first frames, or duration is unknown
-    KindMismatch,      // relink to a file of another kind (video -> audio)
+    Damaged,           // demuxer or decoder fails on the first frames, the tail cannot be read,
+                       // or the duration is unknown
+    TooManyFiles,      // a folder holds more than MAX_IMPORT_FILES media files; skipped whole
+    KindMismatch,      // relink to a file of another kind (video -> audio), task 0240
 }
 ```
 
@@ -360,7 +372,7 @@ pub struct MediaView {
     pub used_by: u32,                    // clips referencing it; 0 until design 0250
     /// Appended as `?v=` to media:// URLs so a relink never shows stale images.
     pub preview_version: String,         // first 16 hex chars of fingerprint.hash
-    pub filmstrip: Option<FilmstripLayout>,
+    pub filmstrip: Option<FilmstripLayout>, // added by 0230 with the generators
 }
 pub struct FilmstripLayout {
     pub interval: Time,       // media time between frames
@@ -371,8 +383,9 @@ pub struct FilmstripLayout {
 ```
 
 Constants exported with `Builder::constant` (ADR-0003 §3): `MEDIA_EXTENSIONS` (lowercase, without
-dots, for the drop filter), `FILMSTRIP_FRAME_HEIGHT` (96), `WAVEFORM_BUCKETS_PER_SECOND` (100),
-`POSTER_LONG_SIDE` (320). No fingerprint, size or mtime crosses IPC.
+dots, for the drop filter) and `MAX_IMPORT_FILES` (2000) from 0220; `FILMSTRIP_FRAME_HEIGHT` (96),
+`WAVEFORM_BUCKETS_PER_SECOND` (100) and `POSTER_LONG_SIDE` (320) from 0230, together with
+`MediaView.filmstrip`. No fingerprint, size or mtime crosses IPC.
 
 ### `media://` routes
 
@@ -409,13 +422,17 @@ ADR-0004 §2) and on `rsmpeg` (task 0200).
   with a bounded `probesize`/`analyzeduration`; best video stream (ignoring
   `AV_DISPOSITION_ATTACHED_PIC`), all audio streams with an available decoder; a decoder is opened
   for each chosen stream and one frame decoded, so that "probes fine, cannot decode" is reported as
-  `UnsupportedCodec` or `Damaged` at import instead of on the timeline. When the container has no
-  duration (browser-recorded WebM, some MKV), seek to the end and take the last packet timestamp.
+  `UnsupportedCodec` or `Damaged` at import instead of on the timeline. Then the probe always seeks
+  to the last keyframe before the end and reads the tail: up to 32 packets when the duration is
+  known, or on to the end of the file when the container states none (browser-recorded WebM, some
+  MKV), taking the end of the last packet as the duration. A read error or a packet flagged
+  corrupt in the tail makes the file `Damaged`, which catches truncated MP4s whose index points
+  past the data. When the duration is known and the seek itself fails, the tail check is skipped.
 - **`fingerprint(path)`:** reads at most 2 MiB; `blake3` crate (CC0/Apache-2.0, passes
   `deny.toml`).
 - **Rotation:** from the stream's display matrix (`AV_PKT_DATA_DISPLAYMATRIX` in
-  `codecpar.coded_side_data`), snapped to the nearest quarter turn; for JPEG/HEIC from EXIF
-  orientation or the HEIF `irot` box. Whether FFmpeg 7.1 exposes EXIF orientation for JPEG (frame
+  `codecpar.coded_side_data`), snapped to the nearest quarter turn; for JPEG from EXIF
+  orientation, for HEIC from the `irot` box (see HEIC below). Whether FFmpeg 7.1 exposes EXIF orientation for JPEG (frame
   metadata) or a small permissive EXIF crate is needed is settled in 0220 with a fixture. Mirroring
   is ignored and logged.
 - **Pixel aspect:** `sample_aspect_ratio` of the stream, else of the codec parameters, else 1/1.
@@ -428,10 +445,13 @@ ADR-0004 §2) and on `rsmpeg` (task 0200).
 - **Still images:** opened through FFmpeg's image demuxers (`image2`, `png_pipe`, `webp_pipe`, ...).
   Animated GIF probes as `Video`. Animated WebP decodes only its first frame in FFmpeg 7.1 and is
   imported as `Image`.
-- **HEIC/HEIF:** decoded with FFmpeg's HEVC decoder. Phone HEIC files are tile grids; FFmpeg 7.1
-  exposes them as a tile-grid stream group, which the engine composes on the CPU. If that proves
-  unreliable in 0220, HEIC is rejected as `UnsupportedFormat` and the catalog row says so. No
-  `libheif` dependency.
+- **HEIC/HEIF:** supported without `libheif`, using FFmpeg's HEVC decoder. Phone HEIC files are
+  tile grids, which FFmpeg 7.1 exposes as a tile-grid stream group
+  (`AV_STREAM_GROUP_PARAMS_TILE_GRID`). The probe reports the grid's full size as `width` x
+  `height`, `kind = image`, and decodes the first tile to prove the file decodes. FFmpeg 7.1 does
+  not export the HEIF `irot` box, so `engine/src/media/heif.rs` reads it (a small bounded box
+  parser over untrusted input). Stitching the tiles into one picture is shared engine code built
+  by 0230 for posters and reused by 0320 for image clips.
 - **Preview generation (`media::previews`):** decode → `sws_scale` to the target size with the
   stream's colour matrix and range → rotate quarter turns in Rust → JPEG encode (FFmpeg's `mjpeg`
   encoder or a permissive Rust encoder; backend picks, cargo-deny decides). Filmstrips decode
@@ -500,15 +520,18 @@ Input for 0310 (to verify with a spike, not settled facts):
 - Jobs are split into tasks (one per file or per preview product). A job's last task runs its
   finish step. A registry maps `JobId` to a cancel flag and a progress counter; a 10 Hz ticker
   emits `job-progress` for jobs whose counter moved.
-- `pause_background(bool)`: a hook for playback (0330) to stop prefetch while playing.
+- `pause_background(bool)`: a hook for playback to stop prefetch while playing; added by 0330,
+  which is its first user.
 - Applying a model command from a job goes through `AppState::edit` like any command (short lock,
   ADR-0004 §1). If a gesture is open (`GestureInProgress`, ADR-0006 §3) the finish step retries
   every 50 ms until the gesture ends; gestures are short and the job's result is not lost.
 
 ### 6.2 Import job
 
-1. Expand folders (recursive, supported extensions only, at most 2,000 files; more is reported as
-   one `Failed` entry for the folder). Remove duplicates by normalised path.
+1. Expand folders (recursive, supported extensions only). A folder with more than
+   `MAX_IMPORT_FILES` (2000) media files is skipped as a whole and reported once, as a `Failed`
+   entry for the folder with `TooManyFiles`; importing an arbitrary first part of it would be
+   surprising. Remove duplicates by normalised path.
 2. Per file, in parallel on the pool: stat → fingerprint → probe. Progress = files done / total,
    stage `probing`.
 3. Finish: drop files whose fingerprint is already in the snapshot or earlier in the same batch
@@ -681,9 +704,9 @@ sizes, total ≤ 2 MB, self-generated test patterns, so licence-clean) in
 | `vp9-opus.webm` without container duration | duration found by the end scan |
 | `av1.mkv`, `prores.mov`, `mjpeg.avi`, `mpeg4.m4v` | probe + first frame decode (AV1 needs dav1d in the 0200 build) |
 | `two-audio-tracks.mkv` (OBS-style) | two `audio` entries, default first |
-| `hevc10-hlg.mov` with a Dolby Vision 8.4 record, `hevc10-pq.mkv` with mastering display + MaxCLL, an 8-bit SDR clip | `bit_depth`, `hdr.transfer`, nits values, `dolbyVision` fields; SDR gives `hdr = None` |
+| HLG HEVC with a `dvvC` box (Dolby Vision 8.4), 10-bit PQ AV1 with `mdcv`/`clli` boxes, an 8-bit SDR clip | `bit_depth`, `hdr.transfer`, nits values, `dolbyVision` fields; SDR gives `hdr = None`. The pinned LGPL build has no software 10-bit HEVC encoder, so the HLG fixture is 8-bit HEVC: it tests the metadata path, not 10-bit HEVC decoding |
 | `mp3`, `wav`, `flac`, `ogg` (Opus), `m4a` | `kind = audio`, sample rate, channels |
-| `jpg` with EXIF orientation 6, `png`, `webp`, `bmp`, `tiff`, animated `gif`, `heic` (tile grid) | kind, rotation, size; HEIC either decodes or returns `UnsupportedFormat` |
+| `jpg` with EXIF orientation 6, `png`, `webp`, `bmp`, `tiff`, animated `gif`, `heic` (tile grid with `irot`) | kind, rotation, size; HEIC reports the grid size, `kind = image` and its `irot` rotation |
 | truncated `mp4`, random bytes named `.mp4`, a text file named `.mov`, a 0-byte file | `Damaged` / `UnsupportedFormat`, never a panic |
 | a file under a folder named `ąęłó` | opens |
 
