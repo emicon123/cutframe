@@ -1,4 +1,11 @@
-import type { HistoryLabel, IpcError } from "@/bindings";
+import {
+  type HistoryLabel,
+  type IpcError,
+  type JobStage,
+  MAX_IMPORT_FILES,
+  type MediaErrorKind,
+  type MediaKind,
+} from "@/bindings";
 
 const APP_NAME = "Cutframe";
 
@@ -24,6 +31,7 @@ export const en = {
     open: "Open…",
     save: "Save",
     saveAs: "Save As…",
+    importMedia: "Import Media…",
     projectSettings: "Project settings…",
     exit: "Exit",
     /** Name of the project file type in the native open/save dialogs. */
@@ -113,6 +121,7 @@ export const en = {
       renameTrack: "Rename Track",
       renameProject: "Rename Project",
       setProjectSettings: "Change Project Settings",
+      importMedia: "Import Media",
     } satisfies Record<HistoryLabel, string>,
     /** Shown for a key this UI build does not know. */
     unknown: "Last Action",
@@ -128,6 +137,7 @@ export const en = {
       projectTooNew: `This project was saved by a newer version of ${APP_NAME}`,
       invalidProject: "This project file contains errors and cannot be opened",
       io: "The file could not be read or written",
+      cancelled: "Cancelled",
     } satisfies Record<IpcError["kind"], string>,
     /** Shown for an unknown kind or a failure that is not an `IpcError`. */
     unknown: "Something went wrong",
@@ -135,8 +145,46 @@ export const en = {
   mediaBin: {
     title: "Media",
     empty: "No media yet",
-    emptyHint: "Importing video, audio and images arrives in stage 1.",
+    emptyHint: "Import video, audio and images, or drop files and folders here.",
     import: "Import",
+    importTip: "Import media (Ctrl+I)",
+    /** Name of the file-type filter in the native file dialog. */
+    filterLabel: "Media files",
+    dropHint: "Drop to import",
+    list: "Imported media",
+    kinds: { video: "Video", audio: "Audio", image: "Image" } satisfies Record<MediaKind, string>,
+    resolution: (width: number, height: number) => `${width}×${height}`,
+    /** Joins the details of a list row, e.g. "Video · 0:42 · 1080×1920". */
+    detailSeparator: " · ",
+    job: {
+      stages: { probing: "Importing media" } satisfies Record<JobStage, string>,
+      /** Shown for a stage this UI build does not know. */
+      unknownStage: "Working",
+      percent: (value: number) => `${value}%`,
+      cancel: "Cancel",
+      cancelTip: "Cancel import (Esc)",
+      cancelling: "Cancelling…",
+    },
+    result: {
+      added: (n: number) => (n === 1 ? "1 file imported" : `${n} files imported`),
+      alreadyImported: (n: number) => (n === 1 ? "1 file already imported" : `${n} files already imported`),
+      failed: (n: number) => (n === 1 ? "1 file could not be imported" : `${n} files could not be imported`),
+      nothing: "No media files found",
+      jobFailed: (reason: string) => `Import failed: ${reason}`,
+      fileReason: (fileName: string, reason: string) => `${fileName}: ${reason}`,
+      dismiss: "Dismiss",
+    },
+    /** Per-file import failures keyed by `MediaErrorKind`. The English `detail` is never shown. */
+    errors: {
+      fileNotFound: "file not found",
+      accessDenied: "access denied",
+      unsupportedPath: "this path cannot be used",
+      unsupportedFormat: "unsupported format",
+      unsupportedCodec: "unsupported codec",
+      damaged: "the file is damaged",
+      tooManyFiles: `more than ${MAX_IMPORT_FILES} media files in this folder`,
+    } satisfies Record<MediaErrorKind, string>,
+    unknownError: "could not be read",
   },
   preview: {
     unavailable: "Preview unavailable: no GPU adapter found",

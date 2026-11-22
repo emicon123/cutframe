@@ -138,6 +138,7 @@ Full picture of modules and data flow: `docs/adr/0001-tech-stack.md`.
 
 ```bash
 pnpm install
+pnpm setup:ffmpeg              # once: pinned LGPL FFmpeg into .ffmpeg/ (needed by every Rust build)
 pnpm dev                       # tauri dev: Vite + Rust app with the native preview
 
 pnpm check                     # cargo fmt, UI typecheck/lint/Prettier/test/build, clippy, cargo test

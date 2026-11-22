@@ -391,7 +391,12 @@ pub(crate) mod tests {
     }
 
     fn snapshot(name: &str, file_path: Option<PathBuf>) -> SaveSnapshot {
-        let state = AppState::new(Project::new(name), None, store(Path::new("unused")));
+        let state = AppState::new(
+            Project::new(name),
+            None,
+            store(Path::new("unused")),
+            crate::jobs::JobManager::for_tests(),
+        );
         if let Some(path) = file_path {
             state.test_replace(Project::new(name), Some(path), CURRENT_SCHEMA_VERSION);
         }

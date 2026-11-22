@@ -239,7 +239,12 @@ mod tests {
     impl Fixture {
         fn new() -> Self {
             let dir = tempfile::tempdir().unwrap();
-            let state = AppState::new(Project::new("Start"), None, store(dir.path()));
+            let state = AppState::new(
+                Project::new("Start"),
+                None,
+                store(dir.path()),
+                crate::jobs::JobManager::for_tests(),
+            );
             Self {
                 dir,
                 state,
@@ -298,7 +303,12 @@ mod tests {
         let blocked = dir.path().join("recovery");
         // A file where the directory should be: every write fails.
         fs::write(&blocked, "not a directory").unwrap();
-        let state = AppState::new(Project::new("Start"), None, store(&blocked));
+        let state = AppState::new(
+            Project::new("Start"),
+            None,
+            store(&blocked),
+            crate::jobs::JobManager::for_tests(),
+        );
         let mut saver = Autosaver::new(None);
         rename(&state, "A");
         assert!(
@@ -388,7 +398,12 @@ mod tests {
     #[test]
     fn shutdown_deletes_the_file_and_the_lock() {
         let dir = tempfile::tempdir().unwrap();
-        let state = AppState::new(Project::new("Start"), None, store(dir.path()));
+        let state = AppState::new(
+            Project::new("Start"),
+            None,
+            store(dir.path()),
+            crate::jobs::JobManager::for_tests(),
+        );
         let lock = state.recovery().acquire_lock().unwrap();
         let mut saver = Autosaver::new(Some(lock));
         rename(&state, "A");
@@ -417,7 +432,13 @@ mod tests {
         let s = store(dir.path());
         let lock = s.acquire_lock().unwrap();
         let handle = spawn(s, Some(lock), || {
-            AppState::new(Project::new("P"), None, store(Path::new("unused"))).save_snapshot()
+            AppState::new(
+                Project::new("P"),
+                None,
+                store(Path::new("unused")),
+                crate::jobs::JobManager::for_tests(),
+            )
+            .save_snapshot()
         })
         .unwrap();
         handle.shutdown();
@@ -432,7 +453,12 @@ mod tests {
     fn a_large_project_autosaves_within_budget() {
         let dir = tempfile::tempdir().unwrap();
         let project = crate::project_file::tests::large_project();
-        let state = AppState::new(Project::new("Start"), None, store(dir.path()));
+        let state = AppState::new(
+            Project::new("Start"),
+            None,
+            store(dir.path()),
+            crate::jobs::JobManager::for_tests(),
+        );
         state.test_replace(project.clone(), None, CURRENT_SCHEMA_VERSION);
         rename(&state, "Large");
         let mut saver = Autosaver::new(None);

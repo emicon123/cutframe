@@ -4,7 +4,11 @@
 use std::path::Path;
 
 use app_core::command::HistoryLabel;
-use app_core::{ClipId, Document, ProjectId, ProjectSettings, Time, TrackId, TrackKind};
+use app_core::media::{HdrTransfer, MediaAsset};
+use app_core::{
+    ClipId, Document, MediaId, MediaKind, ProjectId, ProjectSettings, Rational, Time, TrackId,
+    TrackKind,
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -57,6 +61,8 @@ pub struct ProjectView {
     pub duration: Time,
     /// Top to bottom as shown in the timeline.
     pub tracks: Vec<TrackView>,
+    /// Imported media in import order. The media panel sorts and filters its own view of it.
+    pub media: Vec<MediaView>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -112,6 +118,7 @@ impl ProjectState {
                             .collect(),
                     })
                     .collect(),
+                media: project.media.iter().map(MediaView::new).collect(),
             },
             history: HistoryState {
                 can_undo: doc.can_undo(),
@@ -152,6 +159,164 @@ impl From<crate::recovery::Entry> for RecoveryEntry {
             project_name: entry.project_name,
             file_path: entry.file_path.map(|p| p.to_string_lossy().into_owned()),
             saved_at_ms: entry.saved_at_ms,
+        }
+    }
+}
+
+/// One imported media item as the media panel shows it. No fingerprint, size or mtime crosses
+/// IPC (design §4).
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaView {
+    pub id: MediaId,
+    pub kind: MediaKind,
+    pub file_name: String,
+    /// Absolute path, for the list view and tooltips.
+    pub path: String,
+    /// `None` for images.
+    pub duration: Option<Time>,
+    /// The upright picture size on screen (after rotation and pixel aspect); `None` for audio.
+    pub display_width: Option<u32>,
+    pub display_height: Option<u32>,
+    /// Source frame rate, informational; `None` for audio and images.
+    pub frame_rate: Option<Rational>,
+    pub video_codec: Option<String>,
+    /// HDR badge; `dolbyVisionOnly` gets a warning (its colours will be wrong).
+    pub hdr: Option<HdrTransfer>,
+    /// The default audio stream; `None` without audio.
+    pub audio: Option<AudioSummary>,
+    /// Always `online` until missing-media detection lands (task 0240).
+    pub status: MediaStatus,
+    /// Clips that reference this media; 0 until clips reference media (design 0250).
+    pub used_by: u32,
+    /// Append as `?v=` to `media://` URLs, so a relinked file never shows stale previews.
+    pub preview_version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioSummary {
+    pub codec: String,
+    pub sample_rate: u32,
+    pub channels: u16,
+    /// Number of audio streams in the file (OBS-style recordings have several).
+    pub stream_count: u32,
+}
+
+/// Whether the media file is reachable. Session state, not saved (design §6.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum MediaStatus {
+    Online,
+    /// The file is missing (task 0240).
+    Offline,
+    /// The file at the path has other content than when it was imported (task 0240).
+    Changed,
+}
+
+impl MediaView {
+    pub fn new(asset: &MediaAsset) -> Self {
+        let video = asset.info.video.as_ref();
+        let display = video.map(|v| v.display_size());
+        Self {
+            id: asset.id,
+            kind: asset.kind,
+            file_name: asset.file_name().to_owned(),
+            path: asset.path.absolute.clone(),
+            duration: asset.info.duration,
+            display_width: display.map(|(w, _)| w),
+            display_height: display.map(|(_, h)| h),
+            frame_rate: video.and_then(|v| v.frame_rate),
+            video_codec: video.map(|v| v.codec.clone()),
+            hdr: video.and_then(|v| v.hdr).map(|h| h.transfer),
+            audio: asset.info.audio.first().map(|a| AudioSummary {
+                codec: a.codec.clone(),
+                sample_rate: a.sample_rate,
+                channels: a.channels,
+                stream_count: asset.info.audio.len() as u32,
+            }),
+            status: MediaStatus::Online,
+            used_by: 0,
+            preview_version: asset.fingerprint.hash.chars().take(16).collect(),
+        }
+    }
+}
+
+/// Identifies a background job (import, later previews, export). UUID v7.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, specta::Type)]
+#[serde(transparent)]
+pub struct JobId(pub Uuid);
+
+impl JobId {
+    pub fn new() -> Self {
+        Self(Uuid::now_v7())
+    }
+}
+
+/// What a job is doing; a stable key the UI translates (ADR-0003 §5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum JobStage {
+    /// Reading and probing media files (import).
+    Probing,
+}
+
+/// The result of one file of a media job, in the order the files were given.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaFileResult {
+    /// Absolute path of the file (or of the folder, for a folder-level failure).
+    pub path: String,
+    pub outcome: MediaFileOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum MediaFileOutcome {
+    Added {
+        media: MediaId,
+    },
+    /// The same content (fingerprint) is already in the project, or earlier in the same import.
+    AlreadyImported {
+        media: MediaId,
+    },
+    Failed {
+        error: MediaErrorKind,
+        /// English, for the log only.
+        detail: String,
+    },
+}
+
+/// Why a file could not be imported; a stable key the UI translates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum MediaErrorKind {
+    FileNotFound,
+    AccessDenied,
+    /// The path cannot be used (e.g. not valid UTF-8, not a file).
+    UnsupportedPath,
+    /// No demuxer recognises the file, or it has no video or audio stream.
+    UnsupportedFormat,
+    /// A stream exists but this build cannot decode it.
+    UnsupportedCodec,
+    /// The file is truncated or corrupt, or its duration is unknown.
+    Damaged,
+    /// A dropped folder holds more media files than one import takes (`MAX_IMPORT_FILES`);
+    /// nothing from it was imported.
+    TooManyFiles,
+}
+
+impl From<engine::media::MediaErrorKind> for MediaErrorKind {
+    fn from(kind: engine::media::MediaErrorKind) -> Self {
+        use engine::media::MediaErrorKind as E;
+        match kind {
+            E::FileNotFound => Self::FileNotFound,
+            E::AccessDenied => Self::AccessDenied,
+            E::UnsupportedPath => Self::UnsupportedPath,
+            E::UnsupportedFormat => Self::UnsupportedFormat,
+            E::UnsupportedCodec => Self::UnsupportedCodec,
+            // A cancelled file never gets a result; the job reports `cancelled` instead.
+            E::Damaged | E::Cancelled => Self::Damaged,
         }
     }
 }

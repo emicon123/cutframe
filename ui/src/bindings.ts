@@ -93,15 +93,41 @@ export const commands = {
 	 *  instance is never touched.
 	 */
 	discardRecovery: (id: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("discard_recovery", { id }, options),
+	/**
+	 *  Starts importing `paths` (files or folders) and returns the job id at once. Progress comes as
+	 *  `jobProgress`, per-file outcomes as `mediaJobReport`, the end as `jobFinished`; all files that
+	 *  import successfully are added as one undo step (`importMedia`). Fails with `invalidEdit` for an
+	 *  empty list.
+	 */
+	importMedia: (paths: string[], options?: InvokeOptions) => __TAURI_INVOKE<JobId>("import_media", { paths }, options),
+	/**
+	 *  Opens the native multi-select file dialog, filtered to `MEDIA_EXTENSIONS`, and starts an
+	 *  import of the chosen files. `null` if the user cancelled the dialog. `filterLabel` is the
+	 *  translated name of the file-type filter (Rust sends no user-facing text). The dialog runs
+	 *  without holding the document.
+	 */
+	importMediaDialog: (filterLabel: string, options?: InvokeOptions) => __TAURI_INVOKE<JobId | null>("import_media_dialog", { filterLabel }, options),
+	/**
+	 *  Asks a job to stop; its `jobFinished` result is then an `Err` of kind `cancelled`. Unknown or
+	 *  finished ids are ignored.
+	 */
+	cancelJob: (id: JobId, options?: InvokeOptions) => __TAURI_INVOKE<null>("cancel_job", { id }, options),
 };
 
 /** Events */
 export const events = {
+	jobFinished: makeEvent<JobFinished, JobFinished>("job-finished"),
+	jobProgress: makeEvent<JobProgress_Serialize, JobProgress_Deserialize>("job-progress"),
+	mediaJobReport: makeEvent<MediaJobReport, MediaJobReport>("media-job-report"),
 	projectChanged: makeEvent<ProjectChanged_Serialize, ProjectChanged_Deserialize>("project-changed"),
 	quitRequested: makeEvent<QuitRequested, QuitRequested>("quit-requested"),
 };
 
 /* Constants */
+export const MAX_IMPORT_FILES = 2000 as const;
+
+export const MEDIA_EXTENSIONS = ["mp4","mov","m4v","mkv","webm","avi","mpg","mpeg","mts","m2ts","3gp","mp3","wav","m4a","aac","flac","ogg","opus","jpg","jpeg","png","webp","bmp","tif","tiff","gif","heic","heif"] as const;
+
 export const PROJECT_FILE_EXTENSION = "cutframe" as const;
 
 /* Types */
@@ -117,6 +143,14 @@ export type AppInfo_Serialize = {
 	version: string,
 	gpu: GpuInfoView | null,
 	previewMode: PreviewMode,
+};
+
+export type AudioSummary = {
+	codec: string,
+	sampleRate: number,
+	channels: number,
+	/**  Number of audio streams in the file (OBS-style recordings have several). */
+	streamCount: number,
 };
 
 /**  Identifies a clip within a project. */
@@ -153,6 +187,13 @@ export type GpuInfoView = {
 	software: boolean,
 };
 
+export type HdrTransfer = "pq" | "hlg" | 
+/**
+ *  Dolby Vision without a compatible base layer (profile 5): the simple tone map shows wrong
+ *  colours. Imported, logged and badged; no Dolby Vision processing.
+ */
+"dolbyVisionOnly";
+
 export type HistoryEntryView = {
 	/**  Key of the edit (e.g. `addTrack`). The UI translates it. */
 	label: HistoryLabel,
@@ -164,7 +205,9 @@ export type HistoryEntryView = {
  *  This is not display text: the UI translates the key (ADR-0003 §5, ADR-0006 §5). Keys are API,
  *  so a variant is never renamed or reused for a different action; add a new one instead.
  */
-export type HistoryLabel = "addTrack" | "removeTrack" | "renameTrack" | "renameProject" | "setProjectSettings";
+export type HistoryLabel = "addTrack" | "removeTrack" | "renameTrack" | "renameProject" | "setProjectSettings" | 
+/**  One import job: every file it added. */
+"importMedia";
 
 export type HistoryState = HistoryState_Serialize | HistoryState_Deserialize;
 
@@ -231,7 +274,173 @@ export type IpcError =
 /**  Open: the file breaks a model invariant (e.g. overlapping clips). It is not repaired. */
 { kind: "invalidProject"; message: string } | 
 /**  Any other file-system failure: permission denied, disk full, file locked. */
-{ kind: "io"; message: string };
+{ kind: "io"; message: string } | 
+/**  The job was cancelled with `cancel_job`; only used as a `job-finished` result. */
+{ kind: "cancelled"; message: string };
+
+/**  The end of a job. After `cancel_job` the result is `{ Err: { kind: "cancelled" } }`. */
+export type JobFinished = {
+	jobId: JobId,
+	result: Result<null, IpcError>,
+};
+
+/**  Identifies a background job (import, later previews, export). UUID v7. */
+export type JobId = string;
+
+/**
+ *  Progress of a running job, at most 10 Hz per job, only when it moved. Never emitted after the
+ *  job's `job-finished`.
+ */
+export type JobProgress = JobProgress_Serialize | JobProgress_Deserialize;
+
+/**
+ *  Progress of a running job, at most 10 Hz per job, only when it moved. Never emitted after the
+ *  job's `job-finished`.
+ */
+export type JobProgress_Deserialize = {
+	jobId: JobId,
+	stage: JobStage,
+	/**  0..=1, `None` while the amount of work is not known yet (e.g. folders being listed). */
+	progress?: number | null,
+};
+
+/**
+ *  Progress of a running job, at most 10 Hz per job, only when it moved. Never emitted after the
+ *  job's `job-finished`.
+ */
+export type JobProgress_Serialize = {
+	jobId: JobId,
+	stage: JobStage,
+	/**  0..=1, `None` while the amount of work is not known yet (e.g. folders being listed). */
+	progress: number | null,
+};
+
+/**  What a job is doing; a stable key the UI translates (ADR-0003 §5). */
+export type JobStage = 
+/**  Reading and probing media files (import). */
+"probing";
+
+/**  Why a file could not be imported; a stable key the UI translates. */
+export type MediaErrorKind = "fileNotFound" | "accessDenied" | 
+/**  The path cannot be used (e.g. not valid UTF-8, not a file). */
+"unsupportedPath" | 
+/**  No demuxer recognises the file, or it has no video or audio stream. */
+"unsupportedFormat" | 
+/**  A stream exists but this build cannot decode it. */
+"unsupportedCodec" | 
+/**  The file is truncated or corrupt, or its duration is unknown. */
+"damaged" | 
+/**
+ *  A dropped folder holds more media files than one import takes (`MAX_IMPORT_FILES`);
+ *  nothing from it was imported.
+ */
+"tooManyFiles";
+
+export type MediaFileOutcome = { kind: "added"; media: MediaId } | 
+/**  The same content (fingerprint) is already in the project, or earlier in the same import. */
+{ kind: "alreadyImported"; media: MediaId } | { kind: "failed"; error: MediaErrorKind; 
+/**  English, for the log only. */
+detail: string };
+
+/**  The result of one file of a media job, in the order the files were given. */
+export type MediaFileResult = {
+	/**  Absolute path of the file (or of the folder, for a folder-level failure). */
+	path: string,
+	outcome: MediaFileOutcome,
+};
+
+/**  Identifies a media asset within a project. */
+export type MediaId = string;
+
+/**
+ *  Per-file results of a media job (import), emitted just before its `job-finished`. Not emitted
+ *  for a cancelled job.
+ */
+export type MediaJobReport = {
+	jobId: JobId,
+	files: MediaFileResult[],
+};
+
+export type MediaKind = 
+/**  Has a video stream with a duration (includes animated GIF). May have audio. */
+"video" | 
+/**  Audio streams only. */
+"audio" | 
+/**  A still picture: a video stream with one frame and no duration. */
+"image";
+
+/**  Whether the media file is reachable. Session state, not saved (design §6.6). */
+export type MediaStatus = "online" | 
+/**  The file is missing (task 0240). */
+"offline" | 
+/**  The file at the path has other content than when it was imported (task 0240). */
+"changed";
+
+/**
+ *  One imported media item as the media panel shows it. No fingerprint, size or mtime crosses
+ *  IPC (design §4).
+ */
+export type MediaView = MediaView_Serialize | MediaView_Deserialize;
+
+/**
+ *  One imported media item as the media panel shows it. No fingerprint, size or mtime crosses
+ *  IPC (design §4).
+ */
+export type MediaView_Deserialize = {
+	id: MediaId,
+	kind: MediaKind,
+	fileName: string,
+	/**  Absolute path, for the list view and tooltips. */
+	path: string,
+	/**  `None` for images. */
+	duration?: Time | null,
+	/**  The upright picture size on screen (after rotation and pixel aspect); `None` for audio. */
+	displayWidth?: number | null,
+	displayHeight?: number | null,
+	/**  Source frame rate, informational; `None` for audio and images. */
+	frameRate?: Rational | null,
+	videoCodec?: string | null,
+	/**  HDR badge; `dolbyVisionOnly` gets a warning (its colours will be wrong). */
+	hdr?: HdrTransfer | null,
+	/**  The default audio stream; `None` without audio. */
+	audio?: AudioSummary | null,
+	/**  Always `online` until missing-media detection lands (task 0240). */
+	status: MediaStatus,
+	/**  Clips that reference this media; 0 until clips reference media (design 0250). */
+	usedBy: number,
+	/**  Append as `?v=` to `media://` URLs, so a relinked file never shows stale previews. */
+	previewVersion: string,
+};
+
+/**
+ *  One imported media item as the media panel shows it. No fingerprint, size or mtime crosses
+ *  IPC (design §4).
+ */
+export type MediaView_Serialize = {
+	id: MediaId,
+	kind: MediaKind,
+	fileName: string,
+	/**  Absolute path, for the list view and tooltips. */
+	path: string,
+	/**  `None` for images. */
+	duration: Time | null,
+	/**  The upright picture size on screen (after rotation and pixel aspect); `None` for audio. */
+	displayWidth: number | null,
+	displayHeight: number | null,
+	/**  Source frame rate, informational; `None` for audio and images. */
+	frameRate: Rational | null,
+	videoCodec: string | null,
+	/**  HDR badge; `dolbyVisionOnly` gets a warning (its colours will be wrong). */
+	hdr: HdrTransfer | null,
+	/**  The default audio stream; `None` without audio. */
+	audio: AudioSummary | null,
+	/**  Always `online` until missing-media detection lands (task 0240). */
+	status: MediaStatus,
+	/**  Clips that reference this media; 0 until clips reference media (design 0250). */
+	usedBy: number,
+	/**  Append as `?v=` to `media://` URLs, so a relinked file never shows stale previews. */
+	previewVersion: string,
+};
 
 /**  How the preview reaches the screen on this platform. */
 export type PreviewMode = 
@@ -286,7 +495,7 @@ export type ProjectState_Deserialize = {
 	 *  project is opened or created. Keep the payload with the highest revision.
 	 */
 	revision: number,
-	project: ProjectView,
+	project: ProjectView_Deserialize,
 	history: HistoryState_Deserialize,
 	/**  Absolute path of the open project file; `None` for a new project that was never saved. */
 	filePath?: string | null,
@@ -300,7 +509,7 @@ export type ProjectState_Serialize = {
 	 *  project is opened or created. Keep the payload with the highest revision.
 	 */
 	revision: number,
-	project: ProjectView,
+	project: ProjectView_Serialize,
 	history: HistoryState_Serialize,
 	/**  Absolute path of the open project file; `None` for a new project that was never saved. */
 	filePath: string | null,
@@ -308,7 +517,9 @@ export type ProjectState_Serialize = {
 	dirty: boolean,
 };
 
-export type ProjectView = {
+export type ProjectView = ProjectView_Serialize | ProjectView_Deserialize;
+
+export type ProjectView_Deserialize = {
 	id: ProjectId,
 	name: string,
 	settings: ProjectSettings,
@@ -316,6 +527,20 @@ export type ProjectView = {
 	duration: Time,
 	/**  Top to bottom as shown in the timeline. */
 	tracks: TrackView[],
+	/**  Imported media in import order. The media panel sorts and filters its own view of it. */
+	media: MediaView_Deserialize[],
+};
+
+export type ProjectView_Serialize = {
+	id: ProjectId,
+	name: string,
+	settings: ProjectSettings,
+	/**  End of the last clip, in flicks. */
+	duration: Time,
+	/**  Top to bottom as shown in the timeline. */
+	tracks: TrackView[],
+	/**  Imported media in import order. The media panel sorts and filters its own view of it. */
+	media: MediaView_Serialize[],
 };
 
 /**
@@ -324,6 +549,18 @@ export type ProjectView = {
  *  open. A clean project closes without this event.
  */
 export type QuitRequested = null;
+
+/**
+ *  An exact positive ratio such as a source frame rate (30000/1001), a pixel aspect (4/3) or an
+ *  FFmpeg time base (1/90000). Unlike [`FrameRate`] it need not be flick-aligned: source rates such
+ *  as 2997/100 are valid. Always reduced, with `num > 0` and `den > 0`.
+ */
+export type Rational = RationalRepr;
+
+export type RationalRepr = {
+	num: number,
+	den: number,
+};
 
 /**  An autosave left by an instance that did not exit cleanly, offered for restore at startup. */
 export type RecoveryEntry = RecoveryEntry_Serialize | RecoveryEntry_Deserialize;
@@ -351,6 +588,8 @@ export type RecoveryEntry_Serialize = {
 	/**  When the autosave was taken, in Unix milliseconds. The UI formats it. */
 	savedAtMs: number,
 };
+
+export type Result<T, E> = ({ Ok: T }) & { Err?: never } | ({ Err: E }) & { Ok?: never };
 
 /**
  *  A point in time or a duration, in flicks.
@@ -424,6 +663,9 @@ export type MockCommandHandlers = {
     listRecovery: () => RecoveryEntry_Serialize[] | Promise<RecoveryEntry_Serialize[]>,
     restoreRecovery: (args: { id: string }) => null | Promise<null>,
     discardRecovery: (args: { id: string }) => null | Promise<null>,
+    importMedia: (args: { paths: string[] }) => JobId | Promise<JobId>,
+    importMediaDialog: (args: { filterLabel: string }) => JobId | null | Promise<JobId | null>,
+    cancelJob: (args: { id: JobId }) => null | Promise<null>,
 };
 
 /**
@@ -471,6 +713,9 @@ export function mockCommands(handlers: Partial<MockCommandHandlers> = {}): void 
             case "list_recovery": return mockCommandHandler(mockHandlers.listRecovery, "list_recovery", args);
             case "restore_recovery": return mockCommandHandler(mockHandlers.restoreRecovery, "restore_recovery", args);
             case "discard_recovery": return mockCommandHandler(mockHandlers.discardRecovery, "discard_recovery", args);
+            case "import_media": return mockCommandHandler(mockHandlers.importMedia, "import_media", args);
+            case "import_media_dialog": return mockCommandHandler(mockHandlers.importMediaDialog, "import_media_dialog", args);
+            case "cancel_job": return mockCommandHandler(mockHandlers.cancelJob, "cancel_job", args);
             default: throw new Error(`No mock handler registered for command '${cmd}'`);
         }
     }, { shouldMockEvents: true });

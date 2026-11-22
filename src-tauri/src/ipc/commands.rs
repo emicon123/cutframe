@@ -6,10 +6,14 @@ use app_core::command::{AddTrack, RemoveTrack, RenameProject, RenameTrack, SetPr
 use app_core::serialization::{self, CURRENT_SCHEMA_VERSION};
 use app_core::{Project, ProjectSettings, TrackId, TrackKind};
 use tauri::{AppHandle, Manager, State};
+use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 
 use super::IpcError;
-use super::types::{AppInfo, GpuInfoView, PreviewMode, PreviewRect, ProjectState, RecoveryEntry};
+use super::types::{
+    AppInfo, GpuInfoView, JobId, PreviewMode, PreviewRect, ProjectState, RecoveryEntry,
+};
+use crate::import;
 use crate::project_file;
 use crate::state::{AppState, SaveSnapshot};
 
@@ -321,5 +325,65 @@ pub fn confirm_close(app: AppHandle) -> Result<(), IpcError> {
         .ok_or_else(|| IpcError::Internal("main window not found".into()))?;
     // `destroy` does not raise `CloseRequested` again.
     window.destroy()?;
+    Ok(())
+}
+
+/// Starts importing `paths` (files or folders) and returns the job id at once. Progress comes as
+/// `jobProgress`, per-file outcomes as `mediaJobReport`, the end as `jobFinished`; all files that
+/// import successfully are added as one undo step (`importMedia`). Fails with `invalidEdit` for an
+/// empty list.
+#[tauri::command]
+#[specta::specta]
+pub fn import_media(state: State<'_, AppState>, paths: Vec<String>) -> Result<JobId, IpcError> {
+    if paths.is_empty() {
+        return Err(IpcError::InvalidEdit("no paths to import".into()));
+    }
+    Ok(import::start(
+        &state.jobs,
+        paths.into_iter().map(PathBuf::from).collect(),
+    ))
+}
+
+/// Opens the native multi-select file dialog, filtered to `MEDIA_EXTENSIONS`, and starts an
+/// import of the chosen files. `null` if the user cancelled the dialog. `filterLabel` is the
+/// translated name of the file-type filter (Rust sends no user-facing text). The dialog runs
+/// without holding the document.
+#[tauri::command]
+#[specta::specta]
+pub async fn import_media_dialog(
+    app: AppHandle,
+    filter_label: String,
+) -> Result<Option<JobId>, IpcError> {
+    let (tx, mut rx) = tauri::async_runtime::channel(1);
+    let mut dialog = app
+        .dialog()
+        .file()
+        .add_filter(filter_label, engine::media::MEDIA_EXTENSIONS);
+    if let Some(window) = app.get_webview_window(crate::MAIN_WINDOW) {
+        dialog = dialog.set_parent(&window);
+    }
+    dialog.pick_files(move |files| {
+        tx.try_send(files).ok();
+    });
+    let Some(files) = rx.recv().await.flatten() else {
+        return Ok(None);
+    };
+    let paths: Vec<PathBuf> = files
+        .into_iter()
+        .filter_map(|file| file.into_path().ok())
+        .collect();
+    if paths.is_empty() {
+        return Ok(None);
+    }
+    let state = app.state::<AppState>();
+    Ok(Some(import::start(&state.jobs, paths)))
+}
+
+/// Asks a job to stop; its `jobFinished` result is then an `Err` of kind `cancelled`. Unknown or
+/// finished ids are ignored.
+#[tauri::command]
+#[specta::specta]
+pub fn cancel_job(state: State<'_, AppState>, id: JobId) -> Result<(), IpcError> {
+    state.jobs.cancel(id);
     Ok(())
 }

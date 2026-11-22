@@ -6,6 +6,7 @@ use std::collections::HashSet;
 
 use uuid::Uuid;
 
+use crate::media::{MediaValidationError, validate_media};
 use crate::model::{ClipId, Project, ProjectSettings, TrackId};
 use crate::time::MAX_IPC_FLICKS;
 
@@ -43,6 +44,9 @@ pub enum ValidationError {
     FrameRateRange { num: u32, den: u32 },
     #[error("sample rate {0} Hz is not supported")]
     SampleRate(u32),
+    /// A media asset breaks a media invariant (design `media-import.md` §3).
+    #[error(transparent)]
+    Media(#[from] MediaValidationError),
 }
 
 impl ProjectSettings {
@@ -73,7 +77,8 @@ impl Project {
     /// Checks every invariant: settings ranges, a non-blank name, unique ids, and clips that have
     /// a positive duration, lie within `0..=MAX_IPC_FLICKS` and are sorted and non-overlapping on
     /// each track. Clip times need not lie on the frame grid, so a frame-rate change never makes a
-    /// project invalid.
+    /// project invalid. Media assets are checked by [`validate_media`]; their ids are unique among
+    /// media (uuid v7 makes a clash with a track or clip id practically impossible).
     pub fn validate(&self) -> Result<(), ValidationError> {
         if self.name.trim().is_empty() {
             return Err(ValidationError::EmptyName);
@@ -126,6 +131,7 @@ impl Project {
                 previous = Some(clip);
             }
         }
+        validate_media(&self.media)?;
         Ok(())
     }
 }
@@ -331,5 +337,25 @@ mod tests {
         let mut project = Project::new("Test");
         project.settings.sample_rate = 96_000;
         assert_eq!(project.validate(), Err(ValidationError::SampleRate(96_000)));
+    }
+
+    #[test]
+    fn project_validation_includes_media() {
+        use crate::media::{MediaProblem, samples};
+
+        let mut project = Project::new("Test");
+        project.media.push(samples::video(1));
+        assert_eq!(project.validate(), Ok(()));
+        let mut broken = samples::audio(2);
+        broken.path.absolute.clear();
+        let id = broken.id;
+        project.media.push(broken);
+        assert_eq!(
+            project.validate(),
+            Err(ValidationError::Media(MediaValidationError {
+                id,
+                problem: MediaProblem::EmptyPath,
+            }))
+        );
     }
 }

@@ -15,6 +15,7 @@ const project: ProjectState = {
     settings: { width: 1920, height: 1080, frameRate: { num: 30, den: 1 }, sampleRate: 48000 },
     duration: 0,
     tracks: [],
+    media: [],
   },
   history: { canUndo: false, canRedo: false, undoLabel: null, redoLabel: null, entries: [], current: 0 },
   filePath: null,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { FLICKS_PER_SECOND, formatFrameRate, formatTimecode, frameDuration } from "./time";
+import { FLICKS_PER_SECOND, formatDuration, formatFrameRate, formatTimecode, frameDuration } from "./time";
 
 const fps30 = { num: 30, den: 1 };
 const ntsc = { num: 30000, den: 1001 };
@@ -36,5 +36,22 @@ describe("formatFrameRate", () => {
   it("shows integer and fractional rates", () => {
     expect(formatFrameRate(fps30)).toBe("30 fps");
     expect(formatFrameRate(ntsc)).toBe("29.970 fps");
+  });
+});
+
+describe("formatDuration", () => {
+  it("formats minutes and seconds below one hour", () => {
+    expect(formatDuration(0)).toBe("0:00");
+    expect(formatDuration(-1)).toBe("0:00");
+    expect(formatDuration(65 * FLICKS_PER_SECOND)).toBe("1:05");
+  });
+
+  it("adds hours from one hour", () => {
+    expect(formatDuration((3600 + 2 * 60 + 3) * FLICKS_PER_SECOND)).toBe("1:02:03");
+  });
+
+  it("rounds to the nearest second", () => {
+    expect(formatDuration(FLICKS_PER_SECOND * 10 + FLICKS_PER_SECOND / 2)).toBe("0:11");
+    expect(formatDuration(FLICKS_PER_SECOND * 10 + 1)).toBe("0:10");
   });
 });

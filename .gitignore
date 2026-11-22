@@ -2,6 +2,9 @@
 node_modules/
 /ui/dist/
 /src-tauri/gen/schemas/
+# Pinned FFmpeg build, provisioned by scripts/fetch-ffmpeg.ps1 (pnpm setup:ffmpeg)
+/.ffmpeg/
+/.ffmpeg.tmp/
 *.log
 .DS_Store
 .env

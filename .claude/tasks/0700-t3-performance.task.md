@@ -1,4 +1,4 @@
-# Task 0700: Hardware decode, proxies, render cache, job queue
+# Task 0700: Proxies, render cache, job queue, budgets
 
 **Tier:** 3 · **Agents:** `architect`, `backend`, `frontend` · **Depends on:** `0390`
 **Spec:** `docs/feature-catalog.md` (feature IDs below), `docs/adr/`, `docs/design/`, `CLAUDE.md`
@@ -12,7 +12,6 @@
 These rows have not been audited yet (`?`). First check the code, set each row's status in the
 catalog, and drop anything already `done` from the scope.
 
-- [ ] `F3.45` Hardware-accelerated decoding (D3D11VA / DXVA2 on Windows) — *?*
 - [ ] `F3.46` Proxy media: generate, toggle, auto-use for 4K / heavy codecs — *?*
 - [ ] `F3.47` Render cache: pre-render heavy timeline sections — *?*
 - [ ] `F3.48` Background analysis jobs queue (waveforms, proxies, stabilisation, transcription) — *?*
@@ -22,7 +21,7 @@ catalog, and drop anything already `done` from the scope.
 ## Scope
 
 - **architect:** proxy and render-cache design (storage, invalidation, export always uses originals).
-- **backend:** D3D12VA/D3D11VA decode, proxy generation and toggle, render cache, a shared background job queue with priorities, memory/GPU budgets, benchmark with 1h / 500-clip project (review F41).
+- **backend:** proxy generation and toggle (hardware decode itself moved to Tier 1, task 0320, on 2026-11-22), render cache, priorities and per-kind limits on top of the job manager from 0220 (`docs/design/media-import.md` §6.1), memory/GPU budgets, benchmark with 1h / 500-clip project (review F41).
 - **frontend:** proxy toggle, job list, cache indicators on the timeline.
 
 ## Done when

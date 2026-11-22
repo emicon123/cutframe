@@ -1,7 +1,10 @@
 //! Desktop shell: wires the engine and the project model to the UI through Tauri.
 
 mod autosave;
+mod ffmpeg_check;
+mod import;
 mod ipc;
+mod jobs;
 mod preview;
 mod project_file;
 mod protocol;
@@ -9,13 +12,16 @@ mod recovery;
 mod smoke_test;
 mod state;
 
+use std::sync::Arc;
+
 use app_core::Project;
 use tauri::{Manager, Window, WindowEvent};
 use tauri_specta::{Builder, Event, collect_commands, collect_events};
 use tracing_subscriber::EnvFilter;
 
 use crate::ipc::commands;
-use crate::ipc::events::{ProjectChanged, QuitRequested};
+use crate::ipc::events::{JobFinished, JobProgress, MediaJobReport, ProjectChanged, QuitRequested};
+use crate::jobs::{JobManager, TauriJobHost};
 use crate::preview::Preview;
 use crate::recovery::RecoveryStore;
 use crate::state::AppState;
@@ -51,10 +57,22 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             commands::list_recovery,
             commands::restore_recovery,
             commands::discard_recovery,
+            commands::import_media,
+            commands::import_media_dialog,
+            commands::cancel_job,
         ])
-        .events(collect_events![ProjectChanged, QuitRequested])
+        .events(collect_events![
+            ProjectChanged,
+            QuitRequested,
+            JobProgress,
+            JobFinished,
+            MediaJobReport
+        ])
         // The only place the UI gets the project file extension from (ADR-0002 amendment §1).
         .constant("PROJECT_FILE_EXTENSION", app_core::PROJECT_FILE_EXTENSION)
+        // Lowercase, without dots: the drop filter of the media panel (design §4).
+        .constant("MEDIA_EXTENSIONS", engine::media::MEDIA_EXTENSIONS)
+        .constant("MAX_IMPORT_FILES", import::MAX_IMPORT_FILES)
         // The phase argument of gesture-capable commands (ADR-0006 §4). Exported on its own so the
         // UI's gesture helper can use it before the first such command lands.
         .typ::<app_core::EditPhase>()
@@ -75,6 +93,9 @@ pub fn run() {
                 .unwrap_or_else(|_| EnvFilter::new("info,wgpu_core=warn,wgpu_hal=warn,naga=warn")),
         )
         .init();
+
+    // LGPL-only rule: log the linked FFmpeg, refuse a GPL/nonfree build in release.
+    ffmpeg_check::check();
 
     let ipc = ipc_builder();
     #[cfg(debug_assertions)]
@@ -106,7 +127,8 @@ pub fn run() {
                 app.path().app_data_dir()?.join("recovery"),
                 uuid::Uuid::now_v7(),
             );
-            app.manage(AppState::new(project, preview, recovery.clone()));
+            let jobs = JobManager::new(Arc::new(TauriJobHost::new(app.handle().clone())));
+            app.manage(AppState::new(project, preview, recovery.clone(), jobs));
             start_autosave(app.handle(), recovery);
 
             if smoke_test {

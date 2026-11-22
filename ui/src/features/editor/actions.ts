@@ -1,6 +1,7 @@
 import { useShallow } from "zustand/react/shallow";
 
 import { commands } from "@/bindings";
+import { importFromDialog } from "@/features/media-bin/importActions";
 import { fileActions } from "@/features/project/fileActions";
 import { historyLabelText, t } from "@/i18n";
 import { run } from "@/stores/appStore";
@@ -35,6 +36,7 @@ export type ActionId =
   | "open-project"
   | "save"
   | "save-as"
+  | "import-media"
   | "project-settings"
   | "exit"
   | "undo"
@@ -100,6 +102,13 @@ export const ACTIONS: readonly Action[] = [
     blockDefault: true,
     enabled: loaded,
     run: () => void fileActions.saveAs(),
+  },
+  {
+    id: "import-media",
+    label: t.file.importMedia,
+    shortcuts: [{ key: "i", ctrl: true }],
+    enabled: loaded,
+    run: () => void importFromDialog(),
   },
   {
     id: "project-settings",
@@ -168,6 +177,8 @@ export const MENUS: readonly Menu[] = [
       SEPARATOR,
       "save",
       "save-as",
+      SEPARATOR,
+      "import-media",
       SEPARATOR,
       "project-settings",
       SEPARATOR,

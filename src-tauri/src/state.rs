@@ -14,6 +14,7 @@ use crate::autosave::{AutosaveHandle, Msg};
 use crate::ipc::IpcError;
 use crate::ipc::events::ProjectChanged;
 use crate::ipc::types::ProjectState;
+use crate::jobs::JobManager;
 use crate::preview::Preview;
 use crate::recovery::{RecoveryStore, Restored};
 
@@ -29,6 +30,8 @@ pub struct AppState {
     recovery: RecoveryStore,
     /// Set in `setup` once the autosave thread runs; tests run without it.
     autosave: OnceLock<AutosaveHandle>,
+    /// Background work (import now; previews and export later).
+    pub jobs: JobManager,
 }
 
 /// What a save writes, taken under the lock and written without it.
@@ -62,7 +65,12 @@ impl SaveSnapshot {
 }
 
 impl AppState {
-    pub fn new(project: Project, preview: Option<Preview>, recovery: RecoveryStore) -> Self {
+    pub fn new(
+        project: Project,
+        preview: Option<Preview>,
+        recovery: RecoveryStore,
+        jobs: JobManager,
+    ) -> Self {
         let session = Session::new(project);
         let snapshot = ArcSwap::new(session.document.snapshot());
         if let Some(preview) = &preview {
@@ -75,6 +83,7 @@ impl AppState {
             preview,
             recovery,
             autosave: OnceLock::new(),
+            jobs,
         }
     }
 

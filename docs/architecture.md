@@ -39,7 +39,7 @@ flowchart LR
 | Module | Owner | Responsibility | Must not |
 |---|---|---|---|
 | `crates/app-core` | backend | model, `Command` + `Document` (undo/redo), JSON + migrations, `Time` | depend on GPU, media, Tauri or file I/O |
-| `crates/engine` | backend | Today: `GpuContext`, preview thread, test-pattern renderer. Target: render graph, decode, audio, export | know about Tauri. Target: reads `app-core` snapshots (ADR-0004) |
+| `crates/engine` | backend | Today: `GpuContext`, preview thread, test-pattern renderer. Target: render graph, `media` (probe, fingerprint, decode, preview generation, disk cache), audio, export | know about Tauri. Target: reads `app-core` snapshots (ADR-0004) |
 | `src-tauri` | backend (devops: `bundle`/updater) | IPC, app state, preview window, `media://` | contain model logic |
 | `effects/` (target) | backend | `effect.json` + `shader.wgsl` per effect | contain Rust code |
 | `ui` | frontend | rendering state, gestures, sending commands | mutate the model, hand-write IPC types |
@@ -153,8 +153,20 @@ sequenceDiagram
 
 - **Today:** one route, `/preview/frame` (legacy Linux frames mode only, unmaintained since
   2026-11-22, ADR-0005 amendment), with one OS thread per request.
-- **Target:** thumbnail and waveform routes served from a disk cache by a bounded pool, with cache
-  misses produced by jobs (ADR-0004). Binary data never goes through JSON IPC (ADR-0003).
+- **Target** (`docs/design/media-import.md`): `/poster/<id>`, `/filmstrip/<id>?tile=` and
+  `/waveform/<id>` by media id, served by a bounded handler pool from a content-keyed disk cache
+  under `%LOCALAPPDATA%\app.cutframe.editor\cache\media\v1`. A miss hands the responder to the
+  job manager, which generates the file and answers; no handler thread waits (ADR-0004). Binary data
+  never goes through JSON IPC (ADR-0003).
+
+## Flow 5: media import (target)
+
+Design: `docs/design/media-import.md`. `import_media` returns a `JobId` at once; a bounded job pool
+in `src-tauri` probes and fingerprints each file with `engine::media` (FFmpeg), then applies one
+`AddMedia` command (one undo step) and emits `project-changed`, `media-job-report` and
+`job-finished`. `Project.media` holds `MediaAsset`s (path, fingerprint, probe data: rotation, pixel
+aspect, colour, timestamps origin); missing/changed status is session state in `AppState`, not
+model data.
 
 ## Preview presentation
 

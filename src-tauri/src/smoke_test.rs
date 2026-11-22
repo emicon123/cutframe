@@ -17,6 +17,7 @@
 //! | 3 | Windows: the preview window has no surface (no adapter can present to it) |
 //! | 4 | Windows: fewer than [`FRAMES_TO_PRESENT`] frames presented within [`PRESENT_TIMEOUT`] |
 //! | 5 | the smoke test did not finish within [`OVERALL_TIMEOUT`] (hang) |
+//! | 6 | release build refused to start: the loaded FFmpeg is not the LGPL build (any run, not only the smoke test; see `ffmpeg_check.rs`) |
 
 use std::thread;
 use std::time::Duration;

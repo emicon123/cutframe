@@ -20,3 +20,13 @@ export function historyLabelText(label: string): string {
 export function errorKindText(kind: string): string {
   return lookup(t.errors.kinds, kind, t.errors.unknown);
 }
+
+/** Display text for a `MediaErrorKind`, e.g. `"damaged"` → "the file is damaged". */
+export function mediaErrorText(kind: string): string {
+  return lookup(t.mediaBin.errors, kind, t.mediaBin.unknownError);
+}
+
+/** Display text for a `JobStage`. */
+export function jobStageText(stage: string): string {
+  return lookup(t.mediaBin.job.stages, stage, t.mediaBin.job.unknownStage);
+}

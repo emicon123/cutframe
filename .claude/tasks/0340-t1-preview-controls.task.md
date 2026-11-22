@@ -13,10 +13,11 @@ Users need to trade quality for smoothness and see the frame large.
 - [ ] `F1.61` Preview quality setting (full / half / quarter resolution) — *missing*
 - [ ] `F1.62` Preview fit/zoom levels — *partial*
 - [ ] `F1.63` Full-screen preview — *missing*
+- [ ] `F1.17` Preview a media item in the player before adding it — *missing* (moved from 0230, `docs/design/media-import.md` §12)
 
 ## Scope
 
-- **backend:** preview resolution scale (full/half/quarter); full-screen presentation of the native preview window.
+- **backend:** preview resolution scale (full/half/quarter); full-screen presentation of the native preview window; a source-preview mode that plays one media asset (by `MediaId`) instead of the timeline (F1.17).
 - **frontend:** quality menu, fit/zoom levels, full-screen toggle (Esc to exit), hover skimming on the timeline with a toggle (hide the native window correctly, ADR-0005 airspace helper, review F11).
 
 ## Done when

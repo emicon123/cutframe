@@ -15,6 +15,8 @@ None directly: this task unblocks the feature tasks that depend on it.
 
 - design doc `docs/design/render-graph.md`: `render(snapshot, Time)` shared by preview and export, layer compositing order, colour pipeline baseline (8-bit vs 16-bit float, see F3.30/F3.33), frame cache, render on change vs continuous (review F14).
 - design doc `docs/design/playback.md`: Rust-owned transport, audio as master clock, `cpal` output thread with `rtrb` (no allocations/locks/I/O), mixer, A/V sync, dropped frames, `playbackTick` events replacing the UI-only playhead.
+- hardware decode in Tier 1 (user decision 2026-11-22, F3.45): D3D11VA/D3D12VA for HEVC, H.264 and AV1 with software fallback; decide the zero-copy path (D3D12VA on the shared device vs D3D11VA shared handles, review F16) with a spike that includes a 10-bit HEVC HDR phone clip; input in `docs/design/media-import.md` §5 (`FrameData::Cpu` / `FrameData::Gpu`).
+- HDR→SDR tone mapping in Tier 1 (user decision 2026-11-22, F3.31): HLG and PQ (incl. Dolby Vision 8.4/8.1 base layers) to SDR Rec.709 with one simple operator, applied per source layer at the YUV→RGB step inside the shared render graph so preview and export match; inputs are the probe fields `bitDepth`, `color`, `hdr` (`docs/design/media-import.md` §3); publish the operator constants so the CPU thumbnail path can reuse them. Working precision beyond that step stays task 0750 (F3.30).
 - accept or amend ADR-0004 and ADR-0005 if the design changes them; golden-frame test harness plan (review F44).
 
 ## Done when

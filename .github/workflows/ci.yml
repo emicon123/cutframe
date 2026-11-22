@@ -30,6 +30,39 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
+      # bindgen 0.71 (rusty_ffmpeg 0.16, FFmpeg 7.1) turns AVFormatContext & co. into opaque types
+      # with libclang 21+, so rsmpeg needs LLVM 20 (README). The runner image may ship a newer LLVM,
+      # so install the pinned 20.1.8 into the cache dir and point LIBCLANG_PATH at it before the
+      # FFmpeg step (fetch-ffmpeg.ps1 keeps an existing LIBCLANG_PATH).
+      - uses: actions/cache@v5
+        id: llvm-cache
+        with:
+          path: ${{ runner.temp }}\llvm-20.1.8
+          key: llvm-20.1.8-win64
+      - name: Install LLVM 20.1.8 (libclang for bindgen)
+        if: steps.llvm-cache.outputs.cache-hit != 'true'
+        run: |
+          $exe = Join-Path $env:RUNNER_TEMP 'LLVM-20.1.8-win64.exe'
+          Invoke-WebRequest -Uri 'https://github.com/llvm/llvm-project/releases/download/llvmorg-20.1.8/LLVM-20.1.8-win64.exe' -OutFile $exe
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()
+          if ($hash -ne '3197846a2b19063687dd56e93e34cd941e3548d907f23a6131571321bdf9fe7b') { throw "LLVM installer SHA-256 mismatch: $hash" }
+          $dest = Join-Path $env:RUNNER_TEMP 'llvm-20.1.8'
+          $p = Start-Process -FilePath $exe -ArgumentList '/S', "/D=$dest" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "LLVM installer exited with $($p.ExitCode)" }
+      - name: Use LLVM 20.1.8 for bindgen
+        run: |
+          $bin = Join-Path $env:RUNNER_TEMP 'llvm-20.1.8\bin'
+          if (-not (Test-Path -LiteralPath (Join-Path $bin 'libclang.dll'))) { throw "libclang.dll not found in $bin" }
+          "LIBCLANG_PATH=$bin" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # Pinned LGPL shared FFmpeg (scripts/ffmpeg.json): download, SHA-256 check, licence gate
+      # (scripts/check-ffmpeg-license.ps1 fails on any non-LGPL DLL or GPL configure flag), then
+      # FFMPEG_DIR / FFMPEG_INCLUDE_DIR / FFMPEG_LIBS_DIR / FFMPEG_LINK_MODE / LIBCLANG_PATH go to
+      # GITHUB_ENV and .ffmpeg\bin to GITHUB_PATH. Must run before any cargo step: src-tauri's
+      # bundle.resources glob needs .ffmpeg\bin\*.dll and rsmpeg links against .ffmpeg\lib.
+      - name: Provision FFmpeg (pinned, SHA-256 and LGPL checked)
+        run: ./scripts/fetch-ffmpeg.ps1
+
       # .gitattributes forces LF in every checkout (core.autocrlf=true included), so rustfmt and
       # Prettier see the same bytes as on any other machine.
       - run: cargo fmt --all --check
@@ -79,6 +112,9 @@ jobs:
         env:
           NO_COLOR: "1" # plain tracing output, no ANSI escapes
         run: |
+          # Like a user's machine: the installed exe must load the FFmpeg DLLs that the installer put
+          # next to it, not the provisioned .ffmpeg\bin that the build steps put on PATH.
+          $env:Path = ($env:Path -split ';' | Where-Object { $_ -notlike '*\.ffmpeg\bin' }) -join ';'
           $installer = Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
           Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait
           $dir = Join-Path $env:LOCALAPPDATA 'Cutframe'
@@ -92,6 +128,7 @@ jobs:
             3 = 'no adapter can present to the native preview window'
             4 = 'fewer than 30 frames presented to the preview window within 20 s'
             5 = 'watchdog: the smoke test did not finish within 90 s (hang)'
+            6 = 'linked FFmpeg failed the LGPL licence check'
           }
 
           # The release exe is a GUI-subsystem app: Start-Process -Wait loses its log, piping keeps
@@ -127,6 +164,21 @@ jobs:
             Fail "fewer than 30 frames presented: $line"
           }
           Write-Host "Smoke test passed: $line"
+
+      # Licence gate on what users actually get: the DLLs the installer put next to the .exe.
+      # Separate steps, so each one fails on its own exit code.
+      - name: Installed FFmpeg DLLs are the pinned LGPL build
+        run: ./scripts/check-ffmpeg-license.ps1 -Path (Join-Path $env:LOCALAPPDATA 'Cutframe')
+
+      - name: Installed FFmpeg licence and notice are present
+        run: |
+          foreach ($f in 'licenses\ffmpeg\LICENSE.txt', 'licenses\ffmpeg\NOTICE.txt') {
+            $p = Join-Path (Join-Path $env:LOCALAPPDATA 'Cutframe') $f
+            if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { throw "missing $p" }
+          }
+          if (-not (Select-String -LiteralPath (Join-Path $env:LOCALAPPDATA 'Cutframe\licenses\ffmpeg\LICENSE.txt') -Pattern 'GNU LESSER GENERAL PUBLIC LICENSE' -Quiet)) {
+            throw 'licenses\ffmpeg\LICENSE.txt is not the LGPL text'
+          }
 
       - uses: actions/upload-artifact@v7
         with:

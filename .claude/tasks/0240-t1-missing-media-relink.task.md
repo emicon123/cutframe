@@ -1,7 +1,7 @@
 # Task 0240: Missing media detection and relink
 
-**Tier:** 1 · **Agents:** `backend`, `frontend` · **Depends on:** `0230`
-**Spec:** `docs/feature-catalog.md` (feature IDs below), `docs/adr/`, `docs/design/`, `CLAUDE.md`
+**Tier:** 1 · **Agents:** `backend`, `frontend` · **Depends on:** `0230`, `0100`
+**Spec:** `docs/design/media-import.md` (§6.6, §12 task 0240), `docs/feature-catalog.md` (feature IDs below), `docs/adr/`, `CLAUDE.md`
 
 ## Why
 
@@ -13,8 +13,9 @@ Projects break when media moves; relink is expected in every editor.
 
 ## Scope
 
-- **backend:** detect missing assets on open; relink one file or search a folder by name + fingerprint; relink is undoable.
-- **frontend:** relink dialog; missing media shown with an offline placeholder in bin, timeline and preview.
+- **backend:** `MediaStatus` (online/offline/changed) as session state in `AppState`; on open a background `checkingMedia` job resolves relative-then-absolute paths (ADR-0002 §7) and compares fingerprints; runtime offline detection on open/decode failure.
+- **backend:** `RelinkMedia` (undoable), `relink_media(id, path, allow_mismatch)` and `relink_media_folder(folder)` as jobs; folder relink matches by fingerprint only (same name tried first) and is one `Batch` undo step (design §6.6).
+- **frontend:** relink dialog (one file, whole folder, mismatch confirmation); offline/changed badges in the media panel. The offline placeholder on timeline clips is task 0260 and in the preview task 0320.
 
 ## Done when
 

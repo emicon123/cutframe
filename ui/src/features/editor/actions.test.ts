@@ -69,10 +69,11 @@ describe("menuModel", () => {
       [t.file.open, "Ctrl+O"],
       [t.file.save, "Ctrl+S"],
       [t.file.saveAs, "Ctrl+Shift+S"],
+      [t.file.importMedia, "Ctrl+I"],
       [t.file.projectSettings, ""],
       [t.file.exit, ""],
     ]);
-    expect(file?.items.filter((i) => i.kind === "separator")).toHaveLength(3);
+    expect(file?.items.filter((i) => i.kind === "separator")).toHaveLength(4);
   });
 
   it("names the undo and redo entries and disables them when there is nothing to do", () => {
@@ -98,7 +99,7 @@ describe("menuModel", () => {
   it("disables project actions before a project is loaded", () => {
     const file = actionItems(menuModel(ctx({ loaded: false }))[0]);
     const disabled = file.filter((i) => i.disabled).map((i) => i.id);
-    expect(disabled).toEqual(["save", "save-as", "project-settings"]);
+    expect(disabled).toEqual(["save", "save-as", "import-media", "project-settings"]);
   });
 
   it("checks the history panel toggle when the panel is open", () => {

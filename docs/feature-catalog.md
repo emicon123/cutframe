@@ -24,7 +24,9 @@ audit what already exists and to pick the next work items.
 - **Notes** flag architecture or licence constraints. The most common ones:
   - *LGPL:* FFmpeg is LGPL-only (`CLAUDE.md`). GPL encoders such as `libx264`/`libx265` are not
     allowed; H.264/HEVC encoding must use hardware or OS encoders (NVENC, Quick Sync, AMF, Media
-    Foundation) or a permissively licensed software encoder (e.g. OpenH264).
+    Foundation) or a permissively licensed software encoder. The bundled OpenH264 is excluded:
+    Cisco's patent licence covers only Cisco's own binaries downloaded at run time (review F28).
+    Selection lives in `engine::media::encoders` (allowlist plus a hard GPL/nonfree denylist).
   - *Model:* needs an ML model; licence, model size, CPU/GPU cost and offline use need an ADR.
   - *Content:* needs a library of licensed assets (music, stickers, stock footage, templates); that is
     a product/legal decision, not just code.
@@ -43,6 +45,7 @@ inserted between existing ones.
 |---|---|---|---|
 | 2026-11-21 | `2c0c2f7` | Tiers 0–1 | Tier 0: 6 done, 10 partial, 19 missing. Tier 1: 4 done, 9 partial, 86 missing (no media, clip editing, playback or export yet). |
 | 2026-11-22 | `f37e796` | F0.28, F0.29 | Done by task 0006 (edit transactions). Tier 0 now: 8 done, 10 partial, 17 missing. |
+| 2026-11-22 | `3841d6f` | F3.31, F3.45 | User decision on the media design: basic HDR→SDR tone mapping and hardware decode move to Tier 1 (Preview section, IDs kept; tasks 0310/0320/0330). Task 0700 and 0750 trimmed. |
 | 2026-11-22 | `8174ada` | Tiers 2–3 | Private hobby use (`CLAUDE.md` "Purpose"): 35 rows set to `n/a`; tasks 0620, 0790, 0820 and 0830 removed, others trimmed. |
 
 ## Tiers
@@ -123,19 +126,19 @@ inserted between existing ones.
 
 | ID | Feature | Notes | Status |
 |---|---|---|---|
-| F1.01 | Import video, audio and images via file dialog (multi-select) | | missing |
-| F1.02 | Drag and drop files from the OS into the media panel | | missing |
+| F1.01 | Import video, audio and images via file dialog (multi-select) | Backend (0220): `import_media_dialog(filterLabel)` opens the native multi-select dialog from Rust and starts an import job; one undo step `importMedia`; tests in `src-tauri/src/import.rs`. UI: Import button in the media panel and Ctrl+I (`features/media-bin/importActions.ts`, shortcut registry), progress bar with Cancel/Esc from job events (`stores/importStore.ts`, Vitest), plain media list. Needs manual verification in `pnpm dev` on Windows | partial |
+| F1.02 | Drag and drop files from the OS into the media panel | Backend (0220): `import_media(paths)` takes files and folders (recursive, `MEDIA_EXTENSIONS` only, max `MAX_IMPORT_FILES`). UI: media panel is the drop target via `getCurrentWebview().onDragDropEvent` with a hover highlight, hit-tested in CSS px (`features/media-bin/useFileDrop.ts`, `dropTarget.ts`, Vitest incl. a mocked drop); `dragDropEnabled` set in `tauri.conf.json`. Needs manual verification in `pnpm dev` on Windows | partial |
 | F1.03 | Drag and drop files from the OS directly onto the timeline | | missing |
-| F1.04 | Video containers: MP4, MOV, MKV, WebM, AVI, M4V | | missing |
-| F1.05 | Video codecs (decode): H.264, HEVC, VP8/VP9, AV1, ProRes, MPEG-2/4, MJPEG | Decoders are LGPL-safe | missing |
-| F1.06 | Audio formats: MP3, WAV, AAC/M4A, FLAC, OGG/Opus | | missing |
-| F1.07 | Image formats: JPG, PNG, WebP, BMP, TIFF, GIF (animated) | | missing |
-| F1.08 | HEIC/HEIF photos (phone pictures) | Check FFmpeg 7.x support | missing |
-| F1.09 | Media probing: duration, resolution, frame rate, codec, audio channels/sample rate | | missing |
-| F1.10 | Rotation metadata honoured (portrait phone videos) | | missing |
-| F1.11 | Variable frame rate sources play and cut correctly | | missing |
-| F1.12 | Non-square pixel aspect ratio and anamorphic sources displayed correctly | | missing |
-| F1.13 | Corrupt / unsupported files rejected with a clear message | | missing |
+| F1.04 | Video containers: MP4, MOV, MKV, WebM, AVI, M4V | Probe tests for MP4, MOV, MKV, WebM (no container duration), AVI, M4V, MPEG-PS (`crates/engine/tests/media_formats.rs`). Missing: UI import path | partial |
+| F1.05 | Video codecs (decode): H.264, HEVC, VP8/VP9, AV1, ProRes, MPEG-2/4, MJPEG | Decoders are LGPL-safe. Probe decodes the first frame of H.264, HEVC, VP8, VP9, AV1 (dav1d), ProRes, MPEG-2, MPEG-4, MJPEG in tests. Missing: playback decode (0310+) | partial |
+| F1.06 | Audio formats: MP3, WAV, AAC/M4A, FLAC, OGG/Opus | Probe tests for all five (codec, sample rate, channels, duration); multi-track files list every stream, default first. Missing: UI, audio playback | partial |
+| F1.07 | Image formats: JPG, PNG, WebP, BMP, TIFF, GIF (animated) | Probe tests: stills are `image` (no duration), animated GIF is `video`; animated WebP imports as a still (FFmpeg 7.1). Missing: UI, posters (0230) | partial |
+| F1.08 | HEIC/HEIF photos (phone pictures) | Supported, no libheif: FFmpeg 7.1 exposes phone tile grids as a stream group; the probe reports the grid size, decodes a tile and reads `irot` itself (`engine/src/media/heif.rs`; self-made grid fixture). Missing: tile composition for posters/preview (0230/0320), a check with a real phone HEIC on Windows, UI | partial |
+| F1.09 | Media probing: duration, resolution, frame rate, codec, audio channels/sample rate | `engine::media::probe` fills `MediaInfo` (plus pixel format, bit depth, colour, HDR/Dolby Vision metadata); shown in `MediaView`. Missing: UI list | partial |
+| F1.10 | Rotation metadata honoured (portrait phone videos) | Probe reads the display matrix (video), EXIF orientation (JPEG) and `irot` (HEIC); `display_size()` is upright; tests. Missing: applying it in posters and the render graph (0230/0310) | partial |
+| F1.11 | Variable frame rate sources play and cut correctly | Timing from timestamps (`Time::from_ticks`), sample-and-hold rule `engine::media::decode::frame_index_at`, VFR fixture test. Missing: playback and cutting (0250, 0310+) | partial |
+| F1.12 | Non-square pixel aspect ratio and anamorphic sources displayed correctly | Probe records `sampleAspect`; `display_size()` corrects the width (MPEG-2 4:3 SAR fixture). Missing: posters and render graph (0230/0310) | partial |
+| F1.13 | Corrupt / unsupported files rejected with a clear message | Per-file `MediaErrorKind` in `media-job-report` (`damaged`, `unsupportedFormat`, `unsupportedCodec`, ...); truncated, random, text and empty files tested. UI: result toast in the media panel with added / already imported / failed counts and per-file translated reasons (`importSummary.ts`, `i18n` keys per `MediaErrorKind`, Vitest). Needs manual verification in `pnpm dev` on Windows | partial |
 
 ### Media panel
 
@@ -207,6 +210,8 @@ inserted between existing ones.
 | F1.67 | Loop playback | | missing |
 | F1.68 | J/K/L shuttle (reverse / pause / forward, repeated presses speed up) | | missing |
 | F1.69 | Audio scrubbing while dragging the playhead | | missing |
+| F3.45 | Hardware-accelerated decoding (D3D11VA / D3D12VA on Windows) for HEVC, H.264, AV1 with software fallback | Moved from Tier 3 on 2026-11-22 (4K HEVC phone footage); ID kept. Zero-copy path decided in 0310; `docs/design/media-import.md` §5 | missing |
+| F3.31 | HDR sources (PQ/HLG, Rec.2020, Dolby Vision 8.x base layer) with tone mapping to SDR | Moved from Tier 3 on 2026-11-22 (phone records HDR); ID kept. One simple operator in the shared render graph so preview and export match; probe data in `docs/design/media-import.md` §3. Refinement and 10-bit pipeline: F3.30 | missing |
 
 ### Basic clip properties (inspector)
 
@@ -237,7 +242,7 @@ inserted between existing ones.
 | F1.87 | Resolution: 480p, 720p, 1080p, 2K, 4K (keeping project aspect) | | missing |
 | F1.88 | Frame rate: 24, 25, 30, 50, 60 fps | | missing |
 | F1.89 | Bitrate: low / recommended / high / custom | | missing |
-| F1.90 | H.264 export in MP4 | LGPL: hardware/OS encoder or OpenH264, never libx264 | missing |
+| F1.90 | H.264 export in MP4 | LGPL: hardware/OS encoder (Media Foundation's software H.264 encoder ships with Windows), never libx264; OpenH264 excluded (F28) | missing |
 | F1.91 | HEVC export in MP4/MOV | LGPL: hardware/OS encoder only | missing |
 | F1.92 | AAC audio in the export | | missing |
 | F1.93 | Export uses the same render graph as preview | Architecture rule 3 | missing |
@@ -465,7 +470,6 @@ inserted between existing ones.
 | F3.28 | Scopes: waveform, vectorscope, histogram, RGB parade | Out of scope (private hobby use): pro grading | n/a |
 | F3.29 | Colour match between clips | Out of scope (private hobby use): pro grading | n/a |
 | F3.30 | 10-bit (and higher) internal pipeline | Render graph | ? |
-| F3.31 | HDR sources (PQ/HLG, Rec.2020) with tone mapping to SDR | ADR: colour management | ? |
 | F3.32 | HDR export | Out of scope (private hobby use): YouTube delivery stays SDR | n/a |
 | F3.33 | Colour-space aware pipeline (Rec.709, sRGB, Display P3) | Out of scope (private hobby use): wide-gamut delivery not needed; Rec.709 only. Was: ADR | n/a |
 
@@ -489,7 +493,6 @@ inserted between existing ones.
 
 | ID | Feature | Notes | Status |
 |---|---|---|---|
-| F3.45 | Hardware-accelerated decoding (D3D11VA / DXVA2 on Windows) | | ? |
 | F3.46 | Proxy media: generate, toggle, auto-use for 4K / heavy codecs | | ? |
 | F3.47 | Render cache: pre-render heavy timeline sections | | ? |
 | F3.48 | Background analysis jobs queue (waveforms, proxies, stabilisation, transcription) | ADR: long-running jobs | ? |

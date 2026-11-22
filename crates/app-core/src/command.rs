@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::media::{MediaAsset, MediaId, MediaProblem, validate_asset};
 use crate::model::{Project, ProjectSettings, Track, TrackId, TrackKind};
 use crate::validate::ValidationError;
 
@@ -18,6 +19,8 @@ pub enum HistoryLabel {
     RenameTrack,
     RenameProject,
     SetProjectSettings,
+    /// One import job: every file it added.
+    ImportMedia,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -26,6 +29,10 @@ pub enum CommandError {
     TrackNotFound(TrackId),
     #[error("name must not be empty")]
     EmptyName,
+    #[error("media {0} is already in the project")]
+    DuplicateMedia(MediaId),
+    #[error("media {id} is invalid: {problem}")]
+    InvalidMedia { id: MediaId, problem: MediaProblem },
     /// A gesture is open; commit or cancel it before running another edit (ADR-0006 §3).
     #[error("a gesture is in progress")]
     GestureInProgress,
@@ -298,6 +305,53 @@ impl Command for SetProjectSettings {
     }
 }
 
+/// Appends imported media assets (one import job = one history entry, design §3).
+///
+/// The ids are fixed when the job builds the command, so redo recreates the same ids. Fails,
+/// changing nothing, if an id is already in the project or repeats within `assets`, or if an asset
+/// breaks a media invariant.
+#[derive(Debug)]
+pub struct AddMedia {
+    assets: Vec<MediaAsset>,
+}
+
+impl AddMedia {
+    pub fn new(assets: Vec<MediaAsset>) -> Self {
+        Self { assets }
+    }
+
+    pub fn ids(&self) -> impl Iterator<Item = MediaId> + '_ {
+        self.assets.iter().map(|a| a.id)
+    }
+}
+
+impl Command for AddMedia {
+    fn label(&self) -> HistoryLabel {
+        HistoryLabel::ImportMedia
+    }
+
+    fn apply(&mut self, project: &mut Project) -> Result<(), CommandError> {
+        let mut ids: std::collections::HashSet<MediaId> =
+            project.media.iter().map(|m| m.id).collect();
+        for asset in &self.assets {
+            if !ids.insert(asset.id) {
+                return Err(CommandError::DuplicateMedia(asset.id));
+            }
+            validate_asset(asset).map_err(|problem| CommandError::InvalidMedia {
+                id: asset.id,
+                problem,
+            })?;
+        }
+        project.media.extend(self.assets.iter().cloned());
+        Ok(())
+    }
+
+    fn revert(&mut self, project: &mut Project) {
+        let ids: std::collections::HashSet<MediaId> = self.ids().collect();
+        project.media.retain(|m| !ids.contains(&m.id));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -395,6 +449,7 @@ mod tests {
             (HistoryLabel::RenameTrack, "renameTrack"),
             (HistoryLabel::RenameProject, "renameProject"),
             (HistoryLabel::SetProjectSettings, "setProjectSettings"),
+            (HistoryLabel::ImportMedia, "importMedia"),
         ];
         for (label, key) in keys {
             assert_eq!(serde_json::to_value(label).unwrap(), key);
@@ -484,9 +539,141 @@ mod tests {
     }
 
     #[test]
+    fn add_media_is_reversible_and_keeps_ids_on_redo() {
+        use crate::media::samples;
+        let mut project = Project::new("Test");
+        project.media.push(samples::image(9));
+        let assets = vec![samples::video(1), samples::audio(2)];
+        let ids: Vec<_> = assets.iter().map(|a| a.id).collect();
+        let command = AddMedia::new(assets);
+        assert_eq!(command.label(), HistoryLabel::ImportMedia);
+        let after = assert_reversible(command, &project);
+        let after_ids: Vec<_> = after.media.iter().map(|m| m.id).collect();
+        assert_eq!(after_ids, [vec![project.media[0].id], ids].concat());
+    }
+
+    #[test]
+    fn add_media_rejects_duplicate_ids_and_changes_nothing() {
+        use crate::media::samples;
+        let mut project = Project::new("Test");
+        let existing = samples::video(1);
+        project.media.push(existing.clone());
+        let original = project.clone();
+
+        let mut again = existing.clone();
+        again.path.absolute = "C:\\elsewhere.mp4".into();
+        let mut edited = project.clone();
+        assert_eq!(
+            AddMedia::new(vec![samples::audio(2), again]).apply(&mut edited),
+            Err(CommandError::DuplicateMedia(existing.id))
+        );
+
+        let twice = samples::audio(3);
+        let mut edited = project.clone();
+        let err = AddMedia::new(vec![twice.clone(), twice.clone()]).apply(&mut edited);
+        assert_eq!(err, Err(CommandError::DuplicateMedia(twice.id)));
+
+        // `Document::execute` applies to a draft, so a failed apply leaves the project untouched.
+        let mut doc = crate::Document::new(project);
+        assert!(
+            doc.execute(Box::new(AddMedia::new(vec![twice.clone(), twice])))
+                .is_err()
+        );
+        assert_eq!(*doc.project(), original);
+        assert!(!doc.can_undo());
+    }
+
+    #[test]
+    fn add_media_rejects_invalid_assets() {
+        use crate::media::samples;
+        let mut project = Project::new("Test");
+        let mut broken = samples::video(1);
+        broken.fingerprint.hash = "nope".into();
+        assert_eq!(
+            AddMedia::new(vec![broken.clone()]).apply(&mut project),
+            Err(CommandError::InvalidMedia {
+                id: broken.id,
+                problem: MediaProblem::InvalidHash
+            })
+        );
+    }
+
+    #[test]
     fn rename_project_is_reversible() {
         let project = Project::new("Test");
         let after = assert_reversible(RenameProject::new("Holiday"), &project);
         assert_eq!(after.name, "Holiday");
+    }
+
+    mod props {
+        use proptest::prelude::*;
+
+        use super::*;
+        use crate::Document;
+        use crate::media::{samples, validate_media};
+
+        #[derive(Debug, Clone)]
+        enum Op {
+            /// Import this many assets; `with_duplicate` repeats the first id, so the import fails.
+            Import {
+                count: usize,
+                with_duplicate: bool,
+            },
+            Undo,
+            Redo,
+        }
+
+        fn op() -> impl Strategy<Value = Op> {
+            prop_oneof![
+                3 => (0usize..4, any::<bool>())
+                    .prop_map(|(count, with_duplicate)| Op::Import { count, with_duplicate }),
+                2 => Just(Op::Undo),
+                1 => Just(Op::Redo),
+            ]
+        }
+
+        proptest! {
+            /// Random imports with undo/redo keep the media invariants, never lose or reorder
+            /// assets, and undoing everything restores the start state.
+            #[test]
+            fn imports_with_undo_redo_keep_media_valid(ops in prop::collection::vec(op(), 0..40)) {
+                let start = Project::new("Test");
+                let mut doc = Document::new(start.clone());
+                let mut seed = 0u8;
+                for op in ops {
+                    let before = doc.snapshot();
+                    match op {
+                        Op::Import { count, with_duplicate } => {
+                            let mut assets: Vec<_> = (0..count)
+                                .map(|i| {
+                                    seed = seed.wrapping_add(1);
+                                    match i % 3 {
+                                        0 => samples::video(seed),
+                                        1 => samples::audio(seed),
+                                        _ => samples::image(seed),
+                                    }
+                                })
+                                .collect();
+                            if with_duplicate && let Some(first) = assets.first().cloned() {
+                                assets.push(first);
+                            }
+                            let result = doc.execute(Box::new(AddMedia::new(assets.clone())));
+                            if with_duplicate && count > 0 {
+                                prop_assert!(result.is_err());
+                                prop_assert_eq!(&doc.snapshot(), &before);
+                            } else {
+                                prop_assert!(result.is_ok());
+                                prop_assert_eq!(&doc.project().media[before.media.len()..], &assets[..]);
+                            }
+                        }
+                        Op::Undo => { doc.undo(); }
+                        Op::Redo => { doc.redo(); }
+                    }
+                    prop_assert_eq!(validate_media(&doc.project().media), Ok(()));
+                }
+                while doc.undo() {}
+                prop_assert_eq!(doc.project(), &start);
+            }
+        }
     }
 }

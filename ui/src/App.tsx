@@ -8,10 +8,12 @@ import { ProjectSettingsDialog } from "@/features/project/ProjectSettingsDialog"
 import { RecoveryDialog } from "@/features/project/RecoveryDialog";
 import { UnsavedChangesDialog } from "@/features/project/UnsavedChangesDialog";
 import { useWindowTitle } from "@/features/project/useWindowTitle";
+import { startJobSync } from "@/ipc/jobSync";
 import { startProjectSync } from "@/ipc/projectSync";
 import { useUiStore } from "@/stores/uiStore";
 
 export function App() {
+  useEffect(() => startJobSync(), []);
   useEffect(() => startProjectSync(), []);
   useEffect(() => installShortcuts(), []);
   useWindowTitle();

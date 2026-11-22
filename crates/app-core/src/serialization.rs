@@ -9,7 +9,7 @@ use serde_json::Value;
 use crate::model::Project;
 use crate::validate::ValidationError;
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LoadError {
@@ -85,10 +85,19 @@ fn schema_version(value: &Value) -> Result<u32, LoadError> {
 
 /// Upgrades a project document of a supported older `version` to the current one. Each step sets
 /// `schemaVersion` to the version it produces.
-fn migrate(value: Value, version: u32) -> Value {
-    // No older versions exist yet. Add steps here, e.g.:
-    // if version < 2 { value = v1_to_v2(value); }
-    let _ = version;
+fn migrate(mut value: Value, version: u32) -> Value {
+    if version < 2 {
+        value = v1_to_v2(value);
+    }
+    value
+}
+
+/// v2 adds the media list (design `media-import.md` §8). A v1 project has no media.
+fn v1_to_v2(mut value: Value) -> Value {
+    if let Some(project) = value.as_object_mut() {
+        project.insert("media".to_owned(), Value::Array(Vec::new()));
+        project.insert("schemaVersion".to_owned(), Value::from(2));
+    }
     value
 }
 
@@ -112,6 +121,81 @@ mod tests {
             project.tracks[0].clips[0].duration.flicks(),
             3 * crate::time::FLICKS_PER_SECOND
         );
+    }
+
+    #[test]
+    fn v1_fixture_migrates_to_an_empty_media_list() {
+        let project = from_json(include_str!("../tests/fixtures/project-v1.json")).unwrap();
+        assert_eq!(project.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(project.media.is_empty());
+    }
+
+    #[test]
+    fn loads_v2_fixture_and_round_trips_it() {
+        use crate::media::{HdrTransfer, MediaKind, Rotation, validate_media};
+
+        let project = from_json(include_str!("../tests/fixtures/project-v2.json")).unwrap();
+        assert_eq!(project.name, "Fixture v2");
+        assert_eq!(validate_media(&project.media), Ok(()));
+        let kinds: Vec<_> = project.media.iter().map(|m| m.kind).collect();
+        assert_eq!(
+            kinds,
+            [MediaKind::Video, MediaKind::Audio, MediaKind::Image]
+        );
+
+        let video = project.media[0].info.video.as_ref().unwrap();
+        assert_eq!(video.rotation, Rotation::Cw90);
+        assert_eq!(video.display_size(), (1080, 1920));
+        assert_eq!(
+            video.frame_rate,
+            Some(crate::Rational::new(30000, 1001).unwrap())
+        );
+        let hdr = video.hdr.unwrap();
+        assert_eq!(hdr.transfer, HdrTransfer::Hlg);
+        assert_eq!(hdr.dolby_vision.unwrap().compatibility_id, 4);
+        assert_eq!(project.media[0].path.relative, None);
+        assert_eq!(project.media[0].file_name(), "IMG_0042.MOV");
+
+        assert_eq!(from_json(&to_json(&project)).unwrap(), project);
+    }
+
+    /// The serialized form is the file format (ADR-0002 §2): this pins the media part of it, so a
+    /// change that would need a migration fails here first.
+    #[test]
+    fn media_serialized_form_is_stable() {
+        let mut project = Project::new("Canonical");
+        project.media.push(crate::media::samples::video(1));
+        let value: Value = serde_json::from_str(&to_json(&project)).unwrap();
+        assert_eq!(value["schemaVersion"], 2);
+        let media = &value["media"][0];
+        let mut keys: Vec<_> = media.as_object().unwrap().keys().cloned().collect();
+        keys.sort();
+        assert_eq!(keys, ["fingerprint", "id", "info", "kind", "path"]);
+        assert_eq!(media["kind"], "video");
+        assert_eq!(media["path"]["relative"], Value::Null);
+        assert_eq!(media["fingerprint"]["hash"], "01".repeat(16));
+        let video = &media["info"]["video"];
+        for key in [
+            "streamIndex",
+            "codec",
+            "width",
+            "height",
+            "sampleAspect",
+            "rotation",
+            "frameRate",
+            "pixelFormat",
+            "bitDepth",
+            "color",
+            "hdr",
+        ] {
+            assert!(video.get(key).is_some(), "video.{key}");
+        }
+        assert_eq!(video["rotation"], "none");
+        assert_eq!(
+            video["sampleAspect"],
+            serde_json::json!({ "num": 1, "den": 1 })
+        );
+        assert_eq!(media["info"]["audio"][0]["sampleRate"], 48_000);
     }
 
     #[test]
