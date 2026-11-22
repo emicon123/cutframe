@@ -189,9 +189,10 @@ stateDiagram-v2
 - **Platform:** Windows 10/11 x64 is the only platform for shipping, development and CI (ADR-0001
   amendment of 2026-11-22). Linux code paths (`frames` mode, lavapipe fallback, `cfg(not(windows))`
   branches) remain but are not maintained or tested.
-- **Quality gates:** local `pnpm check` on the Windows development machine is the primary gate.
-  Windows CI (`windows-latest`) is the second line: a clean checkout running the same checks plus the
-  CI-only ones listed in `CLAUDE.md`, and the NSIS installer with a silent install and `--smoke-test`.
+- **Quality gates:** local `pnpm check` on the Windows development machine is the gate.
+  Windows CI (`windows-latest`) runs only when started manually: a clean checkout running the same
+  checks plus the CI-only ones listed in `CLAUDE.md`, and the NSIS installer with a silent install
+  and `--smoke-test`.
 - **Shipping:** NSIS `currentUser` installer built on `windows-latest`. The updater is not configured
   yet; there is no code signing (private use, ADR-0001 amendment).
 - **FFmpeg:** there is no FFmpeg in the code yet. **Target:** pinned, checksummed LGPL FFmpeg DLLs,

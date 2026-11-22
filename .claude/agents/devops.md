@@ -28,7 +28,7 @@ with no updater (open review item F31; code signing, F32, is dropped: private us
 
 ```
 .github/workflows/
-├── ci.yml                  on PR/push: one Windows job (fmt, ui gates, clippy, tests, bindings, deny, installer, smoke test)
+├── ci.yml                  manual only (workflow_dispatch): one Windows job (fmt, ui gates, clippy, tests, bindings, deny, installer, smoke test)
 └── release.yml             on tag v*: Windows build → NSIS → updater artifacts → draft release
 scripts/
 ├── setup-dev-windows.ps1   (target) winget: Rustup, LLVM, Node, pnpm; then fetch-ffmpeg
@@ -68,10 +68,12 @@ capabilities). Those belong to `backend`. Coordinate when a change spans both.
 7. **Draft release:** the workflow creates a draft. A human publishes it, and publishing is what makes
    the updater see it.
 
-## CI (pull requests and main)
+## CI (manual only)
 
-- **Local checks are the primary gate.** `pnpm check` on the developer's Windows machine runs the same
-  checks as CI in the same order; CI is the second line on a clean checkout. Keep the two in step:
+- **Local checks are the gate.** `pnpm check` on the developer's Windows machine runs the same
+  checks as CI in the same order. CI has no push or PR trigger (decision of 2026-11-22); it runs only
+  via `gh workflow run ci.yml`, as an optional clean-checkout run before a release or after packaging
+  changes. Do not re-add automatic triggers without the user's OK. Keep the two in step:
   a check added to `ci.yml` also goes into the root `package.json` `check` script (cargo-deny is
   the exception, it is not assumed to be installed locally).
 - **Windows only** (`windows-latest`, one job): cheap checks first to fail fast (`cargo fmt --check`,

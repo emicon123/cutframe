@@ -56,8 +56,8 @@ Not yet dependencies (pick current versions when they land, not here): FFmpeg 7.
 - every row above is at its latest stable version, or the row says why it is held back
 - `pnpm check` (includes the Prettier check and the UI build) and `cargo deny --all-features check`
   pass locally on Windows
-- CI is green on the Windows job (checks, installer + smoke test) with no Node.js deprecation
-  annotations
+- one manual CI run (`gh workflow run ci.yml`) is green (checks, installer + smoke test) with no
+  Node.js deprecation annotations; this is the place where the bumped actions get exercised
 - a `v*` tag test is **not** required; a local `pnpm tauri build` + silent install + `--smoke-test`
   (as in `ci.yml`) is enough to prove the release path
 - `docs/adr/0001-tech-stack.md` version table/notes updated if it lists versions

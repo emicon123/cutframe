@@ -1,9 +1,9 @@
 name: CI
 
+# Manual only (decision of 2026-11-22): local checks on the Windows machine are the gate, so CI does
+# not run on push or pull requests. Start it with `gh workflow run ci.yml` when a clean-checkout run
+# is wanted (before a release, after packaging changes).
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 concurrency:
@@ -15,7 +15,7 @@ env:
 
 jobs:
   # Windows is the only platform (CLAUDE.md, decision of 2026-11-22). Local checks on the developer's
-  # Windows machine are the primary gate; this job is the second line on a clean checkout.
+  # Windows machine are the gate; this job is an optional, manually started clean-checkout run.
   # Cheap checks run first so a formatting or UI error fails within minutes, before the Rust build.
   windows:
     name: Windows (checks, tests, licences, installer, smoke test)

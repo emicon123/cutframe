@@ -123,8 +123,9 @@ Decided by the user on 2026-11-22.
 - **Windows 10/11 x64 is the only platform** for shipping, development and CI. Linux ARM64 (Raspberry
   Pi 5, Debian 13) is no longer a development or CI platform, and requirement 4 is withdrawn.
 - **Quality gates:** the local checks on the Windows development machine (`pnpm check`) are the
-  primary gate. Windows CI is the second line: a clean checkout running the same checks, plus the
-  NSIS installer and the `--smoke-test`.
+  gate. Windows CI runs only when started manually (`workflow_dispatch`, no push or PR trigger):
+  an optional clean checkout running the same checks, plus the NSIS installer and the
+  `--smoke-test`, used before a release or after packaging changes.
 - **Existing Linux code paths** (the `frames` preview mode, the lavapipe software fallback,
   `cfg(not(windows))` branches) stay in the code for now but are no longer maintained or tested.
   Removing them is a separate, later decision (see the ADR-0005 amendment).
