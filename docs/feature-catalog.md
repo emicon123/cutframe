@@ -30,11 +30,19 @@ audit what already exists and to pick the next work items.
     a product/legal decision, not just code.
   - *ADR:* cross-cutting; starts with the `architect` agent.
 
+## Work plan
+
+Every feature of tiers 0–3 that is not `done` belongs to exactly one task file in `.claude/tasks/`:
+`01xx` tier 0, `02xx`–`04xx` tier 1, `05xx`–`06xx` tier 2, `07xx`–`08xx` tier 3. Design tasks for the
+`architect` come before the feature tasks they unblock. Numbers step by 10, so new tasks can be
+inserted between existing ones.
+
 ## Audit log
 
 | Date | Commit | Scope | Result |
 |---|---|---|---|
 | 2026-11-21 | `2c0c2f7` | Tiers 0–1 | Tier 0: 6 done, 10 partial, 19 missing. Tier 1: 4 done, 9 partial, 86 missing (no media, clip editing, playback or export yet). |
+| 2026-11-22 | `f37e796` | F0.28, F0.29 | Done by task 0006 (edit transactions). Tier 0 now: 8 done, 10 partial, 17 missing. |
 
 ## Tiers
 
@@ -92,8 +100,8 @@ audit what already exists and to pick the next work items.
 | ID | Feature | Notes | Status |
 |---|---|---|---|
 | F0.27 | Undo / redo for every model change (Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y) | Architecture rule 1; All 4 commands undoable (`Document`), history cap 500; Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y and top-bar buttons | done |
-| F0.28 | Continuous gestures (drag, slider) coalesce into one undo step | Task 0006 (ADR-0006) | missing |
-| F0.29 | Multi-step operations are one atomic transaction | Task 0006 (ADR-0006) | missing |
+| F0.28 | Continuous gestures (drag, slider) coalesce into one undo step | `Batch` + gestures (`EditPhase`, `cancel_gesture`) in `app-core`, UI gesture helper (task 0006); new drags must use it | done |
+| F0.29 | Multi-step operations are one atomic transaction | `Batch` command in `app-core` (task 0006) | done |
 | F0.30 | Undo/redo menu items show the action name | Undo/redo tooltips show `undoLabel`/`redoLabel` | done |
 | F0.31 | History panel (list of steps, jump back) | | missing |
 

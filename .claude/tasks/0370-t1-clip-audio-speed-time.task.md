@@ -1,0 +1,31 @@
+# Task 0370: Volume, fades, speed, reverse, freeze frame
+
+**Tier:** 1 · **Agents:** `backend`, `frontend` · **Depends on:** `0330`
+**Spec:** `docs/feature-catalog.md` (feature IDs below), `docs/adr/`, `docs/design/`, `CLAUDE.md`
+
+## Why
+
+Remaining basic clip properties for an MVP edit.
+
+## Features
+
+- [ ] `F1.77` Clip volume (percent / dB) — *missing*
+- [ ] `F1.78` Audio fade in / fade out — *missing*
+- [ ] `F1.79` Constant speed change (e.g. 0.1×–100×) with duration updated — *missing*
+- [ ] `F1.80` Preserve pitch when changing speed (toggle) — *missing*
+- [ ] `F1.81` Reverse clip — *missing*
+- [ ] `F1.82` Freeze frame (insert a still of the current frame) — *missing*
+- [ ] `F1.83` Default duration for still images; image duration change — *missing*
+
+## Scope
+
+- **backend:** clip volume and fades in the mixer; constant speed with duration update and pitch-preserving time-stretch (permissive-licence library or own implementation; no GPL); reverse (reverse decode or cached render); freeze frame insert; image default duration from preferences.
+- **frontend:** inspector controls and timeline speed badge.
+
+## Done when
+
+- 2× and 0.5× clips play in sync with pitch preserved when the toggle is on
+- every feature above works end-to-end in `pnpm dev` and has tests (`app-core` unit/property tests for commands, Vitest for UI logic, golden frames for rendering)
+- each row above is updated in `docs/feature-catalog.md` (status + short evidence note); partial rows say what is missing
+- `pnpm check` passes; after any IPC change `pnpm bindings` is re-run and `ui/src/bindings.ts` committed
+- architecture rules in `CLAUDE.md` hold (model changes are undoable commands, no frames over JSON IPC, integer flicks, LGPL-only FFmpeg, no reference-product names or assets)
