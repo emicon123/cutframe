@@ -892,9 +892,8 @@ because export uses it.
 
 ## 13. Changes to other designs
 
-None of these change a decision; they make the hand-offs explicit. Items 1, 2, 4 and 5 were
-applied with this design on 2026-11-22. Items 3 and 7 are done by task 0390; item 6 waits until
-PR #2 (media import), which also edits `docs/architecture.md`, has merged.
+None of these change a decision; they make the hand-offs explicit. Items 1, 2, 4, 5 and 6 were
+applied with this design on 2026-11-22. Items 3 and 7 are done by task 0390.
 
 1. **render-graph.md §4.5:** `RenderedFrame` borrows the renderer, so the canvas cannot be
    overwritten while it is in use:
