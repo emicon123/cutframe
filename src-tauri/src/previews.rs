@@ -12,7 +12,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 
 use app_core::media::FilmstripLayout;
 use app_core::{MediaAsset, MediaId, Project};
@@ -101,7 +101,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// See the module docs.
 pub struct Previews {
-    cache: Option<PreviewCache>,
+    /// Swapped when the cache folder preference changes or the cache is cleared.
+    cache: RwLock<Option<Arc<PreviewCache>>>,
     generate: Box<Generator>,
     inflight: Mutex<HashMap<Key, Vec<Waiter>>>,
     failed: Mutex<HashSet<Key>>,
@@ -110,7 +111,7 @@ pub struct Previews {
 impl std::fmt::Debug for Previews {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Previews")
-            .field("cache", &self.cache)
+            .field("cache", &self.cache())
             .finish_non_exhaustive()
     }
 }
@@ -126,22 +127,39 @@ impl Previews {
 
     pub fn with_generator(cache: Option<PreviewCache>, generate: Box<Generator>) -> Self {
         Self {
-            cache,
+            cache: RwLock::new(cache.map(Arc::new)),
             generate,
             inflight: Mutex::default(),
             failed: Mutex::default(),
         }
     }
 
+    /// The cache in use now (a clone of the `Arc`, so no lock is held during file I/O).
+    fn cache(&self) -> Option<Arc<PreviewCache>> {
+        self.cache
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Moves the cache to `cache_root` (the effective cache folder from the preferences, design
+    /// `preferences.md` §4), or reopens it there after **Clear cache**. Takes effect for the next
+    /// request; the old folder is left as it is. Failures to remember are forgotten too, so a
+    /// cleared cache retries everything.
+    pub fn set_cache_root(&self, cache_root: &Path) {
+        let cache = open_cache(cache_root).map(Arc::new);
+        *self.cache.write().unwrap_or_else(PoisonError::into_inner) = cache;
+        lock(&self.failed).clear();
+    }
+
     /// The cached bytes of `key`.
     pub fn cached(&self, key: &Key) -> Option<Vec<u8>> {
-        self.cache.as_ref()?.get(&key.hash, key.product)
+        self.cache()?.get(&key.hash, key.product)
     }
 
     /// Cheap check for the prefetch plan: the file exists (it is not read).
     fn is_cached(&self, key: &Key) -> bool {
-        self.cache
-            .as_ref()
+        self.cache()
             .and_then(|c| c.path(&key.hash, key.product))
             .is_some_and(|p| p.is_file())
     }
@@ -192,7 +210,7 @@ impl Previews {
         });
         match generated {
             Ok(bytes) => {
-                if let Some(cache) = &self.cache
+                if let Some(cache) = self.cache()
                     && let Err(err) = cache.put(&key.hash, key.product, &bytes)
                 {
                     tracing::warn!(%err, "could not cache a preview");
@@ -237,7 +255,7 @@ impl Previews {
 
     /// Startup housekeeping: deletes old cache versions, then evicts.
     pub fn clean_up(&self) {
-        if let Some(cache) = &self.cache {
+        if let Some(cache) = self.cache() {
             cache.remove_old_versions();
         }
         self.evict();
@@ -245,7 +263,7 @@ impl Previews {
 
     /// Deletes least recently used cache folders until the cache is under its cap.
     pub fn evict(&self) {
-        if let Some(cache) = &self.cache {
+        if let Some(cache) = self.cache() {
             match cache.evict() {
                 Ok(0) => {}
                 Ok(n) => tracing::info!(folders = n, "evicted cached previews"),
@@ -475,6 +493,34 @@ pub(crate) mod tests {
         previews.produce(&key, &missing, &NEVER);
         assert_eq!(rx.recv().unwrap(), Outcome::Unavailable);
         assert!(!previews.has_failed(&key), "retried on the next request");
+    }
+
+    #[test]
+    fn the_cache_follows_the_cache_folder() {
+        let calls = Arc::default();
+        let (first, cache) = temp_cache("root-a");
+        let previews = Previews::with_generator(
+            Some(cache),
+            fake_generator(Arc::clone(&calls), Duration::ZERO),
+        );
+        let asset = samples::video(1);
+        let key = Key::new(&asset, Product::Poster);
+        assert!(previews.attach(key.clone(), Box::new(|_| {})));
+        previews.produce(&key, &asset, &NEVER);
+        assert!(previews.cached(&key).is_some());
+
+        // Another cache folder (preference change): empty, under `<root>/media/v1`.
+        let second = first.with_extension("moved");
+        std::fs::remove_dir_all(&second).ok();
+        previews.set_cache_root(&second);
+        assert!(previews.cached(&key).is_none());
+        assert!(second.join(MEDIA_CACHE_SUBFOLDER).join("v1").is_dir());
+        assert!(previews.attach(key.clone(), Box::new(|_| {})));
+        previews.produce(&key, &asset, &NEVER);
+        assert!(previews.cached(&key).is_some());
+        assert!(first.join("v1").is_dir(), "the old folder is left as it is");
+        std::fs::remove_dir_all(first).ok();
+        std::fs::remove_dir_all(second).ok();
     }
 
     #[test]

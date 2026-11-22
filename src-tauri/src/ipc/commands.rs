@@ -485,7 +485,11 @@ pub async fn set_preferences(
     .await?
     .map_err(|err| IpcError::io(&err))?;
 
-    let previous = store.replace(preferences.clone(), root);
+    let previous = store.replace(preferences.clone(), root.clone());
+    if previous.cache_root(store.app_cache_dir()) != root {
+        // Previews move to the new folder at once; the old one is left alone (it regenerates).
+        state.previews.set_cache_root(&root);
+    }
     if previous.autosave_interval != preferences.autosave_interval {
         state.set_autosave_interval(preferences.autosave_duration());
     }
@@ -527,5 +531,7 @@ pub async fn clear_cache(state: State<'_, AppState>) -> Result<CacheInfo, IpcErr
     })
     .await?
     .map_err(|err| IpcError::io(&err))?;
+    // Forget remembered failures and session state of the deleted previews.
+    state.previews.set_cache_root(&root);
     Ok(CacheInfo::new(&root, stats))
 }
