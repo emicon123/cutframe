@@ -15,6 +15,7 @@ Core MVP step: media panel → timeline.
 - [ ] `F1.26` Overlay video tracks above the main track (picture-in-picture) — *partial*
 - [ ] `F1.27` Audio tracks below the main track — *partial*
 - [ ] `F1.28` Tracks created automatically when dropping onto empty space; empty tracks removed — *partial*
+- [ ] `F1.18` "Used in timeline" badge — *missing* (moved from 0230, `docs/design/media-import.md` §12)
 
 ## Scope
 
@@ -22,7 +23,8 @@ Design: `docs/design/timeline-editing.md` (§3 model, §4.1, §9 migration, §13
 
 - **backend (model first):** the clip/track model of §3: `ClipSource` (media + `sourceIn` / colour / text), `LinkId`, keyframe-ready `VisualProps`/`AudioProps` (`Animated<T>`), `Project.mainTrack`/`magnetic`/`background`, `Track.locked`; extended `Project::validate`; schema bump + migration + fixtures (§9; if the media migration landed first, this is the next step); view types and specta; shared helpers (`place_clip`, `repack_main`, `normalize_links`, `follow_main`: clips on unlocked non-main tracks follow main-track ripples via derived anchors, with bumping on collision, §3.7).
 - **backend:** `add_clips(sources, placement)` (append / insert at playhead / drop on a track or a new track, one undo step); `add_track` clamps into the right section; the main track cannot be removed; emptied tracks are removed on commit; `RemoveClipsOfMedia` added to the remove-media batch from task 0230.
-- **frontend:** drag from media panel and from Explorer onto the timeline with a drop preview (Explorer drop = import entry + add entry); `+` button on media items; main track drawn distinctly.
+- **frontend:** drag from media panel and from Explorer onto the timeline with a drop preview (Explorer drop = import entry + add entry); `+` button on media items; main track drawn distinctly. Internal drags use pointer events, not HTML5 drag-and-drop (`docs/design/media-import.md` §2).
+- **backend + frontend (from 0230/0240):** `MediaView.usedBy` counts clips and drives the used-in-timeline badge; clips of offline media draw an offline placeholder.
 
 ## Done when
 

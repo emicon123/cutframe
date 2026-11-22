@@ -15,6 +15,7 @@ None directly: this task unblocks the feature tasks that depend on it.
 
 - design doc `docs/design/render-graph.md`: `render(snapshot, Time)` shared by preview and export, layer compositing order, colour pipeline baseline (8-bit vs 16-bit float, see F3.30/F3.33), frame cache, render on change vs continuous (review F14).
 - design doc `docs/design/playback.md`: Rust-owned transport, audio as master clock, `cpal` output thread with `rtrb` (no allocations/locks/I/O), mixer, A/V sync, dropped frames, `playbackTick` events replacing the UI-only playhead.
+- decide zero-copy decode for D3D12 (D3D12VA on the shared device vs D3D11VA shared handles, review F16), with the spike input in `docs/design/media-import.md` §5; the decoder already returns `FrameData::Cpu` with room for a GPU variant.
 - accept or amend ADR-0004 and ADR-0005 if the design changes them; golden-frame test harness plan (review F44).
 
 ## Done when

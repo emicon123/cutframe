@@ -14,6 +14,7 @@ None directly: this task unblocks the feature tasks that depend on it.
 ## Scope
 
 - **backend:** engine depends on `app-core`, reads the `ArcSwap` snapshot, decodes the needed frames and composites video/overlay/image tracks at the playhead; render on change only (review F14); golden-frame tests with `insta` (review F44).
+- **backend:** apply each source's `rotation`, `sampleAspect`, `origin` and colour info from the media model; timestamp-based frame selection (sample and hold, VFR-safe); an offline placeholder frame for clips whose media is offline (`docs/design/media-import.md` §5, §6.6).
 - **backend:** the native preview and offscreen targets (`--smoke-test`, golden frames) use the same graph (ADR-0005 §6). The legacy Linux frames mode is out of scope (ADR-0005 amendment 2026-11-22).
 
 ## Done when

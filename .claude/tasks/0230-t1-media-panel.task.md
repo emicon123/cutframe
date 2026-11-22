@@ -1,7 +1,7 @@
 # Task 0230: Media panel with thumbnails and waveforms
 
 **Tier:** 1 · **Agents:** `backend`, `frontend` · **Depends on:** `0220`
-**Spec:** `docs/feature-catalog.md` (feature IDs below), `docs/adr/`, `docs/design/`, `CLAUDE.md`
+**Spec:** `docs/design/media-import.md` (§4 routes, §6.3–6.4, §12 task 0230), `docs/feature-catalog.md` (feature IDs below), `docs/adr/`, `CLAUDE.md`
 
 ## Why
 
@@ -12,8 +12,6 @@ Users pick clips visually; the media bin is an empty placeholder today.
 - [ ] `F1.14` Grid of media with thumbnail, name, duration, type icon — *missing*
 - [ ] `F1.15` List view alternative — *missing*
 - [ ] `F1.16` Hover-scrub thumbnail preview (skimming) — *missing*
-- [ ] `F1.17` Preview a media item in the player before adding it — *missing*
-- [ ] `F1.18` "Used in timeline" badge — *missing*
 - [ ] `F1.19` Sort and filter (type, name, date, duration) — *missing*
 - [ ] `F1.20` Search by name — *missing*
 - [ ] `F1.21` Remove media from project (with warning if used) — *missing*
@@ -22,8 +20,11 @@ Users pick clips visually; the media bin is an empty placeholder today.
 
 ## Scope
 
-- **backend:** background thumbnail/filmstrip/waveform generation into the cache, served over `media://` (never JSON IPC); remove-media command (undoable, warns if used).
-- **frontend:** grid and list views, hover-scrub skimming, preview in the player before adding, used-in-timeline badge, sort/filter/search, show in Explorer.
+- **backend:** bounded `media://` handler pool with deferred responders and an in-flight map (review F12); routes `/poster/<id>`, `/filmstrip/<id>?tile=`, `/waveform/<id>` by id with `?v=` (design §4, §6.3).
+- **backend:** content-keyed disk cache under `app_local_data_dir()\cache\media\v1` (atomic writes, version folders, 2 GiB LRU eviction) and the poster/filmstrip/waveform generators; background preview job after import and after open (design §5, §6.4).
+- **backend:** `RemoveMedia` + `remove_media` (undoable; refuses with `MediaInUse` while clips use it, which can only happen from 0260 on), `reveal_media`.
+- **frontend:** grid and list views, hover-scrub skimming over filmstrip tiles, waveform items, sort/filter/search, remove with confirmation, Show in Explorer, background progress.
+- **moved out:** F1.17 (preview in the player) → 0340; F1.18 (used-in-timeline badge) and the "warn if used" path of F1.21 → 0260 (design §12).
 
 ## Done when
 

@@ -1,7 +1,7 @@
 # Task 0220: Import and probe media
 
 **Tier:** 1 · **Agents:** `backend`, `frontend` · **Depends on:** `0210`
-**Spec:** `docs/feature-catalog.md` (feature IDs below), `docs/adr/`, `docs/design/`, `CLAUDE.md`
+**Spec:** `docs/design/media-import.md` (§3–§6, §12 task 0220), `docs/feature-catalog.md` (feature IDs below), `docs/adr/`, `CLAUDE.md`
 
 ## Why
 
@@ -24,9 +24,12 @@ First step of the MVP: get video, audio and images into the project.
 
 ## Scope
 
-- **backend:** `import_media(paths)` job per the design: probe, add assets (undoable), report progress and per-file errors.
-- **backend:** format coverage tests with tiny fixture files per container/codec (keep fixtures small and licence-clean).
-- **frontend:** Import button + file dialog, drag and drop from Explorer onto the media panel; clear message for unsupported/corrupt files.
+- **backend:** `app-core` media model (`MediaId`, `MediaAsset`, `MediaInfo`, `Rational`, `Time::from_ticks`), `AddMedia` (`importMedia`), schema v1 → v2 migration + `project-v2.json` fixture, media rules for `Project::validate` (design §3, §8). Assets store `absolute` paths only; `relative` waits for task 0100.
+- **backend:** `engine::media::probe` and `fingerprint` (BLAKE3 over size + first/last 1 MiB): rotation, pixel aspect, timestamp-based (VFR-safe) timing, HEIC tile grids or a clear `unsupportedFormat` (design §5).
+- **backend:** the shared job manager (bounded pool, interactive/background queues, `cancel_job`, `job-progress`, `job-finished`, `IpcError::Cancelled`) and `import_media(paths)` / `import_media_dialog()`: per-file outcomes in `media-job-report`, duplicates skipped by fingerprint, all successes added as one undo step, nothing added on cancel (design §4, §6.1–6.2).
+- **backend:** `MediaView` in `ProjectState`, constants `MEDIA_EXTENSIONS` etc. via `Builder::constant`; `cargo deny` for the new crates (`blake3`, `tauri-plugin-dialog`).
+- **backend:** format coverage tests with tiny committed fixtures per container/codec (≤ 2 MB total, self-generated, licence-clean; design §10).
+- **frontend:** Import button + Ctrl+I (dialog opened from Rust), drag and drop from Explorer onto the media panel via Tauri's drag-drop event (internal drags use pointer events, design §2), progress with cancel, result toast with translated per-file reasons, a plain list of imported items (the grid is 0230).
 
 ## Done when
 
