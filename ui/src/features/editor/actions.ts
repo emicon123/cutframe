@@ -8,6 +8,8 @@ import { run } from "@/stores/appStore";
 import { type ProjectState, useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
 
+import { resetPanelLayout, togglePanel } from "./layout";
+
 /** A key combination. Ctrl also matches Cmd; any combination with Alt never matches. */
 export type KeyBinding = {
   /** `KeyboardEvent.key`, compared case-insensitively. */
@@ -29,7 +31,12 @@ export type ActionContext = {
   undoLabel: string | null;
   redoLabel: string | null;
   historyPanelOpen: boolean;
+  mediaBinOpen: boolean;
+  inspectorOpen: boolean;
 };
+
+/** The UI-store part of the context. */
+export type UiFlags = Pick<ActionContext, "historyPanelOpen" | "mediaBinOpen" | "inspectorOpen">;
 
 export type ActionId =
   | "new-project"
@@ -41,7 +48,11 @@ export type ActionId =
   | "exit"
   | "undo"
   | "redo"
+  | "preferences"
   | "history-panel"
+  | "toggle-media-bin"
+  | "toggle-inspector"
+  | "reset-panel-layout"
   | "keyboard-shortcuts";
 
 /**
@@ -142,10 +153,33 @@ export const ACTIONS: readonly Action[] = [
     run: () => void run(commands.redo()),
   },
   {
+    id: "preferences",
+    label: t.edit.preferences,
+    shortcuts: [{ key: ",", ctrl: true }],
+    run: () => ui().setPreferencesOpen(true),
+  },
+  {
     id: "history-panel",
     label: t.view.historyPanel,
     checked: (ctx) => ctx.historyPanelOpen,
     run: () => ui().setHistoryPanelOpen(!ui().historyPanelOpen),
+  },
+  {
+    id: "toggle-media-bin",
+    label: t.view.mediaBin,
+    checked: (ctx) => ctx.mediaBinOpen,
+    run: () => togglePanel("mediaBin"),
+  },
+  {
+    id: "toggle-inspector",
+    label: t.view.inspector,
+    checked: (ctx) => ctx.inspectorOpen,
+    run: () => togglePanel("inspector"),
+  },
+  {
+    id: "reset-panel-layout",
+    label: t.view.resetPanelLayout,
+    run: resetPanelLayout,
   },
   {
     id: "keyboard-shortcuts",
@@ -185,12 +219,30 @@ export const MENUS: readonly Menu[] = [
       "exit",
     ],
   },
-  { id: "edit", label: t.menu.edit, items: ["undo", "redo", SEPARATOR, "history-panel"] },
-  { id: "view", label: t.menu.view, items: ["history-panel", SEPARATOR, "keyboard-shortcuts"] },
+  {
+    id: "edit",
+    label: t.menu.edit,
+    items: ["undo", "redo", SEPARATOR, "history-panel", SEPARATOR, "preferences"],
+  },
+  {
+    id: "view",
+    label: t.menu.view,
+    items: [
+      "toggle-media-bin",
+      "toggle-inspector",
+      "history-panel",
+      SEPARATOR,
+      "reset-panel-layout",
+      SEPARATOR,
+      "keyboard-shortcuts",
+    ],
+  },
   { id: "help", label: t.menu.help, items: ["keyboard-shortcuts"] },
 ];
 
-export function actionContext(state: ProjectState | null, historyPanelOpen: boolean): ActionContext {
+const NO_UI_FLAGS: UiFlags = { historyPanelOpen: false, mediaBinOpen: false, inspectorOpen: false };
+
+export function actionContext(state: ProjectState | null, flags: UiFlags = NO_UI_FLAGS): ActionContext {
   const history = state?.history;
   return {
     loaded: state !== null,
@@ -198,20 +250,30 @@ export function actionContext(state: ProjectState | null, historyPanelOpen: bool
     canRedo: history?.canRedo ?? false,
     undoLabel: history?.undoLabel ?? null,
     redoLabel: history?.redoLabel ?? null,
-    historyPanelOpen,
+    ...flags,
+  };
+}
+
+type UiStoreState = ReturnType<typeof useUiStore.getState>;
+
+function uiFlags(s: UiStoreState): UiFlags {
+  return {
+    historyPanelOpen: s.historyPanelOpen,
+    mediaBinOpen: !s.collapsedPanels.mediaBin,
+    inspectorOpen: !s.collapsedPanels.inspector,
   };
 }
 
 /** The current context, for the keyboard handler (outside React). */
 export function currentActionContext(): ActionContext {
-  return actionContext(useProjectStore.getState().state, useUiStore.getState().historyPanelOpen);
+  return actionContext(useProjectStore.getState().state, uiFlags(useUiStore.getState()));
 }
 
 /** The context for components; re-renders only when one of its fields changes. */
 export function useActionContext(): ActionContext {
-  const historyPanelOpen = useUiStore((s) => s.historyPanelOpen);
-  const project = useProjectStore(useShallow((s) => actionContext(s.state, false)));
-  return { ...project, historyPanelOpen };
+  const flags = useUiStore(useShallow(uiFlags));
+  const project = useProjectStore(useShallow((s) => actionContext(s.state)));
+  return { ...project, ...flags };
 }
 
 export function getAction(id: ActionId, actions: readonly Action[] = ACTIONS): Action {

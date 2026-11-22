@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { events, mockCommands, type MockCommandHandlers } from "@/bindings";
+import { fileActions } from "@/features/project/fileActions";
 import { recovery } from "@/features/project/recovery";
 import { type ProjectState, useProjectStore } from "@/stores/projectStore";
 import { useAppStore } from "@/stores/appStore";
@@ -29,7 +30,7 @@ afterEach(() => {
   stop = undefined;
   vi.restoreAllMocks();
   useProjectStore.setState({ state: null });
-  useAppStore.setState({ info: null, lastError: null });
+  useAppStore.setState({ info: null, lastError: null, gpuNotice: null });
 });
 
 function mockStartup(
@@ -39,6 +40,7 @@ function mockStartup(
 ) {
   mockCommands({
     listRecovery: () => [],
+    takeLaunchPath: () => null,
     ...extra,
     cancelGesture,
     getProject: () => {
@@ -106,5 +108,67 @@ describe("startProjectSync", () => {
     stop = startProjectSync();
     await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(1));
     expect(calls.at(-1)).toBe("load at revision 3");
+  });
+
+  it("opens the launch path before the recovery check", async () => {
+    const calls: string[] = [];
+    mockStartup(() => null, calls, {
+      takeLaunchPath: () => {
+        calls.push("takeLaunchPath");
+        return "D:\\v\\a.cutframe";
+      },
+      openProject: ({ path }) => {
+        calls.push(`openProject ${path}`);
+        return null;
+      },
+    });
+    const load = vi.spyOn(recovery, "load").mockImplementation(() => {
+      calls.push("recovery");
+      return Promise.resolve();
+    });
+
+    stop = startProjectSync();
+    await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+    expect(calls.slice(-3)).toEqual(["takeLaunchPath", "openProject D:\\v\\a.cutframe", "recovery"]);
+  });
+
+  it("still offers recovery when there is no launch path or taking it fails", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const calls: string[] = [];
+    mockStartup(() => null, calls, {
+      takeLaunchPath: () => {
+        throw new Error("not allowed");
+      },
+    });
+    const openPath = vi.spyOn(fileActions, "openPath");
+    const load = vi.spyOn(recovery, "load").mockResolvedValue();
+
+    stop = startProjectSync();
+    await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+    expect(openPath).not.toHaveBeenCalled();
+  });
+
+  it("opens a file forwarded by a second launch through the guarded open", async () => {
+    const calls: string[] = [];
+    mockStartup(() => null, calls);
+    vi.spyOn(recovery, "load").mockResolvedValue();
+    const openPath = vi.spyOn(fileActions, "openPath").mockResolvedValue();
+
+    stop = startProjectSync();
+    await vi.waitFor(() => expect(useProjectStore.getState().state?.revision).toBe(3));
+    await events.openFileRequested.emit({ path: "E:\\b.cutframe" });
+    await vi.waitFor(() => expect(openPath).toHaveBeenCalledWith("E:\\b.cutframe"));
+  });
+
+  it("replaces the app info on appInfoChanged and shows the GPU notice", async () => {
+    const calls: string[] = [];
+    mockStartup(() => null, calls);
+    vi.spyOn(recovery, "load").mockResolvedValue();
+
+    stop = startProjectSync();
+    await vi.waitFor(() => expect(useAppStore.getState().info?.version).toBe("0.0.0"));
+    await events.appInfoChanged.emit({ version: "0.0.0", gpu: null, previewMode: "unavailable" });
+    await vi.waitFor(() => expect(useAppStore.getState().info?.previewMode).toBe("unavailable"));
+    expect(useAppStore.getState().gpuNotice).toEqual({ kind: "previewLost" });
   });
 });

@@ -68,8 +68,8 @@ inserted between existing ones.
 | ID | Feature | Notes | Status |
 |---|---|---|---|
 | F0.01 | App starts into a main editor window with the standard layout: media/library panel, preview, inspector (properties), timeline | `EditorLayout.tsx`: top bar, media bin, preview, inspector, timeline, status bar | done |
-| F0.02 | Resizable, collapsible panels; layout persisted between sessions | Resizable via `ResizablePanelGroup`; not collapsible, sizes not persisted | partial |
-| F0.03 | Window size/position/maximised state persisted | | missing |
+| F0.02 | Resizable, collapsible panels; layout persisted between sessions | Media bin, inspector and timeline collapse past their minimum size; View → Media bin / Inspector toggles; sizes and collapsed state in `localStorage` via `useDefaultLayout` (`layout.editor.v1.*`) behind an exception-safe wrapper; Reset panel layout (View menu, Preferences → General). Vitest: `features/editor/layout.test.ts`, `actions.test.ts`. Manual check on Windows pending | done |
+| F0.03 | Window size/position/maximised state persisted | `tauri-plugin-window-state` (size, position, maximised), Rust side only; no UI code. Manual check on Windows pending (restart, disconnected second monitor) | done |
 | F0.04 | Dark theme (default), consistent design system | `index.html` `class="dark"`, Tailwind tokens + shadcn/ui | done |
 | F0.05 | Main menu / command bar (File, Edit, View, Help) with shortcuts shown | `MainMenu` generated from the action registry (`features/editor/actions.ts`): File (New, Open…, Save, Save As…, Project settings…, Exit via the unsaved prompt), Edit (named Undo/Redo, History panel), View, Help; disabled states; Vitest tests; manual check in `pnpm dev` on Windows pending | done |
 | F0.06 | Default keyboard shortcuts for all common actions | Every existing action that needs one has a shortcut in the registry: Ctrl+N/O/S/Shift+S, Ctrl+Z, Ctrl+Shift+Z/Ctrl+Y, `?`/Ctrl+/; ignored in text fields and overlays; playback/edit shortcuts (Space, J/K/L, S, Delete, arrows) are registered with their features; Vitest tests; manual check in `pnpm dev` on Windows pending | done |
@@ -79,9 +79,9 @@ inserted between existing ones.
 | F0.10 | About dialog with version and third-party licence notices (FFmpeg LGPL notice, source offer) | LGPL compliance requirement; Version shown in the status bar only; no licence notices | missing |
 | F0.11 | Per-user NSIS installer, no admin rights | Hard constraint; `tauri.conf.json` `installMode: currentUser`; CI installs silently and smoke-tests | done |
 | F0.12 | Automatic updates (check, download, install, restart) | Hard constraint; No updater plugin or config; no Authenticode signing by design (private use, ADR-0001 amendment) | missing |
-| F0.13 | GPU / hardware-acceleration capability detection with graceful fallback | Adapter/backend/software (WARP) detected and shown; preview `unavailable` fallback; no hardware decode/encode yet | partial |
-| F0.14 | Single-instance handling (opening a project file focuses the running app) | | missing |
-| F0.15 | File association for the project file extension | devops; Extension not decided (ADR-0002, H5) | missing |
+| F0.13 | GPU / hardware-acceleration capability detection with graceful fallback | Adapter, backend, device type, driver, WARP and fallback reason reported (Preferences → Performance, status-bar warning icon with tooltip); runtime device loss recovers on hardware, then WARP, then `unavailable`, with a status-bar notice (`features/editor/gpuNotice.ts`, tests). Missing: hardware decode/encode detection (arrives with FFmpeg; shown as "Not detected in this version"). Manual `dxcap -forcetdr` check on Windows pending | partial |
+| F0.14 | Single-instance handling (opening a project file focuses the running app) | `tauri-plugin-single-instance` forwards the path (`openFileRequested`); the UI opens it through `fileActions.openPath` (unsaved prompt, ignored during another file action); cold start: `takeLaunchPath` before the recovery check (Vitest: `ipc/projectSync.test.ts`, `fileActions.test.ts`). Manual check on Windows (installed build: closed / open clean / dirty / minimised) pending | partial |
+| F0.15 | File association for the project file extension | NSIS `fileAssociations` for `.cutframe` (per-user, HKCU), CI install/uninstall registry checks, config test against `PROJECT_FILE_EXTENSION`; the launch path is opened at startup. Manual double-click check on Windows pending | partial |
 
 ### Projects
 
@@ -92,7 +92,7 @@ inserted between existing ones.
 | F0.18 | Project settings: canvas resolution, aspect ratio, frame rate | Changing them later must not break the timeline; `set_project_settings` is one undo entry and keeps clip flicks bit-exact (app-core proptest); File > Project settings… dialog: presets 16:9 / 4K / 9:16 Shorts / 1:1 or custom even 16-8192, rational frame rates incl. 23.976 and 29.97, derived aspect ratio (`ProjectSettingsDialog.tsx`, `settings.ts`, Vitest). Manual check in `pnpm dev` on Windows done 2026-11-22 | done |
 | F0.19 | Save project (explicit save + Save As) | ADR-0002: atomic save (temp + rename, `.v<N>.bak`); `save_project` / `save_project_as`; File > Save / Save As…, Ctrl+S / Ctrl+Shift+S, native save dialog filtered to `.cutframe` (default name = project name), Save without a file runs Save As; dirty `*` in the window title. Manual save → quit → open check in `pnpm dev` on Windows done 2026-11-22 | done |
 | F0.20 | Open project from file and from the recent list | `open_project` (load → migrate → validate; failed open changes nothing, errors translated by `IpcError.kind`); File > Open… / Ctrl+O with native dialog and unsaved prompt. Missing: the recent-projects list (task 0120). Manual check in `pnpm dev` on Windows done 2026-11-22 | partial |
-| F0.21 | Autosave at a configurable interval | Background `autosave` thread writes the committed state to app-data `recovery/` every 60 s while dirty, never over the project file; interval fixed, configurable in task 0150 | partial |
+| F0.21 | Autosave at a configurable interval | Background `autosave` thread writes the committed state to app-data `recovery/` while dirty, never over the project file; interval 15–3600 s (default 60 s) or off in Preferences → General (`setPreferences` → `SetInterval`) | done |
 | F0.22 | Crash recovery: offer to restore the last autosave | `listRecovery`/`restoreRecovery`/`discardRecovery` + startup "Recover unsaved work" dialog (Restore behind the unsaved prompt, Discard, Later); Rust + Vitest tests; manual kill test on Windows pending | done |
 | F0.23 | Rename / duplicate / delete project from the home screen | Rename only (`RenameProject` from the inspector); no home screen | partial |
 | F0.24 | Project-file schema version and forward migrations | ADR; `schemaVersion` + `migrate()` chain, v1 fixture test, rejects newer files; ADR-0002 Proposed | done |
@@ -113,10 +113,10 @@ inserted between existing ones.
 
 | ID | Feature | Notes | Status |
 |---|---|---|---|
-| F0.32 | Preferences dialog (general, editing defaults, performance, cache, shortcuts) | | missing |
-| F0.33 | Default image duration, default transition duration | | missing |
-| F0.34 | Cache location and size; "clear cache" | Thumbnails, waveforms, proxies; No cache exists yet | missing |
-| F0.35 | UI language setting (English first, Polish later) | Strings centralised in `i18n/en.ts`, so a locale switch is easy to add | missing |
+| F0.32 | Preferences dialog (general, editing defaults, performance, cache, shortcuts) | Edit → Preferences… (Ctrl+,): General, Editing, Performance (read-only GPU report), Cache, Shortcuts (opens the shortcut reference; rebinding is a non-goal). Save sends the full object; a rejected field stays open and marked. Hides the native preview. Vitest: `features/preferences/*.test.ts(x)`. Manual check on Windows pending | done |
+| F0.33 | Default image duration, default transition duration | Stored in `preferences.json` as flicks (0.1–600 s, 0.1–10 s), edited in Preferences → Editing; read by the later tasks that add images and transitions | done |
+| F0.34 | Cache location and size; "clear cache" | Folder, size (exact 64-bit, `formatBytes`), Change… (native folder picker), Use default folder and Clear cache (with confirmation) wired in Preferences → Cache; only `cutframe-cache/` is ever deleted. Missing: nothing is cached yet (thumbnails, waveforms, proxies arrive later) | partial |
+| F0.35 | UI language setting (English first, Polish later) | `language` preference with a selector in Preferences → General and `setLocale` in `i18n/index.ts`; only English exists, so Polish (F3.74) is missing | partial |
 
 ---
 

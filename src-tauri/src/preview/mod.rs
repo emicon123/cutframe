@@ -8,15 +8,17 @@
 #[cfg(windows)]
 mod windows;
 
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use app_core::ProjectSettings;
-use engine::preview::PreviewHandle;
+use engine::preview::{GpuChanged, PreviewHandle};
 use engine::render::{GpuError, GpuInfo, OffscreenFrame};
-use tauri::{AppHandle, WebviewWindow};
+use tauri::{AppHandle, Manager, WebviewWindow};
+use tauri_specta::Event;
 
-use crate::ipc::types::{PreviewMode, PreviewRect};
+use crate::ipc::events::AppInfoChanged;
+use crate::ipc::types::{AppInfo, PreviewMode, PreviewRect};
 
 /// Largest frame served to the UI in `frames` mode.
 const MAX_FRAME_SIZE: (u32, u32) = (1920, 1080);
@@ -36,6 +38,7 @@ impl Preview {
     /// Returns `None` when no GPU is available; the app keeps working without a preview.
     pub fn create(main: &WebviewWindow, settings: &ProjectSettings) -> Option<Self> {
         let visibility = Mutex::new(Visibility::INITIAL);
+        let on_gpu_changed = report_gpu_changes(main.app_handle().clone());
 
         #[cfg(windows)]
         {
@@ -55,6 +58,7 @@ impl Preview {
                     aspect(settings),
                     child.raw_window_handle(),
                     Some(windows::raw_display_handle()),
+                    on_gpu_changed,
                 )
             };
             // If the engine fails, the hidden child window is left behind; it is harmless.
@@ -69,7 +73,7 @@ impl Preview {
         #[cfg(not(windows))]
         {
             let _ = main;
-            let engine = start(PreviewHandle::spawn(aspect(settings)))?;
+            let engine = start(PreviewHandle::spawn(aspect(settings), on_gpu_changed))?;
             Some(Self { engine, visibility })
         }
     }
@@ -87,15 +91,13 @@ impl Preview {
         self.engine.presented_frames()
     }
 
+    /// The platform's mode, or `unavailable` once the engine gave up after GPU losses.
     pub fn mode(&self) -> PreviewMode {
-        if cfg!(windows) {
-            PreviewMode::Native
-        } else {
-            PreviewMode::Frames
-        }
+        preview_mode(self.engine.is_available())
     }
 
-    pub fn gpu_info(&self) -> &GpuInfo {
+    /// The GPU in use now; changes after a runtime device loss.
+    pub fn gpu_info(&self) -> Arc<GpuInfo> {
         self.engine.gpu_info()
     }
 
@@ -208,6 +210,30 @@ impl Visibility {
         *self = next;
         (next.shown() != before).then_some(next.shown())
     }
+}
+
+fn preview_mode(available: bool) -> PreviewMode {
+    if !available {
+        PreviewMode::Unavailable
+    } else if cfg!(windows) {
+        PreviewMode::Native
+    } else {
+        PreviewMode::Frames
+    }
+}
+
+/// The engine's GPU-changed callback: emits `AppInfoChanged` from the preview thread.
+fn report_gpu_changes(app: AppHandle) -> GpuChanged {
+    Box::new(move |info, available| {
+        let event = AppInfoChanged(AppInfo {
+            version: app.package_info().version.to_string(),
+            gpu: Some((&info).into()),
+            preview_mode: preview_mode(available),
+        });
+        if let Err(err) = event.emit(&app) {
+            tracing::error!(%err, "cannot report the GPU change to the UI");
+        }
+    })
 }
 
 /// Logs a failed engine start and syncs a started engine with `Visibility::INITIAL`.

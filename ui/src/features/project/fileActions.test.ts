@@ -139,6 +139,38 @@ describe("openProject", () => {
   });
 });
 
+describe("openPath", () => {
+  it("opens the path behind the unsaved-changes prompt", async () => {
+    const deps = fake({ dirty: true, choice: "discard" });
+    await createFileActions(deps).openPath("D:\\v\\a.cutframe");
+    expect(deps.calls).toEqual(["askUnsaved", "openProject D:\\v\\a.cutframe"]);
+  });
+
+  it("does nothing when the prompt is cancelled", async () => {
+    const deps = fake({ dirty: true, choice: "cancel" });
+    await createFileActions(deps).openPath("D:\\a.cutframe");
+    expect(deps.calls).toEqual(["askUnsaved"]);
+  });
+
+  it("reports a failed open like File → Open", async () => {
+    const deps = fake({ failing: "openProject" });
+    await createFileActions(deps).openPath("D:\\missing.cutframe");
+    expect(deps.calls.at(-1)).toBe("error Error: openProject failed");
+  });
+
+  it("is ignored while another file action is running", async () => {
+    const deps = fake({ dirty: true });
+    let answer: (choice: UnsavedChoice) => void = () => undefined;
+    deps.askUnsaved = vi.fn(() => new Promise<UnsavedChoice>((resolve) => (answer = resolve)));
+    const actions = createFileActions(deps);
+    const first = actions.newProject();
+    await actions.openPath("D:\\a.cutframe");
+    answer("discard");
+    await first;
+    expect(deps.calls).toEqual(["newProject"]);
+  });
+});
+
 describe("save and saveAs", () => {
   it("save resolves true when written and does not open a dialog", async () => {
     const deps = fake({ saveWrites: true });

@@ -255,6 +255,26 @@ impl Previews {
     }
 }
 
+/// Subfolder of the cache root (preferences §4) that holds the media previews.
+pub const MEDIA_CACHE_SUBFOLDER: &str = "media";
+
+/// Opens the preview cache at `<cache_root>\media\v1`, where `cache_root` is the effective cache
+/// folder from the preferences (`<cacheDir or app cache dir>\cutframe-cache`). Without it previews
+/// are generated on every request.
+pub fn open_cache(cache_root: &Path) -> Option<PreviewCache> {
+    let root = cache_root.join(MEDIA_CACHE_SUBFOLDER);
+    match PreviewCache::open(&root, engine::media::cache::DEFAULT_CACHE_CAP) {
+        Ok(cache) => {
+            tracing::info!(dir = %cache.dir().display(), "preview cache");
+            Some(cache)
+        }
+        Err(err) => {
+            tracing::error!(%err, root = %root.display(), "cannot open the preview cache");
+            None
+        }
+    }
+}
+
 /// Starts the background preview job (stage `generatingPreviews`) for `ids`, or for every asset
 /// of the project when `ids` is `None` (after open). Generates, in order, all posters, then
 /// waveforms, then filmstrip tiles that are not cached yet; ids no longer in the project when a

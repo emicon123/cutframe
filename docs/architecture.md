@@ -202,6 +202,12 @@ stateDiagram-v2
   (`Project::validate`); `src-tauri` saves atomically (tmp + rename) off the main thread. Dirty state
   is the `Document` history position compared with the one at the last save. **Target** until task
   0100 lands; see `docs/design/project-lifecycle.md`.
+- **App-level state (target, tasks 0150/0160):** preferences in `app_config_dir()/preferences.json`
+  with their own `schemaVersion` and migrations, owned by `src-tauri/src/preferences.rs`, never undoable
+  (`docs/design/preferences.md`); window geometry via `tauri-plugin-window-state`; panel layout in
+  WebView `localStorage`. Single instance forwards launch paths to the running app as
+  `open-file-requested`; GPU loss is recovered on the `preview-render` thread and reported as
+  `app-info-changed` (`docs/design/platform-integration.md`).
 - **Platform:** Windows 10/11 x64 is the only platform for shipping, development and CI (ADR-0001
   amendment of 2026-11-22). Linux code paths (`frames` mode, lavapipe fallback, `cfg(not(windows))`
   branches) remain but are not maintained or tested.

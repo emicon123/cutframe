@@ -180,6 +180,67 @@ jobs:
             throw 'licenses\ffmpeg\LICENSE.txt is not the LGPL text'
           }
 
+      # File association (docs/design/platform-integration.md §5): Tauri's NSIS template writes it
+      # with `SHELL_CONTEXT` (= SHCTX), which `SetShellVarContext current` (installMode currentUser)
+      # maps to HKCU. The runner is an admin account, so a silent install cannot prove "no UAC";
+      # instead the installer's manifest must request `asInvoker` (RequestExecutionLevel user), and
+      # nothing may land in HKLM.
+      - name: File association is per-user (HKCU, no admin)
+        shell: pwsh
+        run: |
+          function Fail([string] $message) {
+            Write-Host "::error title=File association check failed::$message"
+            exit 1
+          }
+          $installer = Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          $bytes = [System.IO.File]::ReadAllBytes($installer.FullName)
+          $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+          if ($text -notmatch 'requestedExecutionLevel\s+level="(\w+)"') { Fail 'no requestedExecutionLevel in the installer manifest' }
+          if ($Matches[1] -ne 'asInvoker') { Fail "installer requests elevation: level=$($Matches[1])" }
+
+          $dir = Join-Path $env:LOCALAPPDATA 'Cutframe'
+          $exe = Get-ChildItem $dir -Filter *.exe | Where-Object { $_.Name -notlike 'uninstall*' } | Select-Object -First 1
+          if (-not $exe) { Fail "App not found in $dir" }
+          $ext = 'HKCU:\Software\Classes\.cutframe'
+          $progId = 'HKCU:\Software\Classes\Cutframe.Project'
+          if (-not (Test-Path $ext)) { Fail "$ext is missing" }
+          $extDefault = (Get-Item $ext).GetValue('')
+          if ($extDefault -ne 'Cutframe.Project') { Fail "$ext default is '$extDefault', expected 'Cutframe.Project'" }
+          if (-not (Test-Path "$progId\shell\open\command")) { Fail "$progId\shell\open\command is missing" }
+          $command = (Get-Item "$progId\shell\open\command").GetValue('')
+          $expected = '"{0}" "%1"' -f $exe.FullName
+          if ($command -ne $expected) { Fail "open command is '$command', expected '$expected'" }
+          foreach ($key in 'HKLM:\Software\Classes\.cutframe', 'HKLM:\Software\Classes\Cutframe.Project') {
+            if (Test-Path $key) { Fail "$key exists: the association must be per-user" }
+          }
+          Write-Host "Association OK: .cutframe -> Cutframe.Project -> $command (installer level=asInvoker)"
+
+      # APP_UNASSOCIATE deletes the ProgID key and restores `.cutframe`'s previous default value (empty
+      # on a fresh runner); it leaves the `.cutframe` key with a `Cutframe.Project_backup` value behind.
+      # `_?=` runs the uninstaller in place, so -Wait really waits for it (it does not delete itself).
+      - name: Uninstall silently and check the association is removed
+        shell: pwsh
+        run: |
+          function Fail([string] $message) {
+            Write-Host "::error title=Uninstall check failed::$message"
+            exit 1
+          }
+          $dir = Join-Path $env:LOCALAPPDATA 'Cutframe'
+          $uninstaller = Join-Path $dir 'uninstall.exe'
+          if (-not (Test-Path $uninstaller)) { Fail "$uninstaller is missing" }
+          $p = Start-Process -FilePath $uninstaller -ArgumentList '/S', "_?=$dir" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { Fail "uninstaller exited with $($p.ExitCode)" }
+          $progId = 'HKCU:\Software\Classes\Cutframe.Project'
+          if (Test-Path $progId) { Fail "$progId still exists after uninstall" }
+          $ext = 'HKCU:\Software\Classes\.cutframe'
+          if (Test-Path $ext) {
+            $extDefault = (Get-Item $ext).GetValue('')
+            if ($extDefault -eq 'Cutframe.Project') { Fail "$ext still points at Cutframe.Project" }
+          }
+          $left = Get-ChildItem $dir -Filter *.exe | Where-Object { $_.Name -notlike 'uninstall*' }
+          if ($left) { Fail "app exe still present after uninstall: $($left.FullName -join ', ')" }
+          Write-Host 'Uninstall OK: ProgID removed, .cutframe no longer associated, app exe deleted'
+
       - uses: actions/upload-artifact@v7
         with:
           name: cutframe-windows-installer

@@ -1,7 +1,21 @@
+import type { UiLanguage } from "@/bindings";
+
 import { en } from "./en";
 
+/** Translation table per UI language. Polish (F3.74) adds a file and an entry here. */
+const LOCALES: Readonly<Record<UiLanguage, typeof en>> = { en };
+
 /** The active locale. Only English exists today; Polish can be added as another file. */
-export const t = en;
+export let t: typeof en = en;
+
+/**
+ * Picks the translation table for `language` (the `language` preference). Labels computed at
+ * module load (the action registry) keep the table that was active then, so a later switch takes
+ * full effect after a restart. With English as the only language this never changes anything.
+ */
+export function setLocale(language: UiLanguage): void {
+  t = Object.hasOwn(LOCALES, language) ? LOCALES[language] : en;
+}
 
 /**
  * Looks up a backend key in a translation table. Keys arrive at runtime, so one this UI build does

@@ -1,4 +1,6 @@
 import {
+  type GpuDeviceType,
+  type GpuFallback,
   type HdrTransfer,
   type HistoryLabel,
   type IpcError,
@@ -6,6 +8,7 @@ import {
   MAX_IMPORT_FILES,
   type MediaErrorKind,
   type MediaKind,
+  type UiLanguage,
 } from "@/bindings";
 
 const APP_NAME = "Cutframe";
@@ -83,6 +86,7 @@ export const en = {
     close: "Close",
   },
   edit: {
+    preferences: "Preferences…",
     undo: "Undo",
     redo: "Redo",
     /** Menu item and tooltip naming the entry, e.g. "Undo Add Track". */
@@ -91,7 +95,105 @@ export const en = {
   },
   view: {
     historyPanel: "History panel",
+    mediaBin: "Media bin",
+    inspector: "Inspector",
+    resetPanelLayout: "Reset panel layout",
     keyboardShortcuts: "Keyboard shortcuts",
+  },
+  preferences: {
+    title: "Preferences",
+    description: "Settings for this computer. They are not saved in the project.",
+    tabs: {
+      general: "General",
+      editing: "Editing",
+      performance: "Performance",
+      cache: "Cache",
+      shortcuts: "Shortcuts",
+    },
+    loading: "Loading preferences…",
+    loadFailed: "The preferences could not be loaded",
+    save: "Save",
+    cancel: "Cancel",
+    close: "Close",
+    seconds: "seconds",
+    general: {
+      language: "Language",
+      languages: { en: "English" } satisfies Record<UiLanguage, string>,
+      autosave: "Autosave for crash recovery",
+      autosaveInterval: "Autosave every",
+      autosaveOffHint: "Off: unsaved work cannot be recovered after a crash.",
+      panelLayout: "Panel layout",
+      resetPanelLayout: "Reset panel layout",
+    },
+    editing: {
+      imageDuration: "Default image duration",
+      transitionDuration: "Default transition duration",
+      hint: "Used when an image or a transition is added to the timeline.",
+    },
+    fieldErrors: {
+      notNumber: "Enter a number",
+      notWhole: "Enter a whole number of seconds",
+      outOfRange: (min: string, max: string) => `Must be between ${min} and ${max} seconds`,
+      rejected: "This value was not accepted",
+    },
+    performance: {
+      noGpu: "No GPU could be initialized. The preview is not available.",
+      adapter: "Adapter",
+      backend: "Graphics API",
+      deviceType: "Device type",
+      driver: "Driver",
+      notReported: "Not reported",
+      software: "Software rendering",
+      presentsToWindow: "Native preview window",
+      fallback: "Fallback",
+      noFallback: "None",
+      previewMode: "Preview",
+      videoAcceleration: "Hardware video acceleration",
+      videoAccelerationUnknown: "Not detected in this version",
+      decoders: (list: string) => `Decoders: ${list}`,
+      encoders: (list: string) => `Encoders: ${list}`,
+      none: "none",
+      yes: "Yes",
+      no: "No",
+    },
+    cache: {
+      folder: "Cache folder",
+      size: "Size",
+      files: (n: number) => (n === 1 ? "1 file" : `${n} files`),
+      sizeUnknown: "Unknown",
+      change: "Change…",
+      resetFolder: "Use default folder",
+      clear: "Clear cache…",
+      confirmClear: "Delete all cached files? They are recreated when needed.",
+      confirm: "Clear cache",
+      cancel: "Keep files",
+      hint: "Thumbnails, waveforms and proxies are stored here. Only files inside this folder are ever deleted.",
+      pickTitle: "Choose the cache folder",
+    },
+    shortcuts: {
+      description: "Shortcuts cannot be changed yet.",
+      show: "Show keyboard shortcuts",
+    },
+  },
+  /** Byte sizes, 1024-based like Explorer. */
+  units: {
+    bytes: (n: string) => `${n} B`,
+    scaled: (value: string, unit: "KB" | "MB" | "GB" | "TB") => `${value} ${unit}`,
+  },
+  gpu: {
+    deviceTypes: {
+      discrete: "Discrete GPU",
+      integrated: "Integrated GPU",
+      virtual: "Virtual GPU",
+      software: "Software (CPU)",
+      other: "Other",
+    } satisfies Record<GpuDeviceType, string>,
+    fallbacks: {
+      forcedByEnv: "Software rendering was forced by an environment variable.",
+      preferredCannotPresent: "The preferred GPU cannot show the preview window, so another one is used.",
+      noHardwareAdapter: "No hardware GPU was found: software rendering (slower).",
+      deviceLost: "The GPU stopped responding and the preview was restarted.",
+    } satisfies Record<GpuFallback, string>,
   },
   /** Tooltip text: the action, then its shortcut, e.g. "Undo Add Track (Ctrl+Z)". */
   tooltip: (label: string, shortcut: string) => (shortcut ? `${label} (${shortcut})` : label),
@@ -233,7 +335,7 @@ export const en = {
     background: "Generating previews in the background",
   },
   preview: {
-    unavailable: "Preview unavailable: no GPU adapter found",
+    unavailable: "Preview unavailable: no usable GPU",
     loading: "Starting preview…",
     play: "Play",
     playSoon: "Playback arrives with media import",
@@ -257,6 +359,11 @@ export const en = {
   },
   status: {
     gpu: (adapter: string, backend: string) => `${adapter} · ${backend}`,
+    /** After a runtime GPU loss; `adapter` is the one the preview now runs on. */
+    gpuRestarted: (adapter: string) => `The GPU stopped responding. The preview was restarted on ${adapter}.`,
+    gpuRestartedSoftware: "The GPU stopped responding. The preview now uses software rendering (slower).",
+    previewLost: "The GPU stopped responding repeatedly. The preview was turned off.",
+    dismiss: "Dismiss",
     software: "software rendering",
     noGpu: "No GPU",
     previewMode: { native: "native preview", frames: "frame preview (dev)", unavailable: "no preview" },

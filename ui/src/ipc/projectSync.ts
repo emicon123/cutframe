@@ -1,4 +1,5 @@
 import { commands, events } from "@/bindings";
+import { applyAppInfoChange } from "@/features/editor/gpuNotice";
 import { fileActions } from "@/features/project/fileActions";
 import { recovery } from "@/features/project/recovery";
 import { logError } from "@/ipc/errors";
@@ -7,8 +8,11 @@ import { useProjectStore } from "@/stores/projectStore";
 
 /**
  * Keeps the project store in sync with Rust: subscribes to `projectChanged` (and `quitRequested`,
- * answered with the unsaved-changes prompt) first, cancels any stale gesture, then fetches the
- * current state, so no change is missed in between, and then offers crash recovery. Returns a cleanup function.
+ * answered with the unsaved-changes prompt; `openFileRequested`, a project double-clicked while
+ * the app runs; `appInfoChanged`, a GPU change at runtime) first, cancels any stale gesture, then
+ * fetches the current state, so no change is missed in between. Then it opens the project file the
+ * app was launched with, if any, and only after that offers crash recovery. Returns a cleanup
+ * function.
  */
 export function startProjectSync(): () => void {
   let disposed = false;
@@ -19,6 +23,8 @@ export function startProjectSync(): () => void {
   void Promise.all([
     events.projectChanged.listen((event) => apply(event.payload)),
     events.quitRequested.listen(() => void fileActions.requestClose()),
+    events.openFileRequested.listen((event) => void fileActions.openPath(event.payload.path)),
+    events.appInfoChanged.listen((event) => applyAppInfoChange(event.payload)),
   ])
     .then(async (stops) => {
       if (disposed) {
@@ -33,7 +39,13 @@ export function startProjectSync(): () => void {
       const [project, info] = await Promise.all([commands.getProject(), commands.getAppInfo()]);
       apply(project);
       setInfo(info);
-      // After the first state, so a restore's unsaved check sees the real document.
+      // After the first state, so the unsaved checks see the real document. The launch path
+      // first (design `platform-integration.md` §8): the recovery prompt still appears after it.
+      const launchPath = await commands.takeLaunchPath().catch((error: unknown) => {
+        logError(error);
+        return null;
+      });
+      if (launchPath !== null) await fileActions.openPath(launchPath);
       void recovery.load();
     })
     .catch(reportError);
