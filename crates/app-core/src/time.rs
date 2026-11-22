@@ -419,11 +419,12 @@ mod tests {
                 prop_assert!((back - time).0.abs() <= tick, "{time:?} -> {back:?}");
             }
 
-            /// ticks -> time -> ticks is exact for media time bases (1/1000 s and finer, one tick
-            /// at least two flicks) over days of media.
+            /// ticks -> time -> ticks is exact for media time bases (1/1_000_000 s to 1001/1000 s
+            /// per tick, so a tick is many flicks) over days of media. The tick range keeps the
+            /// time within ±2^53 flicks even at the coarsest base; beyond i64 it saturates.
             #[test]
             fn ticks_survive_a_round_trip(
-                ticks in -(1i64 << 36)..(1i64 << 36),
+                ticks in -(1i64 << 23)..(1i64 << 23),
                 num in 1i64..=1001,
                 den in 1000i64..=1_000_000,
             ) {
