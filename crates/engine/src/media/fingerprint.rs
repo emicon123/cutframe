@@ -26,11 +26,7 @@ pub fn fingerprint(path: &Path) -> Result<Fingerprint, MediaError> {
         ));
     }
     let size = meta.len();
-    let modified = meta
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX));
+    let modified = modified_millis(&meta);
 
     let mut hasher = blake3::Hasher::new();
     hasher.update(&size.to_le_bytes());
@@ -49,6 +45,15 @@ pub fn fingerprint(path: &Path) -> Result<Fingerprint, MediaError> {
         modified,
         hash,
     })
+}
+
+/// The file's last-modified time as stored in [`Fingerprint::modified`]: milliseconds since the
+/// Unix epoch, 0 when unknown. Compare it with the stored value for the cheap "unchanged" check.
+pub fn modified_millis(meta: &std::fs::Metadata) -> i64 {
+    meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
 fn copy_range(

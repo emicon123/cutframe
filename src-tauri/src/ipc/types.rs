@@ -12,6 +12,8 @@ use app_core::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::media_status::MediaStatuses;
+
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectState {
@@ -88,7 +90,14 @@ pub struct ClipView {
 impl ProjectState {
     /// The view of `doc` at the session-wide `revision` (owned by `AppState`), opened from or last
     /// saved to `file_path`.
-    pub fn new(doc: &Document, revision: u64, file_path: Option<&Path>, dirty: bool) -> Self {
+    /// `statuses` is the session's media status (design §6.6).
+    pub fn new(
+        doc: &Document,
+        revision: u64,
+        file_path: Option<&Path>,
+        dirty: bool,
+        statuses: &MediaStatuses,
+    ) -> Self {
         let project = doc.project();
         Self {
             revision,
@@ -118,7 +127,11 @@ impl ProjectState {
                             .collect(),
                     })
                     .collect(),
-                media: project.media.iter().map(MediaView::new).collect(),
+                media: project
+                    .media
+                    .iter()
+                    .map(|asset| MediaView::new(asset, statuses.get(asset)))
+                    .collect(),
             },
             history: HistoryState {
                 can_undo: doc.can_undo(),
@@ -185,12 +198,15 @@ pub struct MediaView {
     pub hdr: Option<HdrTransfer>,
     /// The default audio stream; `None` without audio.
     pub audio: Option<AudioSummary>,
-    /// Always `online` until missing-media detection lands (task 0240).
+    /// Whether the file is reachable and unchanged. Session state: `online` until the background
+    /// check after open says otherwise; it changes at runtime when a file disappears, and after a
+    /// relink.
     pub status: MediaStatus,
     /// Clips that reference this media; 0 until clips reference media (design 0250).
     pub used_by: u32,
-    /// Append as `?v=` to every `media://` URL of this item, so a relinked or changed file never
-    /// shows stale previews.
+    /// Append as `?v=` to every `media://` URL of this item. Opaque; it changes whenever a relink
+    /// changes the file's path or content, so the UI fetches the previews again (also after an
+    /// item that was offline is relinked to its own content at a new place).
     pub preview_version: String,
     /// The filmstrip of a video (hover-scrub tiles at `media://…/filmstrip/<id>?tile=<n>`);
     /// `None` for audio and images.
@@ -212,14 +228,15 @@ pub struct AudioSummary {
 #[serde(rename_all = "camelCase")]
 pub enum MediaStatus {
     Online,
-    /// The file is missing (task 0240).
+    /// The file is missing (or its drive is not reachable): relink it.
     Offline,
-    /// The file at the path has other content than when it was imported (task 0240).
+    /// The file at the path has other content than when it was imported or relinked; relink to
+    /// the file "as it is now" (`allowMismatch`) or to the original.
     Changed,
 }
 
 impl MediaView {
-    pub fn new(asset: &MediaAsset) -> Self {
+    pub fn new(asset: &MediaAsset, status: MediaStatus) -> Self {
         let video = asset.info.video.as_ref();
         let display = video.map(|v| v.display_size());
         Self {
@@ -239,7 +256,7 @@ impl MediaView {
                 channels: a.channels,
                 stream_count: asset.info.audio.len() as u32,
             }),
-            status: MediaStatus::Online,
+            status,
             used_by: 0,
             preview_version: crate::previews::preview_version(asset),
             filmstrip: FilmstripLayout::of(asset),
@@ -266,6 +283,11 @@ pub enum JobStage {
     Probing,
     /// Making posters, waveforms and filmstrips in the background (after import and open).
     GeneratingPreviews,
+    /// Checking in the background that every media file is still there and unchanged (after
+    /// open and restore).
+    CheckingMedia,
+    /// Looking for missing media files in a folder (`relinkMediaFolder`).
+    SearchingFolder,
 }
 
 /// The result of one file of a media job, in the order the files were given.
@@ -283,8 +305,22 @@ pub enum MediaFileOutcome {
     Added {
         media: MediaId,
     },
+    /// The media now points at this file.
+    Relinked {
+        media: MediaId,
+    },
     /// The same content (fingerprint) is already in the project, or earlier in the same import.
     AlreadyImported {
+        media: MediaId,
+    },
+    /// `relinkMedia` without `allowMismatch`: the file has other content than the media. Ask the
+    /// user, then call `relinkMedia` again with `allowMismatch = true`. Nothing changed.
+    FingerprintMismatch {
+        media: MediaId,
+    },
+    /// `relinkMediaFolder` found no file with this missing media's content; `path` is its old
+    /// path.
+    NotFound {
         media: MediaId,
     },
     Failed {
@@ -311,6 +347,8 @@ pub enum MediaErrorKind {
     /// A dropped folder holds more media files than one import takes (`MAX_IMPORT_FILES`);
     /// nothing from it was imported.
     TooManyFiles,
+    /// `relinkMedia` to a file of another kind (e.g. a video to an audio file). Nothing changed.
+    KindMismatch,
 }
 
 impl From<engine::media::MediaErrorKind> for MediaErrorKind {
