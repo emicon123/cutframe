@@ -54,13 +54,16 @@
 #>
 [CmdletBinding()]
 param(
-  [string] $Dir = (Join-Path (Split-Path -Parent $PSScriptRoot) '.ffmpeg'),
+  [string] $Dir,
   [switch] $Force,
   [switch] $NoUserEnv
 )
 
 Set-StrictMode -Version 3.0
 $ErrorActionPreference = 'Stop'
+
+# Windows PowerShell 5.1 leaves $PSScriptRoot empty inside param() defaults, so the default is set here.
+if (-not $Dir) { $Dir = Join-Path (Split-Path -Parent $PSScriptRoot) '.ffmpeg' }
 $ProgressPreference = 'SilentlyContinue' # Invoke-WebRequest is very slow with the progress bar in 5.1
 
 $pin = Get-Content -Raw -LiteralPath (Join-Path $PSScriptRoot 'ffmpeg.json') | ConvertFrom-Json
