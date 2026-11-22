@@ -61,6 +61,12 @@ export type FileActionDeps = {
 export type FileActions = {
   newProject: () => Promise<void>;
   openProject: () => Promise<void>;
+  /**
+   * Opens the project at `path` (a double-clicked file, `takeLaunchPath`/`openFileRequested`)
+   * behind the unsaved-changes prompt; errors are reported like File → Open. Ignored while another
+   * file action or prompt is running.
+   */
+  openPath: (path: string) => Promise<void>;
   /** Resolves `true` when the project was written. */
   save: () => Promise<boolean>;
   saveAs: () => Promise<boolean>;
@@ -141,6 +147,7 @@ export function createFileActions(deps: FileActionDeps): FileActions {
           if (path !== null) await deps.openProject(path);
         }),
       ),
+    openPath: (path) => exclusive(undefined, () => guardUnsaved(() => deps.openProject(path))),
     save: () => exclusive(false, save),
     saveAs: () => exclusive(false, saveAs),
     requestClose: () => exclusive(undefined, () => guardUnsaved(() => deps.confirmClose())),

@@ -11,11 +11,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { NativeSelect } from "@/components/ui/native-select";
 import { usePreviewOccluder } from "@/features/preview/occlusion";
 import { t } from "@/i18n";
 import { describeError, logError } from "@/ipc/errors";
 import { formatFrameRate } from "@/lib/time";
-import { cn } from "@/lib/utils";
 import { useProjectStore } from "@/stores/projectStore";
 
 import {
@@ -34,11 +34,6 @@ import {
 } from "./settings";
 
 const PRESET_IDS: readonly ResolutionPresetId[] = [...RESOLUTION_PRESETS.map((p) => p.id), "custom"];
-
-const selectClass = cn(
-  "h-9 w-full rounded-md border border-input bg-background px-3 text-sm shadow-xs outline-none dark:bg-input/30",
-  "focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
-);
 
 /** Canvas size and frame rate. Apply sends one `setProjectSettings` (one undo entry). */
 export function ProjectSettingsDialog({
@@ -100,9 +95,8 @@ function SettingsForm({ initial, onDone }: { initial: ProjectSettings; onDone: (
       }}
     >
       <Field label={t.projectSettings.resolution} htmlFor={ids.preset}>
-        <select
+        <NativeSelect
           id={ids.preset}
-          className={selectClass}
           value={form.preset}
           onChange={(e) => setForm(selectPreset(form, e.target.value as ResolutionPresetId))}
         >
@@ -111,7 +105,7 @@ function SettingsForm({ initial, onDone }: { initial: ProjectSettings; onDone: (
               {t.projectSettings.presets[id]}
             </option>
           ))}
-        </select>
+        </NativeSelect>
       </Field>
 
       <div className="grid grid-cols-2 gap-3">
@@ -141,9 +135,8 @@ function SettingsForm({ initial, onDone }: { initial: ProjectSettings; onDone: (
       </div>
 
       <Field label={t.projectSettings.frameRate} htmlFor={ids.rate}>
-        <select
+        <NativeSelect
           id={ids.rate}
-          className={selectClass}
           value={form.frameRate}
           onChange={(e) => setForm({ ...form, frameRate: e.target.value })}
         >
@@ -152,7 +145,7 @@ function SettingsForm({ initial, onDone }: { initial: ProjectSettings; onDone: (
               {formatFrameRate(rate)}
             </option>
           ))}
-        </select>
+        </NativeSelect>
       </Field>
 
       {submitError && (

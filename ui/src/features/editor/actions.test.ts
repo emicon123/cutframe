@@ -25,6 +25,8 @@ const ctx = (overrides: Partial<ActionContext> = {}): ActionContext => ({
   undoLabel: null,
   redoLabel: null,
   historyPanelOpen: false,
+  mediaBinOpen: true,
+  inspectorOpen: true,
   ...overrides,
 });
 
@@ -144,6 +146,7 @@ describe("shortcutGroups", () => {
     expect(groups[1]?.rows).toEqual([
       { id: "undo", label: t.edit.undo, keys: ["Ctrl+Z"] },
       { id: "redo", label: t.edit.redo, keys: ["Ctrl+Shift+Z", "Ctrl+Y"] },
+      { id: "preferences", label: t.edit.preferences, keys: ["Ctrl+,"] },
     ]);
     expect(groups[2]?.rows).toEqual([
       { id: "keyboard-shortcuts", label: t.view.keyboardShortcuts, keys: ["?", "Ctrl+/"] },
@@ -163,8 +166,26 @@ describe("actionTooltip", () => {
   });
 });
 
+describe("panel and preferences actions", () => {
+  it("checks the side panel toggles while the panels are open", () => {
+    const view = (c: ActionContext) => actionItems(menuModel(c)[2]);
+    const checked = (c: ActionContext, id: string) => view(c).find((i) => i.id === id)?.checked;
+    expect(checked(ctx(), "toggle-media-bin")).toBe(true);
+    expect(checked(ctx({ mediaBinOpen: false }), "toggle-media-bin")).toBe(false);
+    expect(checked(ctx({ inspectorOpen: false }), "toggle-inspector")).toBe(false);
+    expect(view(ctx()).find((i) => i.id === "reset-panel-layout")).toMatchObject({ checked: undefined });
+  });
+
+  it("opens Preferences from the Edit menu with Ctrl+,", () => {
+    const edit = actionItems(menuModel(ctx())[1]);
+    expect(edit.at(-1)).toMatchObject({ id: "preferences", label: t.edit.preferences, shortcut: "Ctrl+," });
+  });
+});
+
 describe("actionContext", () => {
   it("is empty before the first project state", () => {
-    expect(actionContext(null, true)).toEqual(ctx({ loaded: false, historyPanelOpen: true }));
+    expect(actionContext(null, { historyPanelOpen: true, mediaBinOpen: false, inspectorOpen: true })).toEqual(
+      ctx({ loaded: false, historyPanelOpen: true, mediaBinOpen: false }),
+    );
   });
 });

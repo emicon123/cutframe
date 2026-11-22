@@ -1,6 +1,7 @@
 import { create } from "zustand";
 
 import type { AppInfo_Serialize } from "@/bindings";
+import type { GpuNotice } from "@/features/editor/gpuNotice";
 import { describeError, logError } from "@/ipc/errors";
 
 type AppStore = {
@@ -12,9 +13,13 @@ type AppStore = {
    * window (ADR-0005). The preview is hidden while it is above zero.
    */
   previewOccluders: number;
+  /** Runtime GPU event shown in the status bar until dismissed. */
+  gpuNotice: GpuNotice | null;
   setInfo: (info: AppInfo_Serialize) => void;
   reportError: (error: unknown) => void;
   clearError: () => void;
+  showGpuNotice: (notice: GpuNotice) => void;
+  dismissGpuNotice: () => void;
   addPreviewOccluder: () => void;
   removePreviewOccluder: () => void;
 };
@@ -28,6 +33,9 @@ export const useAppStore = create<AppStore>()((set) => ({
     set({ lastError: describeError(error) });
   },
   clearError: () => set({ lastError: null }),
+  gpuNotice: null,
+  showGpuNotice: (gpuNotice) => set({ gpuNotice }),
+  dismissGpuNotice: () => set({ gpuNotice: null }),
   previewOccluders: 0,
   addPreviewOccluder: () => set((s) => ({ previewOccluders: s.previewOccluders + 1 })),
   removePreviewOccluder: () => set((s) => ({ previewOccluders: Math.max(0, s.previewOccluders - 1) })),
