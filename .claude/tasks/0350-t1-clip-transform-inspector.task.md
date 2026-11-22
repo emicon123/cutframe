@@ -1,6 +1,6 @@
 # Task 0350: Clip inspector: transform, crop, opacity, canvas
 
-**Tier:** 1 · **Agents:** `backend`, `frontend` · **Depends on:** `0320`, `0250`
+**Tier:** 1 · **Agents:** `backend`, `frontend` · **Depends on:** `0320`, `0250`, `0260`
 **Spec:** `docs/feature-catalog.md` (feature IDs below), `docs/adr/`, `docs/design/`, `CLAUDE.md`
 
 ## Why
@@ -21,7 +21,9 @@ Basic look of each clip; the inspector shows only project info today.
 
 ## Scope
 
-- **backend:** keyframe-ready clip properties per the design (position, scale, rotation, opacity, flip, crop, fit mode) and canvas background (colour, blur, image) in the render graph; set/reset commands as gestures for sliders.
+Design: `docs/design/timeline-editing.md` (§3.6, §4.10–4.11, §7).
+
+- **backend:** the keyframe-ready properties (`VisualProps`: position, scale, rotation, opacity, flip, crop, fit mode) and `Project.background` (colour, blur, image) are already in the model since 0260; this task adds `set_clip_property(clips, value, phase)` (gesture for sliders) and `reset_clip_properties`, and renders them and the canvas background in the render graph through the shared `app-core` evaluation (`Animated::at`).
 - **frontend:** clip inspector with sliders + numeric entry, reset per property and reset all.
 
 ## Done when

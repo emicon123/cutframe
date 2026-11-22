@@ -19,12 +19,14 @@ The cut-and-tighten loop that defines a quick editor.
 
 ## Scope
 
-- **backend:** split at playhead (selected or all tracks), delete, ripple delete, delete gap, trim-to-playhead (Q/W), magnetic main track behaviour with a toggle, copy/cut/paste/duplicate.
+Design: `docs/design/timeline-editing.md` (§4.4–4.8, §6.3).
+
+- **backend:** `split_clips` (selected or all unlocked tracks), `delete_clips` (ripple flag; Delete on the magnetic main track always closes the gap), `delete_gap`, `trim_to_playhead` (Q/W; selected or the main-track clip), `set_magnetic` (on = repack, one undo step; the base model and repack exist since 0260), and a Rust-side clipboard in `AppState` (`copy_clips`, `cut_clips`, `paste_clips`, `duplicate_clips`; not the OS clipboard, cleared on new/open).
 - **frontend:** shortcuts (Ctrl+B, Delete, Shift+Delete, Q, W, Ctrl+C/X/V/D) registered in the shortcut registry; toolbar buttons.
 
 ## Done when
 
-- property tests in `app-core`: no operation leaves overlapping clips or gaps on a magnetic main track
+- property tests in `app-core`: random command sequences keep `Project::validate` true (no overlapping clips, no gaps on a magnetic main track, link rules) and undo/redo round-trips
 - every feature above works end-to-end in `pnpm dev` and has tests (`app-core` unit/property tests for commands, Vitest for UI logic, golden frames for rendering)
 - each row above is updated in `docs/feature-catalog.md` (status + short evidence note); partial rows say what is missing
 - `pnpm check` passes; after any IPC change `pnpm bindings` is re-run and `ui/src/bindings.ts` committed
