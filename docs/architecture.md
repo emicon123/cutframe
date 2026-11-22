@@ -185,7 +185,11 @@ stateDiagram-v2
 - **IPC contract:** Rust is the source, and `ui/src/bindings.ts` is generated (`pnpm bindings`) and
   checked in CI. 64-bit values become TS `number`. Only `Time` (flicks) and counters below 2^53 may
   be 64-bit (ADR-0003).
-- **Project file:** one JSON file with `schemaVersion` and chained migrations (ADR-0002).
+- **Project file:** one JSON file with `schemaVersion` and chained migrations (ADR-0002), extension
+  `.cutframe` (`app_core::PROJECT_FILE_EXTENSION`, a working choice). Loading validates invariants
+  (`Project::validate`); `src-tauri` saves atomically (tmp + rename) off the main thread. Dirty state
+  is the `Document` history position compared with the one at the last save. **Target** until task
+  0100 lands; see `docs/design/project-lifecycle.md`.
 - **Platform:** Windows 10/11 x64 is the only platform for shipping, development and CI (ADR-0001
   amendment of 2026-11-22). Linux code paths (`frames` mode, lavapipe fallback, `cfg(not(windows))`
   branches) remain but are not maintained or tested.

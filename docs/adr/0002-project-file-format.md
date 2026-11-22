@@ -1,6 +1,6 @@
 # ADR-0002: Project file format and schema migrations
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-11-22, with the amendment below)
 - **Date:** 2026-11-21
 
 ## Context
@@ -81,3 +81,37 @@ Rejected:
   add a fixture. Reviewers check this, and the snapshot test catches what they miss.
 - Choosing the extension late means the first public release fixes it. Changing it afterwards breaks
   file associations.
+
+## Amendment 2026-11-22
+
+Accepted for task 0100 (new, open, save, project settings). The decisions above stand, with these
+changes. Points 1 and 8 of the original text are historical where they disagree with this section.
+Implementation details are in `docs/design/project-lifecycle.md`.
+
+1. **Working file extension: `.cutframe`.** It replaces "use `.json` until the final name". It lives
+   in exactly one place, `app_core::PROJECT_FILE_EXTENSION = "cutframe"` (no leading dot), and is
+   exported to `ui/src/bindings.ts` with `Builder::constant`. The UI never writes the literal. It is a
+   working choice: it is renamed under the same deadline as the app identifier (CLAUDE.md), before the
+   first public release and before file associations (F0.15) ship.
+   - *Why `.cutframe`:* it is self-describing in Explorer, collides with no known format, and matches
+     the codename that is already in the identifier, so both change together in one step. Rejected:
+     **`.json`** (Explorer opens it in a text editor, no file association possible, any JSON file
+     looks like a project); **a neutral extension such as `.vproj` / `.cfp`** (does not avoid the
+     rename, since it would still be tied to the final product, and short ones are taken by other
+     tools).
+   - *Existing `.json` files:* no build has ever written a project file (there was no save command),
+     so there is nothing to migrate. The open dialog filters for `.cutframe` only. `open_project`
+     itself does not check the extension: content decides (load pipeline, §3).
+2. **"Unsaved changes" is tracked by history position, not by session revision** (replaces the last
+   sentences of §8). The revision also changes on save, gesture updates and cancel, so "revision
+   differs from the saved revision" would stay dirty after undoing back to the saved state.
+   `Document` gives every history entry an id, and its *history position* is the id of the newest
+   applied entry. `AppState` records the position at the last save or open. The project is dirty
+   when the current position differs or a gesture is open.
+3. **Open and save run off the main thread.** They are `async` IPC commands whose file I/O runs in
+   `spawn_blocking` (ADR-0004: the main thread does no I/O). They are not `JobId` jobs: project files
+   are small (well under 1 MB, ADR-0003 budget) and finish in milliseconds. The document lock is held
+   only to take the snapshot to save, or to swap in the opened project.
+4. **Backup naming:** the copy made on the first save of an older-schema file is
+   `<file>.v<N>.bak` next to the file, where N is the schema version that was loaded (unchanged). An
+   existing backup of that name is never overwritten.
