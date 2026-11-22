@@ -13,6 +13,8 @@ function stateAt(revision: number, name = `rev ${revision}`): ProjectState {
       tracks: [],
     },
     history: { canUndo: false, canRedo: false, undoLabel: null, redoLabel: null },
+    filePath: null,
+    dirty: false,
   };
 }
 

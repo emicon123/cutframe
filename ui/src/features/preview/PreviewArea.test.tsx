@@ -1,4 +1,4 @@
-import { render, waitFor } from "@testing-library/react";
+import { act, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { mockCommands, type PreviewRect } from "@/bindings";
@@ -30,7 +30,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
-  useAppStore.setState({ info: null });
+  useAppStore.setState({ info: null, previewOccluders: 0 });
 });
 
 describe("PreviewArea in native mode", () => {
@@ -40,5 +40,19 @@ describe("PreviewArea in native mode", () => {
 
     unmount();
     await waitFor(() => expect(calls).toEqual(["rect 0x0", "visible true", "visible false"]));
+  });
+
+  it("hides the preview while an overlay occludes it", async () => {
+    render(<PreviewArea />);
+    await waitFor(() => expect(calls).toEqual(["rect 0x0", "visible true"]));
+
+    act(() => useAppStore.getState().addPreviewOccluder());
+    act(() => useAppStore.getState().addPreviewOccluder());
+    await waitFor(() => expect(calls.at(-1)).toBe("visible false"));
+    act(() => useAppStore.getState().removePreviewOccluder());
+    expect(calls.at(-1)).toBe("visible false");
+    act(() => useAppStore.getState().removePreviewOccluder());
+    await waitFor(() => expect(calls.at(-1)).toBe("visible true"));
+    expect(calls).toEqual(["rect 0x0", "visible true", "visible false", "visible true"]);
   });
 });

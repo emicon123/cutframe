@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { findShortcut, isTextEntry, type KeyInput } from "./shortcuts";
+import { findShortcut, isInOverlay, isTextEntry, type KeyInput, shortcutLabel } from "./shortcuts";
 
 const key = (k: string, mods: Partial<KeyInput> = {}): KeyInput => ({
   key: k,
@@ -23,6 +23,13 @@ describe("findShortcut", () => {
     expect(findShortcut(key("z", { ctrlKey: true, altKey: true }))).toBeUndefined();
   });
 
+  it("finds the file shortcuts", () => {
+    expect(findShortcut(key("n", { ctrlKey: true }))?.id).toBe("new-project");
+    expect(findShortcut(key("o", { ctrlKey: true }))?.id).toBe("open-project");
+    expect(findShortcut(key("s", { ctrlKey: true }))?.id).toBe("save");
+    expect(findShortcut(key("S", { ctrlKey: true, shiftKey: true }))?.id).toBe("save-as");
+  });
+
   it("ignores plain keys", () => {
     expect(findShortcut(key("z"))).toBeUndefined();
   });
@@ -34,5 +41,25 @@ describe("isTextEntry", () => {
     expect(isTextEntry(document.createElement("textarea"))).toBe(true);
     expect(isTextEntry(document.createElement("div"))).toBe(false);
     expect(isTextEntry(null)).toBe(false);
+  });
+});
+
+describe("shortcutLabel", () => {
+  it("formats modifiers and the key", () => {
+    expect(shortcutLabel("save")).toBe("Ctrl+S");
+    expect(shortcutLabel("save-as")).toBe("Ctrl+Shift+S");
+    expect(shortcutLabel("missing")).toBe("");
+  });
+});
+
+describe("isInOverlay", () => {
+  it("detects elements inside dialogs and menus", () => {
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    const button = document.createElement("button");
+    dialog.append(button);
+    expect(isInOverlay(button)).toBe(true);
+    expect(isInOverlay(document.createElement("button"))).toBe(false);
+    expect(isInOverlay(null)).toBe(false);
   });
 });

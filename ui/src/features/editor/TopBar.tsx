@@ -3,6 +3,7 @@ import { Download, Redo2, Undo2 } from "lucide-react";
 import { commands } from "@/bindings";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { FileMenu } from "@/features/project/FileMenu";
 import { historyLabelText, t } from "@/i18n";
 import { run } from "@/stores/appStore";
 import { useProjectStore } from "@/stores/projectStore";
@@ -25,7 +26,10 @@ export function TopBar() {
       <span className="text-muted-foreground">/</span>
       <span className="truncate">{name}</span>
 
-      <div className="ml-4 flex items-center gap-0.5">
+      <div className="ml-4">
+        <FileMenu />
+      </div>
+      <div className="flex items-center gap-0.5">
         <HistoryButton
           label={t.topBar.undo}
           tip={`${undoTip} (Ctrl+Z)`}

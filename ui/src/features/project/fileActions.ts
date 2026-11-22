@@ -1,0 +1,159 @@
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+
+import { commands, PROJECT_FILE_EXTENSION } from "@/bindings";
+import { t } from "@/i18n";
+import { useAppStore } from "@/stores/appStore";
+import { useProjectStore } from "@/stores/projectStore";
+
+import { askUnsaved, type UnsavedChoice } from "./unsavedPrompt";
+
+/** Characters Windows does not allow in file names, plus control characters. */
+// eslint-disable-next-line no-control-regex -- control characters are exactly what we replace
+const INVALID_FILE_NAME_CHARS = /[<>:"/\\|?*\u0000-\u001f]/g;
+
+/**
+ * File name proposed by Save As: the project name with characters invalid on Windows replaced by
+ * `_`, plus the project extension. Trailing dots and spaces are dropped (Windows strips them).
+ */
+export function defaultFileName(projectName: string): string {
+  const base = projectName
+    .replace(INVALID_FILE_NAME_CHARS, "_")
+    .trim()
+    .replace(/[. ]+$/, "");
+  return `${base || t.file.untitled}.${PROJECT_FILE_EXTENSION}`;
+}
+
+/**
+ * Default path for the Save As dialog: the proposed file name, in the folder of the current file
+ * when the project already has one.
+ */
+export function defaultSavePath(projectName: string, filePath: string | null): string {
+  const name = defaultFileName(projectName);
+  if (!filePath) return name;
+  const cut = Math.max(filePath.lastIndexOf("\\"), filePath.lastIndexOf("/"));
+  return cut < 0 ? name : `${filePath.slice(0, cut + 1)}${name}`;
+}
+
+/** Window title for the current state: `*<name> - Cutframe` when dirty. */
+export function formatWindowTitle(state: { name: string; dirty: boolean } | null): string {
+  return state ? t.app.windowTitle(state.name, state.dirty) : t.app.name;
+}
+
+/** Everything the file actions touch, so the decision logic is testable without Tauri. */
+export type FileActionDeps = {
+  newProject: () => Promise<unknown>;
+  openProject: (path: string) => Promise<unknown>;
+  /** `false`: the project has no file yet and nothing was written. */
+  saveProject: () => Promise<boolean>;
+  saveProjectAs: (path: string) => Promise<unknown>;
+  confirmClose: () => Promise<unknown>;
+  /** The current project, or `null` before the first state arrived. */
+  current: () => { name: string; filePath: string | null; dirty: boolean } | null;
+  askUnsaved: () => Promise<UnsavedChoice>;
+  /** Native open dialog; `null` when cancelled. */
+  pickOpenPath: () => Promise<string | null>;
+  /** Native save dialog; `null` when cancelled. */
+  pickSavePath: (defaultPath: string) => Promise<string | null>;
+  reportError: (error: unknown) => void;
+  clearError: () => void;
+};
+
+export type FileActions = {
+  newProject: () => Promise<void>;
+  openProject: () => Promise<void>;
+  /** Resolves `true` when the project was written. */
+  save: () => Promise<boolean>;
+  saveAs: () => Promise<boolean>;
+  /** Answer to `quitRequested`: asks about unsaved changes, then closes the window. */
+  requestClose: () => Promise<void>;
+};
+
+const FAILED: unique symbol = Symbol("failed");
+
+export function createFileActions(deps: FileActionDeps): FileActions {
+  /** One file action at a time: a second Ctrl+S or a close click during a prompt is ignored. */
+  let busy = false;
+
+  async function exclusive<T>(fallback: T, action: () => Promise<T>): Promise<T> {
+    if (busy) return fallback;
+    busy = true;
+    try {
+      return await action();
+    } finally {
+      busy = false;
+    }
+  }
+
+  /** Runs a step; a failure is reported and gives `FAILED`. */
+  async function attempt<T>(step: () => Promise<T>): Promise<T | typeof FAILED> {
+    try {
+      const value = await step();
+      deps.clearError();
+      return value;
+    } catch (error) {
+      deps.reportError(error);
+      return FAILED;
+    }
+  }
+
+  async function saveAs(): Promise<boolean> {
+    const state = deps.current();
+    if (!state) return false;
+    const path = await attempt(() => deps.pickSavePath(defaultSavePath(state.name, state.filePath)));
+    if (path === FAILED || path === null) return false;
+    return (await attempt(() => deps.saveProjectAs(path))) !== FAILED;
+  }
+
+  async function save(): Promise<boolean> {
+    const written = await attempt(() => deps.saveProject());
+    if (written === FAILED) return false;
+    return written || saveAs();
+  }
+
+  /**
+   * Runs `action` unless unsaved changes would be lost: Save (falls back to Save As; a cancelled or
+   * failed save aborts), Don't save (runs it) or Cancel (does nothing).
+   */
+  async function guardUnsaved(action: () => Promise<unknown>): Promise<void> {
+    if (deps.current()?.dirty) {
+      const choice = await deps.askUnsaved();
+      if (choice === "cancel") return;
+      if (choice === "save" && !(await save())) return;
+    }
+    await attempt(action);
+  }
+
+  return {
+    newProject: () => exclusive(undefined, () => guardUnsaved(() => deps.newProject())),
+    openProject: () =>
+      exclusive(undefined, () =>
+        guardUnsaved(async () => {
+          const path = await deps.pickOpenPath();
+          if (path !== null) await deps.openProject(path);
+        }),
+      ),
+    save: () => exclusive(false, save),
+    saveAs: () => exclusive(false, saveAs),
+    requestClose: () => exclusive(undefined, () => guardUnsaved(() => deps.confirmClose())),
+  };
+}
+
+const projectFilter = () => [{ name: t.file.filterName, extensions: [PROJECT_FILE_EXTENSION] }];
+
+/** The app's file actions, wired to Rust commands and the native dialogs. */
+export const fileActions = createFileActions({
+  newProject: () => commands.newProject(null),
+  openProject: (path) => commands.openProject(path),
+  saveProject: () => commands.saveProject(),
+  saveProjectAs: (path) => commands.saveProjectAs(path),
+  confirmClose: () => commands.confirmClose(),
+  current: () => {
+    const state = useProjectStore.getState().state;
+    return state ? { name: state.project.name, filePath: state.filePath, dirty: state.dirty } : null;
+  },
+  askUnsaved,
+  pickOpenPath: () => openDialog({ multiple: false, directory: false, filters: projectFilter() }),
+  pickSavePath: (defaultPath) => saveDialog({ defaultPath, filters: projectFilter() }),
+  reportError: (error) => useAppStore.getState().reportError(error),
+  clearError: () => useAppStore.getState().clearError(),
+});

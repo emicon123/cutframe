@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { mockCommands, type MockCommandHandlers } from "@/bindings";
+import { events, mockCommands, type MockCommandHandlers } from "@/bindings";
 import { type ProjectState, useProjectStore } from "@/stores/projectStore";
 import { useAppStore } from "@/stores/appStore";
 
@@ -16,6 +16,8 @@ const project: ProjectState = {
     tracks: [],
   },
   history: { canUndo: false, canRedo: false, undoLabel: null, redoLabel: null },
+  filePath: null,
+  dirty: false,
 };
 
 let stop: (() => void) | undefined;
@@ -28,8 +30,13 @@ afterEach(() => {
   useAppStore.setState({ info: null, lastError: null });
 });
 
-function mockStartup(cancelGesture: MockCommandHandlers["cancelGesture"], calls: string[]) {
+function mockStartup(
+  cancelGesture: MockCommandHandlers["cancelGesture"],
+  calls: string[],
+  extra: Partial<MockCommandHandlers> = {},
+) {
   mockCommands({
+    ...extra,
     cancelGesture,
     getProject: () => {
       calls.push("getProject");
@@ -68,5 +75,20 @@ describe("startProjectSync", () => {
     expect(useAppStore.getState().info?.version).toBe("0.0.0");
     expect(useAppStore.getState().lastError).toBeNull();
     expect(spy).toHaveBeenCalled();
+  });
+
+  it("closes the window on quitRequested when nothing is unsaved", async () => {
+    const calls: string[] = [];
+    mockStartup(() => null, calls, {
+      confirmClose: () => {
+        calls.push("confirmClose");
+        return null;
+      },
+    });
+
+    stop = startProjectSync();
+    await vi.waitFor(() => expect(useProjectStore.getState().state?.revision).toBe(3));
+    await events.quitRequested.emit();
+    await vi.waitFor(() => expect(calls).toContain("confirmClose"));
   });
 });

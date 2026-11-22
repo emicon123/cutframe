@@ -10,6 +10,7 @@ describe("historyLabelText", () => {
     ["removeTrack", "Remove Track"],
     ["renameTrack", "Rename Track"],
     ["renameProject", "Rename Project"],
+    ["setProjectSettings", "Change Project Settings"],
   ])("translates %s", (label, text) => {
     expect(historyLabelText(label)).toBe(text);
     expect(t.topBar.undoAction(historyLabelText(label))).toBe(`Undo ${text}`);
@@ -22,7 +23,16 @@ describe("historyLabelText", () => {
 });
 
 describe("errorKindText", () => {
-  it.each<IpcError["kind"]>(["invalidEdit", "unavailable", "internal"])("translates %s", (kind) => {
+  it.each<IpcError["kind"]>([
+    "invalidEdit",
+    "unavailable",
+    "internal",
+    "fileNotFound",
+    "malformedProject",
+    "projectTooNew",
+    "invalidProject",
+    "io",
+  ])("translates %s", (kind) => {
     expect(errorKindText(kind)).toBe(t.errors.kinds[kind]);
     expect(errorKindText(kind)).not.toBe(kind);
   });

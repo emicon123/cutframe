@@ -85,16 +85,16 @@ inserted between existing ones.
 | ID | Feature | Notes | Status |
 |---|---|---|---|
 | F0.16 | Home screen: create project, recent projects (cover thumbnail, name, duration, last modified) | App opens straight into the editor | missing |
-| F0.17 | Create a new project with default settings | One "Untitled project" is created at startup (`lib.rs`); no New Project action | partial |
-| F0.18 | Project settings: canvas resolution, aspect ratio, frame rate | Changing them later must not break the timeline; Model has width/height/frame rate/sample rate, shown read-only in the inspector; no command to change them | partial |
-| F0.19 | Save project (explicit save + Save As) | ADR: project-file format; `serialization::to_json` exists and is tested; no save command or UI | partial |
-| F0.20 | Open project from file and from the recent list | `serialization::from_json` exists and is tested; no open command or UI | partial |
+| F0.17 | Create a new project with default settings | `new_project` command (history cleared, clean); File > New / Ctrl+N with the unsaved-changes prompt (`ui/src/features/project/fileActions.ts`, Vitest). Manual check in `pnpm dev` on Windows pending | done |
+| F0.18 | Project settings: canvas resolution, aspect ratio, frame rate | Changing them later must not break the timeline; `set_project_settings` is one undo entry and keeps clip flicks bit-exact (app-core proptest); File > Project settings… dialog: presets 16:9 / 4K / 9:16 Shorts / 1:1 or custom even 16-8192, rational frame rates incl. 23.976 and 29.97, derived aspect ratio (`ProjectSettingsDialog.tsx`, `settings.ts`, Vitest). Manual check in `pnpm dev` on Windows pending | done |
+| F0.19 | Save project (explicit save + Save As) | ADR-0002: atomic save (temp + rename, `.v<N>.bak`); `save_project` / `save_project_as`; File > Save / Save As…, Ctrl+S / Ctrl+Shift+S, native save dialog filtered to `.cutframe` (default name = project name), Save without a file runs Save As; dirty `*` in the window title. Manual save → quit → open check in `pnpm dev` on Windows pending | done |
+| F0.20 | Open project from file and from the recent list | `open_project` (load → migrate → validate; failed open changes nothing, errors translated by `IpcError.kind`); File > Open… / Ctrl+O with native dialog and unsaved prompt. Missing: the recent-projects list (task 0120). Manual check in `pnpm dev` on Windows pending | partial |
 | F0.21 | Autosave at a configurable interval | | missing |
 | F0.22 | Crash recovery: offer to restore the last autosave | | missing |
 | F0.23 | Rename / duplicate / delete project from the home screen | Rename only (`RenameProject` from the inspector); no home screen | partial |
 | F0.24 | Project-file schema version and forward migrations | ADR; `schemaVersion` + `migrate()` chain, v1 fixture test, rejects newer files; ADR-0002 Proposed | done |
 | F0.25 | Detect missing media on open; relink dialog (single file and whole folder) | No media in the model yet | missing |
-| F0.26 | Unsaved-changes prompt on close | No dirty state tracked | missing |
+| F0.26 | Unsaved-changes prompt on close | Dirty = history position differs from the saved one; Rust stops the close and emits `quit-requested`, the UI asks Save / Don't save / Cancel (Save chains into Save As; a cancelled or failed save keeps the window open), then `confirm_close`; the same prompt guards New and Open (`fileActions.ts`, `UnsavedChangesDialog.tsx`, Vitest). Manual check in `pnpm dev` on Windows pending | done |
 
 ### Edit history
 

@@ -38,9 +38,12 @@ function PreviewMessage({ text }: { text: string }) {
  * drawn here. We report where the slot is, in physical pixels, and request visibility. The native
  * preview starts hidden and shows only while visibility is requested and the rect is non-empty
  * (ADR-0005 §3), so mounting reports the rect first, then requests visible; unmounting hides it.
+ * This is the only place that calls `setPreviewVisible`: overlays register through
+ * `usePreviewOccluder` and the preview is hidden while any is open.
  */
 function NativePreviewSlot() {
   const ref = useRef<HTMLDivElement>(null);
+  const occluded = useAppStore((s) => s.previewOccluders > 0);
 
   useEffect(() => {
     const element = ref.current;
@@ -60,13 +63,17 @@ function NativePreviewSlot() {
     // Panel resizes move the slot without changing its size; window resizes change DPR or layout.
     window.addEventListener("resize", report);
     report();
-    void commands.setPreviewVisible(true);
     return () => {
       observer.disconnect();
       window.removeEventListener("resize", report);
       void commands.setPreviewVisible(false);
     };
   }, []);
+
+  // Declared after the rect effect, so on mount the rect is reported before visibility.
+  useEffect(() => {
+    void commands.setPreviewVisible(!occluded);
+  }, [occluded]);
 
   return <div ref={ref} className="absolute inset-0" />;
 }

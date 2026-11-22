@@ -1,8 +1,59 @@
 import type { HistoryLabel, IpcError } from "@/bindings";
 
+const APP_NAME = "Cutframe";
+
 /** All UI strings. Add a key here instead of writing text in JSX. */
 export const en = {
-  app: { name: "Cutframe" },
+  app: {
+    name: APP_NAME,
+    /** Window title; `*` marks unsaved changes. */
+    windowTitle: (name: string, dirty: boolean) => `${dirty ? "*" : ""}${name} - ${APP_NAME}`,
+  },
+  /** Key names used to display shortcuts, e.g. "Ctrl+Shift+S". */
+  keys: { ctrl: "Ctrl", shift: "Shift", separator: "+" },
+  file: {
+    menu: "File",
+    new: "New",
+    open: "Open…",
+    save: "Save",
+    saveAs: "Save As…",
+    projectSettings: "Project settings…",
+    /** Name of the project file type in the native open/save dialogs. */
+    filterName: `${APP_NAME} project`,
+    /** Save As file name when the project name has no usable characters. */
+    untitled: "Untitled",
+  },
+  unsaved: {
+    title: (name: string) => `Save changes to “${name}”?`,
+    description: "Your changes will be lost if you don't save them.",
+    save: "Save",
+    discard: "Don't save",
+    cancel: "Cancel",
+  },
+  projectSettings: {
+    title: "Project settings",
+    description: "Canvas size and frame rate. Clip times are kept exactly.",
+    resolution: "Resolution",
+    presets: {
+      landscapeHd: "1920 × 1080 (16:9)",
+      landscape4k: "3840 × 2160 (16:9 4K)",
+      shorts: "1080 × 1920 (9:16 Shorts)",
+      square: "1080 × 1080 (1:1)",
+      custom: "Custom",
+    },
+    width: "Width",
+    height: "Height",
+    aspectRatio: "Aspect ratio",
+    frameRate: "Frame rate",
+    sizeErrors: {
+      notInteger: "Enter a whole number",
+      odd: "Must be an even number",
+      outOfRange: (min: number, max: number) => `Must be between ${min} and ${max}`,
+    },
+    apply: "Apply",
+    cancel: "Cancel",
+    close: "Close",
+  },
   topBar: {
     undo: "Undo",
     redo: "Redo",
@@ -20,6 +71,7 @@ export const en = {
       removeTrack: "Remove Track",
       renameTrack: "Rename Track",
       renameProject: "Rename Project",
+      setProjectSettings: "Change Project Settings",
     } satisfies Record<HistoryLabel, string>,
     /** Shown for a key this UI build does not know. */
     unknown: "Last Action",
@@ -30,6 +82,11 @@ export const en = {
       invalidEdit: "That edit could not be applied",
       unavailable: "This feature is not available on this computer",
       internal: "Something went wrong",
+      fileNotFound: "The file could not be found",
+      malformedProject: "This file is not a project file or it is damaged",
+      projectTooNew: `This project was saved by a newer version of ${APP_NAME}`,
+      invalidProject: "This project file contains errors and cannot be opened",
+      io: "The file could not be read or written",
     } satisfies Record<IpcError["kind"], string>,
     /** Shown for an unknown kind or a failure that is not an `IpcError`. */
     unknown: "Something went wrong",
