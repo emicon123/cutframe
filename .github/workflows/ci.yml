@@ -79,17 +79,64 @@ jobs:
       - name: Build NSIS installer
         run: pnpm tauri build
 
+      # `--smoke-test` (src-tauri/src/smoke_test.rs) renders one offscreen frame, then presents 30
+      # frames into the native preview child window (ADR-0005 §7). The runner has no GPU, so the
+      # normal adapter selection ends on WARP; WGPU_FORCE_FALLBACK_ADAPTER is deliberately not set,
+      # so CI walks the same selection path as users' machines.
       - name: Install silently and run the smoke test
         shell: pwsh
+        timeout-minutes: 5 # backstop; the app's own watchdog exits with code 5 after 90 s
+        env:
+          NO_COLOR: "1" # plain tracing output, no ANSI escapes
         run: |
           $installer = Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
           Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait
           $dir = Join-Path $env:LOCALAPPDATA 'Cutframe'
           $exe = Get-ChildItem $dir -Filter *.exe | Where-Object { $_.Name -notlike 'uninstall*' } | Select-Object -First 1
           if (-not $exe) { throw "App not found in $dir" }
-          $p = Start-Process -FilePath $exe.FullName -ArgumentList '--smoke-test' -Wait -PassThru
-          if ($p.ExitCode -ne 0) { throw "Smoke test failed with exit code $($p.ExitCode)" }
-          Write-Host "Smoke test passed: $($exe.FullName)"
+
+          # Exit codes of src-tauri/src/smoke_test.rs (keep in sync with `Outcome`).
+          $reasons = @{
+            1 = 'no offscreen frame rendered'
+            2 = 'no GPU adapter, the preview is unavailable'
+            3 = 'no adapter can present to the native preview window'
+            4 = 'fewer than 30 frames presented to the preview window within 20 s'
+            5 = 'watchdog: the smoke test did not finish within 90 s (hang)'
+          }
+
+          # The release exe is a GUI-subsystem app: Start-Process -Wait loses its log, piping keeps
+          # stdout (tracing) and $LASTEXITCODE. stderr is merged so panics end up in the log; it must
+          # not fail the step by itself (WebView2 may print "Failed to unregister class ..."), and a
+          # non-zero exit code must not throw before the log is printed.
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $log = & $exe.FullName --smoke-test 2>&1 | ForEach-Object { "$_" } | Out-String
+          $code = $LASTEXITCODE
+          $ErrorActionPreference = 'Stop'
+          $log = $log -replace "$([char]27)\[[0-9;]*m", ''
+
+          Write-Host "----- smoke test log ($($exe.FullName)) -----"
+          Write-Host $log.TrimEnd()
+          Write-Host "----- exit code $code -----"
+
+          function Fail([string] $message) {
+            Write-Host "::error title=Smoke test failed::$message"
+            exit 1
+          }
+          if ($code -ne 0) {
+            $reason = $reasons[$code]
+            if (-not $reason) { $reason = 'unexpected exit code (crash or panic?)' }
+            Fail ('exit code {0} (0x{0:X8}): {1}' -f $code, $reason)
+          }
+          # Exit 0 alone is not enough: a silent fallback to the offscreen `frames` mode must not pass.
+          $line = $log -split "`r?`n" | Where-Object { $_ -match 'smoke test passed' } | Select-Object -Last 1
+          if (-not $line) { Fail 'exit code 0 but no "smoke test passed" line in the log' }
+          if ($line -notmatch '\bmode=Native\b') { Fail "preview is not in Native mode: $line" }
+          if ($line -notmatch '\bbackend=Dx12\b') { Fail "preview is not on D3D12 (ADR-0001): $line" }
+          if ($line -notmatch '\bpresented=(\d+)\b' -or [int]$Matches[1] -lt 30) {
+            Fail "fewer than 30 frames presented: $line"
+          }
+          Write-Host "Smoke test passed: $line"
 
       - uses: actions/upload-artifact@v4
         with:
