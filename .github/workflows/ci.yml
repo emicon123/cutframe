@@ -21,12 +21,12 @@ jobs:
     name: Windows (checks, tests, licences, installer, smoke test)
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions-rust-lang/setup-rust-toolchain@v1 # reads rust-toolchain.toml (rustfmt, clippy), caches cargo
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v5
+      - uses: actions/checkout@v7
+      - uses: actions-rust-lang/setup-rust-toolchain@v2 # reads rust-toolchain.toml (rustfmt, clippy), caches cargo
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
-          node-version: 24
+          node-version: 26
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
@@ -128,7 +128,7 @@ jobs:
           }
           Write-Host "Smoke test passed: $line"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: cutframe-windows-installer
           path: target/release/bundle/nsis/*-setup.exe
