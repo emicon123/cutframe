@@ -37,3 +37,13 @@ files: `document.rs`, `command.rs`, `ipc/*`, history labels).
   a drag restores the original position
 - the architect updates ADR-0006 only if implementation forced a change (as a new ADR if it is a
   different decision)
+
+## Outcome (2026-11-22)
+
+Done in 304820b (ADR accepted), 79cc500 (backend) and 3a66d13 (frontend).
+
+Deferred, because no continuous edit command exists yet (the timeline has no clips):
+- no IPC command takes a `phase` yet; the first ones (clip move/trim, inspector parameters) come
+  with the clip-editing feature design and plug into `ui/src/ipc/gesture.ts`
+- the manual check (Ctrl+Z after a clip drag, Escape mid-drag) moves to that feature
+- the atomic save (P1) must serialize `Document::committed()`, not `snapshot()`
