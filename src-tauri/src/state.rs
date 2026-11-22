@@ -177,6 +177,35 @@ mod tests {
     }
 
     #[test]
+    fn every_gesture_step_bumps_the_revision() {
+        let mut session = Session::new(Project::new("Test"));
+        for (i, name) in ["A", "AB", "ABC"].into_iter().enumerate() {
+            session
+                .edit(|doc| {
+                    doc.gesture_update(Box::new(RenameProject::new(name)))
+                        .map(Some)
+                })
+                .unwrap();
+            assert_eq!(session.state().revision, i as u64 + 1);
+            assert_eq!(
+                session.state().project.name,
+                name,
+                "live state is published"
+            );
+        }
+
+        let cancelled = session.edit(|doc| Ok(doc.gesture_cancel().then_some(())));
+        assert_eq!(cancelled.unwrap(), Some(()));
+        assert_eq!(session.state().revision, 4);
+        assert_eq!(session.state().project.name, "Test");
+
+        // Nothing left to cancel: no change, no new revision.
+        let cancelled = session.edit(|doc| Ok(doc.gesture_cancel().then_some(())));
+        assert_eq!(cancelled.unwrap(), None);
+        assert_eq!(session.state().revision, 4);
+    }
+
+    #[test]
     fn replacing_the_document_never_lowers_the_revision() {
         let mut session = Session::new(Project::new("First"));
         let mut emitted = vec![session.state().revision];

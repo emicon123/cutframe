@@ -14,9 +14,14 @@ export const commands = {
 	removeTrack: (id: TrackId, options?: InvokeOptions) => __TAURI_INVOKE<null>("remove_track", { id }, options),
 	renameTrack: (id: TrackId, name: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("rename_track", { id, name }, options),
 	renameProject: (name: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("rename_project", { name }, options),
-	/**  Returns `false` if there was nothing to undo. */
+	/**
+	 *  Cancels the open gesture (ADR-0006) and restores the state before it; records nothing. Call it
+	 *  on Escape, lost pointer capture, window blur and at startup. Does nothing if no gesture is open.
+	 */
+	cancelGesture: (options?: InvokeOptions) => __TAURI_INVOKE<null>("cancel_gesture", undefined, options),
+	/**  Returns `false` if there was nothing to undo. While a gesture is open, cancels it instead. */
 	undo: (options?: InvokeOptions) => __TAURI_INVOKE<boolean>("undo", undefined, options),
-	/**  Returns `false` if there was nothing to redo. */
+	/**  Returns `false` if there was nothing to redo. While a gesture is open, cancels it instead. */
 	redo: (options?: InvokeOptions) => __TAURI_INVOKE<boolean>("redo", undefined, options),
 	getAppInfo: (options?: InvokeOptions) => __TAURI_INVOKE<AppInfo_Serialize>("get_app_info", undefined, options),
 	/**
@@ -62,6 +67,16 @@ export type ClipView = {
 	start: Time,
 	duration: Time,
 };
+
+/**  Which step of a continuous edit (drag, trim, slider) a command is (ADR-0006 §4). */
+export type EditPhase = 
+/**  Show this value live; opens a gesture if none is open. Records nothing. */
+"update" | 
+/**
+ *  Final value: records one history entry. Without an open gesture this is a plain edit
+ *  (keyboard nudge, typed value).
+ */
+"commit";
 
 /**  A frame rate as a rational number of frames per second, e.g. `30000/1001` for 29.97 fps. */
 export type FrameRate = FrameRateRepr;
@@ -253,6 +268,7 @@ export type MockCommandHandlers = {
     removeTrack: (args: { id: TrackId }) => null | Promise<null>,
     renameTrack: (args: { id: TrackId; name: string }) => null | Promise<null>,
     renameProject: (args: { name: string }) => null | Promise<null>,
+    cancelGesture: () => null | Promise<null>,
     undo: () => boolean | Promise<boolean>,
     redo: () => boolean | Promise<boolean>,
     getAppInfo: () => AppInfo_Serialize | Promise<AppInfo_Serialize>,
@@ -289,6 +305,7 @@ export function mockCommands(handlers: Partial<MockCommandHandlers> = {}): void 
             case "remove_track": return mockCommandHandler(mockHandlers.removeTrack, "remove_track", args);
             case "rename_track": return mockCommandHandler(mockHandlers.renameTrack, "rename_track", args);
             case "rename_project": return mockCommandHandler(mockHandlers.renameProject, "rename_project", args);
+            case "cancel_gesture": return mockCommandHandler(mockHandlers.cancelGesture, "cancel_gesture", args);
             case "undo": return mockCommandHandler(mockHandlers.undo, "undo", args);
             case "redo": return mockCommandHandler(mockHandlers.redo, "redo", args);
             case "get_app_info": return mockCommandHandler(mockHandlers.getAppInfo, "get_app_info", args);

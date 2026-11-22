@@ -28,6 +28,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             commands::remove_track,
             commands::rename_track,
             commands::rename_project,
+            commands::cancel_gesture,
             commands::undo,
             commands::redo,
             commands::get_app_info,
@@ -35,6 +36,9 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             commands::set_preview_visible,
         ])
         .events(collect_events![ProjectChanged])
+        // The phase argument of gesture-capable commands (ADR-0006 §4). Exported on its own so the
+        // UI's gesture helper can use it before the first such command lands.
+        .typ::<app_core::EditPhase>()
         // Time (flicks) and revisions are 64-bit; both stay far below 2^53 in practice.
         .dangerously_cast_bigints_to_number()
         .mocks()

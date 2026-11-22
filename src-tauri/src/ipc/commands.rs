@@ -70,7 +70,16 @@ pub fn rename_project(
     Ok(())
 }
 
-/// Returns `false` if there was nothing to undo.
+/// Cancels the open gesture (ADR-0006) and restores the state before it; records nothing. Call it
+/// on Escape, lost pointer capture, window blur and at startup. Does nothing if no gesture is open.
+#[tauri::command]
+#[specta::specta]
+pub fn cancel_gesture(app: AppHandle, state: State<'_, AppState>) -> Result<(), IpcError> {
+    state.edit(&app, |doc| Ok(doc.gesture_cancel().then_some(())))?;
+    Ok(())
+}
+
+/// Returns `false` if there was nothing to undo. While a gesture is open, cancels it instead.
 #[tauri::command]
 #[specta::specta]
 pub fn undo(app: AppHandle, state: State<'_, AppState>) -> Result<bool, IpcError> {
@@ -79,7 +88,7 @@ pub fn undo(app: AppHandle, state: State<'_, AppState>) -> Result<bool, IpcError
         .is_some())
 }
 
-/// Returns `false` if there was nothing to redo.
+/// Returns `false` if there was nothing to redo. While a gesture is open, cancels it instead.
 #[tauri::command]
 #[specta::specta]
 pub fn redo(app: AppHandle, state: State<'_, AppState>) -> Result<bool, IpcError> {

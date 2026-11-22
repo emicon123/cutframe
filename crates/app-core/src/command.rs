@@ -24,6 +24,15 @@ pub enum CommandError {
     TrackNotFound(TrackId),
     #[error("name must not be empty")]
     EmptyName,
+    /// A gesture is open; commit or cancel it before running another edit (ADR-0006 §3).
+    #[error("a gesture is in progress")]
+    GestureInProgress,
+    /// A gesture update or commit was a different kind of edit than the open gesture.
+    #[error("gesture {open:?} is open, got {got:?}")]
+    GestureMismatch {
+        open: HistoryLabel,
+        got: HistoryLabel,
+    },
 }
 
 /// A reversible edit.
@@ -36,6 +45,46 @@ pub trait Command: Send + Sync + std::fmt::Debug {
     fn label(&self) -> HistoryLabel;
     fn apply(&mut self, project: &mut Project) -> Result<(), CommandError>;
     fn revert(&mut self, project: &mut Project);
+}
+
+/// Several commands recorded as one history entry, e.g. "delete selection" (ADR-0006 §1).
+///
+/// Children are applied in order and reverted in reverse. If a child fails, the children already
+/// applied are reverted and the batch returns that child's error, leaving the project unchanged.
+#[derive(Debug)]
+pub struct Batch {
+    label: HistoryLabel,
+    commands: Vec<Box<dyn Command>>,
+}
+
+impl Batch {
+    pub fn new(label: HistoryLabel, commands: Vec<Box<dyn Command>>) -> Self {
+        Self { label, commands }
+    }
+}
+
+impl Command for Batch {
+    fn label(&self) -> HistoryLabel {
+        self.label
+    }
+
+    fn apply(&mut self, project: &mut Project) -> Result<(), CommandError> {
+        for applied in 0..self.commands.len() {
+            if let Err(err) = self.commands[applied].apply(project) {
+                for command in self.commands[..applied].iter_mut().rev() {
+                    command.revert(project);
+                }
+                return Err(err);
+            }
+        }
+        Ok(())
+    }
+
+    fn revert(&mut self, project: &mut Project) {
+        for command in self.commands.iter_mut().rev() {
+            command.revert(project);
+        }
+    }
 }
 
 /// Inserts a new empty track at `index` (or at the bottom).
@@ -300,6 +349,46 @@ mod tests {
         for (label, key) in keys {
             assert_eq!(serde_json::to_value(label).unwrap(), key);
         }
+    }
+
+    #[test]
+    fn batch_is_reversible_and_keeps_its_label() {
+        let project = Project::new("Test");
+        let id = project.tracks[0].id;
+        let batch = Batch::new(
+            HistoryLabel::RenameTrack,
+            vec![
+                Box::new(RenameTrack::new(id, "First")),
+                Box::new(RenameTrack::new(id, "Second")),
+                Box::new(RenameProject::new("Renamed")),
+            ],
+        );
+        assert_eq!(batch.label(), HistoryLabel::RenameTrack);
+        let after = assert_reversible(batch, &project);
+        assert_eq!(after.track(id).map(|t| t.name.as_str()), Some("Second"));
+        assert_eq!(after.name, "Renamed");
+    }
+
+    #[test]
+    fn batch_rolls_back_applied_children_when_one_fails() {
+        let project = Project::new("Test");
+        let first = project.tracks[0].id;
+        let missing = TrackId::new();
+        let mut batch = Batch::new(
+            HistoryLabel::RemoveTrack,
+            vec![
+                Box::new(RenameProject::new("Renamed")),
+                Box::new(RemoveTrack::new(first)),
+                Box::new(RemoveTrack::new(missing)),
+                Box::new(RenameProject::new("Never applied")),
+            ],
+        );
+        let mut edited = project.clone();
+        assert_eq!(
+            batch.apply(&mut edited),
+            Err(CommandError::TrackNotFound(missing))
+        );
+        assert_eq!(edited, project);
     }
 
     #[test]
