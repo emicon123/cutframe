@@ -27,3 +27,12 @@ export function formatFrameRate(rate: FrameRate): string {
   const fps = rate.num / rate.den;
   return Number.isInteger(fps) ? `${fps} fps` : `${fps.toFixed(3)} fps`;
 }
+
+/** A media length for lists: `M:SS`, or `H:MM:SS` from one hour, rounded to the nearest second. */
+export function formatDuration(flicks: number): string {
+  const totalSeconds = Math.round(Math.max(0, flicks) / FLICKS_PER_SECOND);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor(totalSeconds / 60) % 60;
+  const seconds = String(totalSeconds % 60).padStart(2, "0");
+  return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}` : `${minutes}:${seconds}`;
+}

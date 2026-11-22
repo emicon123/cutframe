@@ -126,19 +126,19 @@ inserted between existing ones.
 
 | ID | Feature | Notes | Status |
 |---|---|---|---|
-| F1.01 | Import video, audio and images via file dialog (multi-select) | | missing |
-| F1.02 | Drag and drop files from the OS into the media panel | | missing |
+| F1.01 | Import video, audio and images via file dialog (multi-select) | Backend (0220): `import_media_dialog(filterLabel)` opens the native multi-select dialog from Rust and starts an import job; one undo step `importMedia`; tests in `src-tauri/src/import.rs`. UI: Import button in the media panel and Ctrl+I (`features/media-bin/importActions.ts`, shortcut registry), progress bar with Cancel/Esc from job events (`stores/importStore.ts`, Vitest), plain media list. Needs manual verification in `pnpm dev` on Windows | partial |
+| F1.02 | Drag and drop files from the OS into the media panel | Backend (0220): `import_media(paths)` takes files and folders (recursive, `MEDIA_EXTENSIONS` only, max `MAX_IMPORT_FILES`). UI: media panel is the drop target via `getCurrentWebview().onDragDropEvent` with a hover highlight, hit-tested in CSS px (`features/media-bin/useFileDrop.ts`, `dropTarget.ts`, Vitest incl. a mocked drop); `dragDropEnabled` set in `tauri.conf.json`. Needs manual verification in `pnpm dev` on Windows | partial |
 | F1.03 | Drag and drop files from the OS directly onto the timeline | | missing |
-| F1.04 | Video containers: MP4, MOV, MKV, WebM, AVI, M4V | | missing |
-| F1.05 | Video codecs (decode): H.264, HEVC, VP8/VP9, AV1, ProRes, MPEG-2/4, MJPEG | Decoders are LGPL-safe | missing |
-| F1.06 | Audio formats: MP3, WAV, AAC/M4A, FLAC, OGG/Opus | | missing |
-| F1.07 | Image formats: JPG, PNG, WebP, BMP, TIFF, GIF (animated) | | missing |
-| F1.08 | HEIC/HEIF photos (phone pictures) | Check FFmpeg 7.x support | missing |
-| F1.09 | Media probing: duration, resolution, frame rate, codec, audio channels/sample rate | | missing |
-| F1.10 | Rotation metadata honoured (portrait phone videos) | | missing |
-| F1.11 | Variable frame rate sources play and cut correctly | | missing |
-| F1.12 | Non-square pixel aspect ratio and anamorphic sources displayed correctly | | missing |
-| F1.13 | Corrupt / unsupported files rejected with a clear message | | missing |
+| F1.04 | Video containers: MP4, MOV, MKV, WebM, AVI, M4V | Probe tests for MP4, MOV, MKV, WebM (no container duration), AVI, M4V, MPEG-PS (`crates/engine/tests/media_formats.rs`). Missing: UI import path | partial |
+| F1.05 | Video codecs (decode): H.264, HEVC, VP8/VP9, AV1, ProRes, MPEG-2/4, MJPEG | Decoders are LGPL-safe. Probe decodes the first frame of H.264, HEVC, VP8, VP9, AV1 (dav1d), ProRes, MPEG-2, MPEG-4, MJPEG in tests. Missing: playback decode (0310+) | partial |
+| F1.06 | Audio formats: MP3, WAV, AAC/M4A, FLAC, OGG/Opus | Probe tests for all five (codec, sample rate, channels, duration); multi-track files list every stream, default first. Missing: UI, audio playback | partial |
+| F1.07 | Image formats: JPG, PNG, WebP, BMP, TIFF, GIF (animated) | Probe tests: stills are `image` (no duration), animated GIF is `video`; animated WebP imports as a still (FFmpeg 7.1). Missing: UI, posters (0230) | partial |
+| F1.08 | HEIC/HEIF photos (phone pictures) | Supported, no libheif: FFmpeg 7.1 exposes phone tile grids as a stream group; the probe reports the grid size, decodes a tile and reads `irot` itself (`engine/src/media/heif.rs`; self-made grid fixture). Missing: tile composition for posters/preview (0230/0320), a check with a real phone HEIC on Windows, UI | partial |
+| F1.09 | Media probing: duration, resolution, frame rate, codec, audio channels/sample rate | `engine::media::probe` fills `MediaInfo` (plus pixel format, bit depth, colour, HDR/Dolby Vision metadata); shown in `MediaView`. Missing: UI list | partial |
+| F1.10 | Rotation metadata honoured (portrait phone videos) | Probe reads the display matrix (video), EXIF orientation (JPEG) and `irot` (HEIC); `display_size()` is upright; tests. Missing: applying it in posters and the render graph (0230/0310) | partial |
+| F1.11 | Variable frame rate sources play and cut correctly | Timing from timestamps (`Time::from_ticks`), sample-and-hold rule `engine::media::decode::frame_index_at`, VFR fixture test. Missing: playback and cutting (0250, 0310+) | partial |
+| F1.12 | Non-square pixel aspect ratio and anamorphic sources displayed correctly | Probe records `sampleAspect`; `display_size()` corrects the width (MPEG-2 4:3 SAR fixture). Missing: posters and render graph (0230/0310) | partial |
+| F1.13 | Corrupt / unsupported files rejected with a clear message | Per-file `MediaErrorKind` in `media-job-report` (`damaged`, `unsupportedFormat`, `unsupportedCodec`, ...); truncated, random, text and empty files tested. UI: result toast in the media panel with added / already imported / failed counts and per-file translated reasons (`importSummary.ts`, `i18n` keys per `MediaErrorKind`, Vitest). Needs manual verification in `pnpm dev` on Windows | partial |
 
 ### Media panel
 

@@ -1,6 +1,7 @@
 import { commands } from "@/bindings";
 import { fileActions } from "@/features/project/fileActions";
 import { t } from "@/i18n";
+import { importFromDialog } from "@/features/media-bin/importActions";
 import { run } from "@/stores/appStore";
 
 export type KeyInput = Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "shiftKey" | "altKey">;
@@ -35,6 +36,7 @@ export const SHORTCUTS: readonly Shortcut[] = [
     blockDefault: true,
     run: () => void fileActions.saveAs(),
   },
+  { id: "import-media", key: "i", ctrl: true, run: () => void importFromDialog() },
 ];
 
 /** Display text of a registered shortcut, e.g. `"Ctrl+Shift+S"`; empty for an unknown id. */
