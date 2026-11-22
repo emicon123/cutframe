@@ -210,7 +210,9 @@ stateDiagram-v2
   0100 lands; see `docs/design/project-lifecycle.md`.
 - **App-level state (target, tasks 0150/0160):** preferences in `app_config_dir()/preferences.json`
   with their own `schemaVersion` and migrations, owned by `src-tauri/src/preferences.rs`, never undoable
-  (`docs/design/preferences.md`); window geometry via `tauri-plugin-window-state`; panel layout in
+  (`docs/design/preferences.md`); recent projects in `app_data_dir()/recent.json` (own
+  `schemaVersion`, `src-tauri/src/recent.rs`) with covers served as `media://cover/<hash>`
+  (`docs/design/home-screen.md`, task 0120); window geometry via `tauri-plugin-window-state`; panel layout in
   WebView `localStorage`. Single instance forwards launch paths to the running app as
   `open-file-requested`; GPU loss is recovered on the `preview-render` thread and reported as
   `app-info-changed` (`docs/design/platform-integration.md`).
