@@ -3,5 +3,10 @@
   "identifier": "default",
   "description": "Permissions for the main editor window. Keep minimal: prefer dedicated commands over generic plugin access.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-title",
+    "dialog:allow-open",
+    "dialog:allow-save"
+  ]
 }

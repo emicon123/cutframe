@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "id": "019a8f2e-7c4b-7d1e-9a3f-2b6c8d0e1f20",
+  "name": "Fixture v1 (invalid: overlapping clips)",
+  "settings": {
+    "width": 1920,
+    "height": 1080,
+    "frameRate": {
+      "num": 30,
+      "den": 1
+    },
+    "sampleRate": 48000
+  },
+  "tracks": [
+    {
+      "id": "019a8f2e-7c4b-7d1e-9a3f-2b6c8d0e1f21",
+      "kind": "video",
+      "name": "Video 1",
+      "muted": false,
+      "hidden": false,
+      "clips": [
+        {
+          "id": "019a8f2e-7c4b-7d1e-9a3f-2b6c8d0e1f23",
+          "name": "Intro",
+          "start": 0,
+          "duration": 2116800000
+        },
+        {
+          "id": "019a8f2e-7c4b-7d1e-9a3f-2b6c8d0e1f24",
+          "name": "Overlaps intro",
+          "start": 1411200000,
+          "duration": 1411200000
+        }
+      ]
+    },
+    {
+      "id": "019a8f2e-7c4b-7d1e-9a3f-2b6c8d0e1f22",
+      "kind": "audio",
+      "name": "Audio 1",
+      "muted": false,
+      "hidden": false,
+      "clips": []
+    }
+  ]
+}

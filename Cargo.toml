@@ -23,6 +23,7 @@ specta = { version = "=2.0.0-rc.28", features = ["derive", "uuid"] }
 specta-typescript = "=0.0.15"
 tauri = "2.12"
 tauri-build = "2.7"
+tauri-plugin-dialog = "2.8"
 tauri-specta = { version = "=2.0.0-rc.29", features = ["derive", "typescript"] }
 thiserror = "2.0"
 tracing = "0.1"
@@ -32,6 +33,7 @@ wgpu = "30"
 windows = "0.62"
 
 proptest = "1"
+tempfile = "3"
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

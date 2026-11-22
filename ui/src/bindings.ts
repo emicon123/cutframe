@@ -36,12 +36,48 @@ export const commands = {
 	 *  on screen only while requested and the last `set_preview_rect` was non-empty.
 	 */
 	setPreviewVisible: (visible: boolean, options?: InvokeOptions) => __TAURI_INVOKE<void>("set_preview_visible", { visible }, options),
+	/**
+	 *  Replaces the open project with an empty one (default tracks) with `settings`, or the default
+	 *  settings. The history is cleared and the project is clean. Ask about unsaved changes first.
+	 */
+	newProject: (settings: ProjectSettings | null, options?: InvokeOptions) => __TAURI_INVOKE<null>("new_project", { settings }, options),
+	/**
+	 *  Opens the project file at `path` (absolute) in place of the open project. The history is
+	 *  cleared and the project is clean. The extension is not checked: the content decides. On error
+	 *  the open project is unchanged. Ask about unsaved changes first.
+	 */
+	openProject: (path: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("open_project", { path }, options),
+	/**
+	 *  Saves to the open project's file. Returns `false` if the project has no file yet: nothing was
+	 *  written and the UI runs Save As. Not an undo step.
+	 */
+	saveProject: (options?: InvokeOptions) => __TAURI_INVOKE<boolean>("save_project", undefined, options),
+	/**
+	 *  Saves to `path` (absolute; `.cutframe` is appended when it has no extension) and makes it the
+	 *  project's file. Not an undo step.
+	 */
+	saveProjectAs: (path: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("save_project_as", { path }, options),
+	/**
+	 *  Changes canvas size, frame rate and sample rate as one undoable entry. Clip times are kept
+	 *  exactly. Settings equal to the current ones change nothing and record nothing. Out-of-range
+	 *  settings fail with `invalidEdit`.
+	 */
+	setProjectSettings: (settings: ProjectSettings, options?: InvokeOptions) => __TAURI_INVOKE<null>("set_project_settings", { settings }, options),
+	/**
+	 *  Closes the main window without asking again. Call it after the unsaved-changes prompt that
+	 *  `quitRequested` started (Save succeeded, or Don't save).
+	 */
+	confirmClose: (options?: InvokeOptions) => __TAURI_INVOKE<null>("confirm_close", undefined, options),
 };
 
 /** Events */
 export const events = {
 	projectChanged: makeEvent<ProjectChanged_Serialize, ProjectChanged_Deserialize>("project-changed"),
+	quitRequested: makeEvent<QuitRequested, QuitRequested>("quit-requested"),
 };
+
+/* Constants */
+export const PROJECT_FILE_EXTENSION = "cutframe" as const;
 
 /* Types */
 export type AppInfo = AppInfo_Serialize | AppInfo_Deserialize;
@@ -98,7 +134,7 @@ export type GpuInfoView = {
  *  This is not display text: the UI translates the key (ADR-0003 §5, ADR-0006 §5). Keys are API,
  *  so a variant is never renamed or reused for a different action; add a new one instead.
  */
-export type HistoryLabel = "addTrack" | "removeTrack" | "renameTrack" | "renameProject";
+export type HistoryLabel = "addTrack" | "removeTrack" | "renameTrack" | "renameProject" | "setProjectSettings";
 
 export type HistoryState = HistoryState_Serialize | HistoryState_Deserialize;
 
@@ -133,7 +169,17 @@ export type IpcError =
 /**  A subsystem is not available (e.g. no GPU). */
 { kind: "unavailable"; message: string } | 
 /**  A bug or an unexpected failure in the backend. */
-{ kind: "internal"; message: string };
+{ kind: "internal"; message: string } | 
+/**  Open: the file does not exist. */
+{ kind: "fileNotFound"; message: string } | 
+/**  Open: not a project file (not JSON, not UTF-8, no `schemaVersion`, or the wrong shape). */
+{ kind: "malformedProject"; message: string } | 
+/**  Open: the file was written by a newer version of the app. */
+{ kind: "projectTooNew"; message: string } | 
+/**  Open: the file breaks a model invariant (e.g. overlapping clips). It is not repaired. */
+{ kind: "invalidProject"; message: string } | 
+/**  Any other file-system failure: permission denied, disk full, file locked. */
+{ kind: "io"; message: string };
 
 /**  How the preview reaches the screen on this platform. */
 export type PreviewMode = 
@@ -153,19 +199,19 @@ export type PreviewRect = {
 };
 
 /**
- *  Emitted after every change to the project (edit, undo, redo, load).
+ *  Emitted after every change to the project (edit, undo, redo, new, open, save).
  *  The UI keeps the payload with the highest `revision` and drops older ones.
  */
 export type ProjectChanged = ProjectChanged_Serialize | ProjectChanged_Deserialize;
 
 /**
- *  Emitted after every change to the project (edit, undo, redo, load).
+ *  Emitted after every change to the project (edit, undo, redo, new, open, save).
  *  The UI keeps the payload with the highest `revision` and drops older ones.
  */
 export type ProjectChanged_Deserialize = ProjectState_Deserialize;
 
 /**
- *  Emitted after every change to the project (edit, undo, redo, load).
+ *  Emitted after every change to the project (edit, undo, redo, new, open, save).
  *  The UI keeps the payload with the highest `revision` and drops older ones.
  */
 export type ProjectChanged_Serialize = ProjectState_Serialize;
@@ -190,6 +236,10 @@ export type ProjectState_Deserialize = {
 	revision: number,
 	project: ProjectView,
 	history: HistoryState_Deserialize,
+	/**  Absolute path of the open project file; `None` for a new project that was never saved. */
+	filePath?: string | null,
+	/**  Unsaved changes: the history moved since the last save or open, or a gesture is open. */
+	dirty: boolean,
 };
 
 export type ProjectState_Serialize = {
@@ -200,6 +250,10 @@ export type ProjectState_Serialize = {
 	revision: number,
 	project: ProjectView,
 	history: HistoryState_Serialize,
+	/**  Absolute path of the open project file; `None` for a new project that was never saved. */
+	filePath: string | null,
+	/**  Unsaved changes: the history moved since the last save or open, or a gesture is open. */
+	dirty: boolean,
 };
 
 export type ProjectView = {
@@ -211,6 +265,13 @@ export type ProjectView = {
 	/**  Top to bottom as shown in the timeline. */
 	tracks: TrackView[],
 };
+
+/**
+ *  The user tried to close the main window while the project has unsaved changes. The close was
+ *  stopped: ask Save / Don't save / Cancel, then call `confirmClose` to close or do nothing to stay
+ *  open. A clean project closes without this event.
+ */
+export type QuitRequested = null;
 
 /**
  *  A point in time or a duration, in flicks.
@@ -274,6 +335,12 @@ export type MockCommandHandlers = {
     getAppInfo: () => AppInfo_Serialize | Promise<AppInfo_Serialize>,
     setPreviewRect: (args: { rect: PreviewRect }) => void | Promise<void>,
     setPreviewVisible: (args: { visible: boolean }) => void | Promise<void>,
+    newProject: (args: { settings: ProjectSettings | null }) => null | Promise<null>,
+    openProject: (args: { path: string }) => null | Promise<null>,
+    saveProject: () => boolean | Promise<boolean>,
+    saveProjectAs: (args: { path: string }) => null | Promise<null>,
+    setProjectSettings: (args: { settings: ProjectSettings }) => null | Promise<null>,
+    confirmClose: () => null | Promise<null>,
 };
 
 /**
@@ -311,6 +378,12 @@ export function mockCommands(handlers: Partial<MockCommandHandlers> = {}): void 
             case "get_app_info": return mockCommandHandler(mockHandlers.getAppInfo, "get_app_info", args);
             case "set_preview_rect": return mockCommandHandler(mockHandlers.setPreviewRect, "set_preview_rect", args);
             case "set_preview_visible": return mockCommandHandler(mockHandlers.setPreviewVisible, "set_preview_visible", args);
+            case "new_project": return mockCommandHandler(mockHandlers.newProject, "new_project", args);
+            case "open_project": return mockCommandHandler(mockHandlers.openProject, "open_project", args);
+            case "save_project": return mockCommandHandler(mockHandlers.saveProject, "save_project", args);
+            case "save_project_as": return mockCommandHandler(mockHandlers.saveProjectAs, "save_project_as", args);
+            case "set_project_settings": return mockCommandHandler(mockHandlers.setProjectSettings, "set_project_settings", args);
+            case "confirm_close": return mockCommandHandler(mockHandlers.confirmClose, "confirm_close", args);
             default: throw new Error(`No mock handler registered for command '${cmd}'`);
         }
     }, { shouldMockEvents: true });

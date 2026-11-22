@@ -1,6 +1,8 @@
 //! Data shapes sent to the UI. These are views of the model, not the model itself: they contain
 //! what the UI needs to draw and nothing that would tie the UI to internal structures.
 
+use std::path::Path;
+
 use app_core::command::HistoryLabel;
 use app_core::{ClipId, Document, ProjectId, ProjectSettings, Time, TrackId, TrackKind};
 use serde::{Deserialize, Serialize};
@@ -13,6 +15,10 @@ pub struct ProjectState {
     pub revision: u64,
     pub project: ProjectView,
     pub history: HistoryState,
+    /// Absolute path of the open project file; `None` for a new project that was never saved.
+    pub file_path: Option<String>,
+    /// Unsaved changes: the history moved since the last save or open, or a gesture is open.
+    pub dirty: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -59,8 +65,9 @@ pub struct ClipView {
 }
 
 impl ProjectState {
-    /// The view of `doc` at the session-wide `revision` (owned by `AppState`).
-    pub fn new(doc: &Document, revision: u64) -> Self {
+    /// The view of `doc` at the session-wide `revision` (owned by `AppState`), opened from or last
+    /// saved to `file_path`.
+    pub fn new(doc: &Document, revision: u64, file_path: Option<&Path>, dirty: bool) -> Self {
         let project = doc.project();
         Self {
             revision,
@@ -97,6 +104,8 @@ impl ProjectState {
                 undo_label: doc.undo_label(),
                 redo_label: doc.redo_label(),
             },
+            file_path: file_path.map(|p| p.to_string_lossy().into_owned()),
+            dirty,
         }
     }
 }

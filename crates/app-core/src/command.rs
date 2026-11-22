@@ -2,7 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Project, Track, TrackId, TrackKind};
+use crate::model::{Project, ProjectSettings, Track, TrackId, TrackKind};
+use crate::validate::ValidationError;
 
 /// Stable key naming an undo/redo history entry, e.g. for an "Undo Add Track" menu item.
 ///
@@ -16,6 +17,7 @@ pub enum HistoryLabel {
     RemoveTrack,
     RenameTrack,
     RenameProject,
+    SetProjectSettings,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -33,6 +35,9 @@ pub enum CommandError {
         open: HistoryLabel,
         got: HistoryLabel,
     },
+    /// Project settings outside the supported ranges ([`ProjectSettings::validate`]).
+    #[error("invalid project settings: {0}")]
+    InvalidSettings(ValidationError),
 }
 
 /// A reversible edit.
@@ -253,6 +258,43 @@ impl Command for RenameProject {
     }
 }
 
+/// Replaces the project settings (canvas size, frame rate, sample rate) as one history entry.
+///
+/// Clips are never touched: their flick times stay bit-exact, and they need not lie on the new
+/// frame grid. The aspect ratio is derived from the canvas size, not stored.
+#[derive(Debug)]
+pub struct SetProjectSettings {
+    new: ProjectSettings,
+    old: Option<ProjectSettings>,
+}
+
+impl SetProjectSettings {
+    pub fn new(settings: ProjectSettings) -> Self {
+        Self {
+            new: settings,
+            old: None,
+        }
+    }
+}
+
+impl Command for SetProjectSettings {
+    fn label(&self) -> HistoryLabel {
+        HistoryLabel::SetProjectSettings
+    }
+
+    fn apply(&mut self, project: &mut Project) -> Result<(), CommandError> {
+        self.new.validate().map_err(CommandError::InvalidSettings)?;
+        self.old = Some(std::mem::replace(&mut project.settings, self.new));
+        Ok(())
+    }
+
+    fn revert(&mut self, project: &mut Project) {
+        if let Some(old) = self.old.take() {
+            project.settings = old;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,6 +377,10 @@ mod tests {
         assert_eq!(RemoveTrack::new(id).label(), HistoryLabel::RemoveTrack);
         assert_eq!(RenameTrack::new(id, "A").label(), HistoryLabel::RenameTrack);
         assert_eq!(RenameProject::new("A").label(), HistoryLabel::RenameProject);
+        assert_eq!(
+            SetProjectSettings::new(ProjectSettings::default()).label(),
+            HistoryLabel::SetProjectSettings
+        );
     }
 
     /// The serialized keys are what the UI translates; renaming one breaks its translations.
@@ -345,6 +391,7 @@ mod tests {
             (HistoryLabel::RemoveTrack, "removeTrack"),
             (HistoryLabel::RenameTrack, "renameTrack"),
             (HistoryLabel::RenameProject, "renameProject"),
+            (HistoryLabel::SetProjectSettings, "setProjectSettings"),
         ];
         for (label, key) in keys {
             assert_eq!(serde_json::to_value(label).unwrap(), key);
@@ -389,6 +436,48 @@ mod tests {
             Err(CommandError::TrackNotFound(missing))
         );
         assert_eq!(edited, project);
+    }
+
+    fn vertical_60fps() -> ProjectSettings {
+        ProjectSettings {
+            width: 1080,
+            height: 1920,
+            frame_rate: crate::time::FrameRate::FPS_60,
+            sample_rate: 44_100,
+        }
+    }
+
+    #[test]
+    fn set_project_settings_is_reversible_and_leaves_clips_alone() {
+        let mut project = Project::new("Test");
+        project.tracks[0].clips.push(crate::model::Clip {
+            id: crate::model::ClipId::new(),
+            name: "Odd".into(),
+            // Not on the 30 or 60 fps grid.
+            start: crate::time::Time(12_345_677),
+            duration: crate::time::Time(98_765_431),
+        });
+        let after = assert_reversible(SetProjectSettings::new(vertical_60fps()), &project);
+        assert_eq!(after.settings, vertical_60fps());
+        assert_eq!(after.tracks, project.tracks, "clips are bit-identical");
+    }
+
+    #[test]
+    fn set_project_settings_rejects_invalid_settings() {
+        let mut project = Project::new("Test");
+        let before = project.clone();
+        let invalid = ProjectSettings {
+            width: 1921,
+            ..ProjectSettings::default()
+        };
+        assert_eq!(
+            SetProjectSettings::new(invalid).apply(&mut project),
+            Err(CommandError::InvalidSettings(ValidationError::CanvasSize {
+                width: 1921,
+                height: 1080
+            }))
+        );
+        assert_eq!(project, before);
     }
 
     #[test]

@@ -25,6 +25,15 @@ pub enum EditPhase {
     Commit,
 }
 
+/// Where the document stands in its history, for "unsaved changes" tracking (ADR-0002 amendment
+/// §2). Two equal positions of one document mean the same committed state.
+///
+/// Every recorded history entry gets a new id; the position is the id of the newest applied entry.
+/// Undoing back to a position and redoing forward to it returns the same value, a new edit never
+/// does. Gesture updates and cancels record nothing and keep the position.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HistoryPosition(u64);
+
 /// The editable document. Owned by one thread; readers get cheap [`Arc`] snapshots.
 ///
 /// Every edit applies its command to a clone of the current state and swaps the clone in only on
@@ -33,10 +42,22 @@ pub enum EditPhase {
 #[derive(Debug)]
 pub struct Document {
     project: Arc<Project>,
-    undo: Vec<Box<dyn Command>>,
-    redo: Vec<Box<dyn Command>>,
+    undo: Vec<Entry>,
+    redo: Vec<Entry>,
     history_limit: usize,
     gesture: Option<Gesture>,
+    /// Id of the next recorded entry. Ids start at 1; 0 is the initial state.
+    next_id: u64,
+    /// Position when the undo stack is empty: 0 initially, or the id of the newest entry the
+    /// history cap dropped, so undoing everything after a drop never looks like the initial state.
+    floor: u64,
+}
+
+/// One history entry.
+#[derive(Debug)]
+struct Entry {
+    id: u64,
+    command: Box<dyn Command>,
 }
 
 /// An open continuous edit ("replace from base", ADR-0006 §2).
@@ -56,7 +77,21 @@ impl Document {
             redo: Vec::new(),
             history_limit: DEFAULT_HISTORY_LIMIT,
             gesture: None,
+            next_id: 1,
+            floor: 0,
         }
+    }
+
+    /// The id of the newest applied history entry. Compare with a position taken at save time to
+    /// know whether the committed state changed since.
+    pub fn position(&self) -> HistoryPosition {
+        HistoryPosition(self.undo.last().map_or(self.floor, |e| e.id))
+    }
+
+    /// Whether a gesture is open. Its live state is never saved, so an open gesture counts as an
+    /// unsaved change.
+    pub fn has_gesture(&self) -> bool {
+        self.gesture.is_some()
     }
 
     /// The current state, including an open gesture's live value. Cheap to clone and safe to send
@@ -85,12 +120,12 @@ impl Document {
 
     /// Key of the entry the next `undo` reverts.
     pub fn undo_label(&self) -> Option<HistoryLabel> {
-        self.undo.last().map(|c| c.label())
+        self.undo.last().map(|e| e.command.label())
     }
 
     /// Key of the entry the next `redo` re-applies.
     pub fn redo_label(&self) -> Option<HistoryLabel> {
-        self.redo.last().map(|c| c.label())
+        self.redo.last().map(|e| e.command.label())
     }
 
     /// Key of the open gesture, if any.
@@ -175,11 +210,11 @@ impl Document {
         if self.gesture_cancel() {
             return true;
         }
-        let Some(mut command) = self.undo.pop() else {
+        let Some(mut entry) = self.undo.pop() else {
             return false;
         };
-        command.revert(Arc::make_mut(&mut self.project));
-        self.redo.push(command);
+        entry.command.revert(Arc::make_mut(&mut self.project));
+        self.redo.push(entry);
         true
     }
 
@@ -189,17 +224,17 @@ impl Document {
         if self.gesture_cancel() {
             return true;
         }
-        let Some(mut command) = self.redo.pop() else {
+        let Some(mut entry) = self.redo.pop() else {
             return false;
         };
         let project = Arc::make_mut(&mut self.project);
         // Redo replays a command on the exact state it was originally applied to, so it cannot
         // fail unless a command is buggy. Drop the redo stack rather than corrupt the project.
-        if command.apply(project).is_err() {
+        if entry.command.apply(project).is_err() {
             self.redo.clear();
             return false;
         }
-        self.undo.push(command);
+        self.undo.push(entry);
         true
     }
 
@@ -216,12 +251,14 @@ impl Document {
         }
     }
 
-    /// Pushes an applied command as one history entry.
+    /// Pushes an applied command as one history entry with a new id.
     fn record(&mut self, command: Box<dyn Command>) {
         self.redo.clear();
-        self.undo.push(command);
+        let id = self.next_id;
+        self.next_id += 1;
+        self.undo.push(Entry { id, command });
         if self.undo.len() > self.history_limit {
-            self.undo.remove(0);
+            self.floor = self.undo.remove(0).id;
         }
     }
 }
@@ -559,6 +596,91 @@ mod tests {
         assert_eq!(doc.project().name, "G1");
     }
 
+    #[test]
+    fn undo_back_to_a_position_returns_it() {
+        let mut doc = Document::new(Project::new("Test"));
+        let initial = doc.position();
+        doc.execute(rename("A")).unwrap();
+        let saved = doc.position();
+        assert_ne!(saved, initial);
+
+        doc.execute(rename("B")).unwrap();
+        assert_ne!(doc.position(), saved);
+        doc.undo();
+        assert_eq!(
+            doc.position(),
+            saved,
+            "undo back to the saved point is clean"
+        );
+        doc.undo();
+        assert_eq!(doc.position(), initial);
+        doc.redo();
+        assert_eq!(doc.position(), saved, "redo returns the same position");
+    }
+
+    #[test]
+    fn a_new_edit_after_undo_gets_a_new_position() {
+        let mut doc = Document::new(Project::new("Test"));
+        doc.execute(rename("A")).unwrap();
+        let first = doc.position();
+        doc.undo();
+        doc.execute(rename("A")).unwrap();
+        assert_ne!(doc.position(), first, "same state, different history entry");
+    }
+
+    #[test]
+    fn failed_edits_keep_the_position() {
+        let mut doc = Document::new(Project::new("Test"));
+        let before = doc.position();
+        assert!(doc.execute(rename(" ")).is_err());
+        assert!(!doc.undo());
+        assert!(!doc.redo());
+        assert_eq!(doc.position(), before);
+    }
+
+    #[test]
+    fn capped_history_never_returns_to_the_initial_position() {
+        let mut doc = Document::new(Project::new("Test"));
+        doc.history_limit = 3;
+        let initial = doc.position();
+        let mut seen = vec![initial];
+        for i in 0..5 {
+            doc.execute(rename(&format!("N{i}"))).unwrap();
+            seen.push(doc.position());
+        }
+        while doc.undo() {}
+        assert_ne!(doc.position(), initial);
+        assert_eq!(
+            doc.position(),
+            seen[2],
+            "the state after the newest dropped entry"
+        );
+        while doc.redo() {}
+        assert_eq!(doc.position(), seen[5]);
+    }
+
+    #[test]
+    fn gestures_change_the_position_only_on_commit() {
+        let mut doc = Document::new(Project::new("Test"));
+        let before = doc.position();
+        assert!(!doc.has_gesture());
+
+        doc.gesture_update(rename("A")).unwrap();
+        doc.gesture_update(rename("AB")).unwrap();
+        assert!(doc.has_gesture());
+        assert_eq!(doc.position(), before, "updates record nothing");
+        assert!(doc.gesture_cancel());
+        assert!(!doc.has_gesture());
+        assert_eq!(doc.position(), before, "cancel records nothing");
+
+        doc.gesture_update(rename("A")).unwrap();
+        doc.gesture_commit(rename("Final")).unwrap();
+        assert!(!doc.has_gesture());
+        assert_ne!(doc.position(), before);
+        doc.undo();
+        assert_eq!(doc.position(), before);
+    }
+
     mod properties {
         use proptest::prelude::*;
 
@@ -602,10 +724,21 @@ mod tests {
             }
         }
 
-        /// Records the document's state as a new history entry after the cursor.
-        fn record(doc: &Document, states: &mut Vec<Arc<Project>>, cursor: &mut usize) {
+        /// Records the document's state and position as a new history entry after the cursor.
+        fn record(
+            doc: &Document,
+            states: &mut Vec<Arc<Project>>,
+            positions: &mut Vec<HistoryPosition>,
+            cursor: &mut usize,
+        ) {
             states.truncate(*cursor + 1);
+            positions.truncate(*cursor + 1);
+            assert!(
+                !positions.contains(&doc.position()),
+                "a new entry reused a position"
+            );
             states.push(doc.snapshot());
+            positions.push(doc.position());
             *cursor = states.len() - 1;
         }
 
@@ -616,6 +749,8 @@ mod tests {
             fn history_matches_a_reference_model(ops in prop::collection::vec(op(), 0..60)) {
                 let mut doc = Document::new(Project::new("Start"));
                 let mut states = vec![doc.snapshot()];
+                // History position of each committed state; distinct for distinct entries.
+                let mut positions = vec![doc.position()];
                 let mut cursor = 0;
                 let mut gesture: Option<HistoryLabel> = None;
 
@@ -626,7 +761,7 @@ mod tests {
                             if gesture.is_some() {
                                 prop_assert_eq!(result, Err(CommandError::GestureInProgress));
                             } else if result.is_ok() {
-                                record(&doc, &mut states, &mut cursor);
+                                record(&doc, &mut states, &mut positions, &mut cursor);
                             }
                         }
                         Op::AddTrack => {
@@ -634,14 +769,14 @@ mod tests {
                                 doc.execute(Box::new(AddTrack::new(TrackKind::Video, None)));
                             prop_assert_eq!(result.is_ok(), gesture.is_none());
                             if result.is_ok() {
-                                record(&doc, &mut states, &mut cursor);
+                                record(&doc, &mut states, &mut positions, &mut cursor);
                             }
                         }
                         Op::RemoveTrack(index) => {
                             let id = doc.project().tracks.get(index).map_or_else(TrackId::new, |t| t.id);
                             if doc.execute(Box::new(RemoveTrack::new(id))).is_ok() {
                                 prop_assert!(gesture.is_none());
-                                record(&doc, &mut states, &mut cursor);
+                                record(&doc, &mut states, &mut positions, &mut cursor);
                             }
                         }
                         Op::Update { track, name } => {
@@ -658,7 +793,7 @@ mod tests {
                             if doc.gesture_commit(command).is_ok() {
                                 prop_assert!(gesture.is_none_or(|open| open == label));
                                 gesture = None;
-                                record(&doc, &mut states, &mut cursor);
+                                record(&doc, &mut states, &mut positions, &mut cursor);
                             }
                         }
                         Op::Cancel => {
@@ -689,6 +824,8 @@ mod tests {
                     }
 
                     prop_assert_eq!(doc.gesture_label(), gesture);
+                    prop_assert_eq!(doc.has_gesture(), gesture.is_some());
+                    prop_assert_eq!(doc.position(), positions[cursor]);
                     prop_assert_eq!(&*doc.committed(), &*states[cursor]);
                     if gesture.is_none() {
                         prop_assert_eq!(&*doc.snapshot(), &*states[cursor]);

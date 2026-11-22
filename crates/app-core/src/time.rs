@@ -11,6 +11,10 @@ use serde::{Deserialize, Serialize};
 /// Flicks in one second.
 pub const FLICKS_PER_SECOND: i64 = 705_600_000;
 
+/// Largest time that crosses IPC exactly: TypeScript receives [`Time`] as a `number`, which is exact
+/// within ±2^53 (about 147 days of timeline). Commands and project validation reject later times.
+pub const MAX_IPC_FLICKS: i64 = 1 << 53;
+
 /// A point in time or a duration, in flicks.
 ///
 /// Exposed to TypeScript as `number`: values stay below 2^53 for timelines shorter than ~147 days.

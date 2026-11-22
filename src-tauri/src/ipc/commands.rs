@@ -1,12 +1,19 @@
 //! Commands callable from the UI. Keep handlers thin: validate, delegate, return.
 
-use app_core::command::{AddTrack, RemoveTrack, RenameProject, RenameTrack};
-use app_core::{TrackId, TrackKind};
-use tauri::{AppHandle, State};
+use std::path::PathBuf;
+
+use app_core::command::{AddTrack, RemoveTrack, RenameProject, RenameTrack, SetProjectSettings};
+use app_core::serialization::{self, CURRENT_SCHEMA_VERSION};
+use app_core::{Project, ProjectSettings, TrackId, TrackKind};
+use tauri::{AppHandle, Manager, State};
 
 use super::IpcError;
 use super::types::{AppInfo, GpuInfoView, PreviewMode, PreviewRect, ProjectState};
-use crate::state::AppState;
+use crate::project_file;
+use crate::state::{AppState, SaveSnapshot};
+
+/// Name of a project made by `new_project` and of the one open at startup.
+pub const DEFAULT_PROJECT_NAME: &str = "Untitled project";
 
 /// Current project state. Call once on startup; afterwards listen to `projectChanged`.
 #[tauri::command]
@@ -137,4 +144,125 @@ pub fn set_preview_visible(app: AppHandle, state: State<'_, AppState>, visible: 
     if let Some(preview) = &state.preview {
         preview.set_visible(&app, visible);
     }
+}
+
+/// Replaces the open project with an empty one (default tracks) with `settings`, or the default
+/// settings. The history is cleared and the project is clean. Ask about unsaved changes first.
+#[tauri::command]
+#[specta::specta]
+pub fn new_project(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    settings: Option<ProjectSettings>,
+) -> Result<(), IpcError> {
+    let mut project = Project::new(DEFAULT_PROJECT_NAME);
+    if let Some(settings) = settings {
+        settings
+            .validate()
+            .map_err(|err| IpcError::InvalidEdit(err.to_string()))?;
+        project.settings = settings;
+    }
+    state.replace_project(&app, project, None, CURRENT_SCHEMA_VERSION)
+}
+
+/// Opens the project file at `path` (absolute) in place of the open project. The history is
+/// cleared and the project is clean. The extension is not checked: the content decides. On error
+/// the open project is unchanged. Ask about unsaved changes first.
+#[tauri::command]
+#[specta::specta]
+pub async fn open_project(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<(), IpcError> {
+    let path = std::path::absolute(PathBuf::from(path)).map_err(|err| IpcError::io(&err))?;
+    let (path, loaded) = tauri::async_runtime::spawn_blocking(move || {
+        let loaded = project_file::read_project_file(&path);
+        (path, loaded)
+    })
+    .await?;
+    let loaded = loaded?;
+    state.replace_project(&app, loaded.project, Some(path), loaded.source_version)
+}
+
+/// Saves to the open project's file. Returns `false` if the project has no file yet: nothing was
+/// written and the UI runs Save As. Not an undo step.
+#[tauri::command]
+#[specta::specta]
+pub async fn save_project(app: AppHandle, state: State<'_, AppState>) -> Result<bool, IpcError> {
+    let _saving = state.save_lock().lock().await;
+    let snapshot = state.save_snapshot();
+    let Some(path) = snapshot.file_path.clone() else {
+        return Ok(false);
+    };
+    write(&app, &state, snapshot, path).await?;
+    Ok(true)
+}
+
+/// Saves to `path` (absolute; `.cutframe` is appended when it has no extension) and makes it the
+/// project's file. Not an undo step.
+#[tauri::command]
+#[specta::specta]
+pub async fn save_project_as(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<(), IpcError> {
+    let path = std::path::absolute(PathBuf::from(path)).map_err(|err| IpcError::io(&err))?;
+    let path = project_file::with_project_extension(path);
+    let _saving = state.save_lock().lock().await;
+    let snapshot = state.save_snapshot();
+    write(&app, &state, snapshot, path).await
+}
+
+/// Serializes and writes `snapshot` off the main thread, then marks it saved.
+async fn write(
+    app: &AppHandle,
+    state: &AppState,
+    snapshot: SaveSnapshot,
+    path: PathBuf,
+) -> Result<(), IpcError> {
+    let backup = snapshot.backup_of_version(&path);
+    let project = snapshot.project.clone();
+    let (path, written) = tauri::async_runtime::spawn_blocking(move || {
+        let json = serialization::to_json(&project);
+        let written = project_file::write_project_file(&path, &json, backup);
+        (path, written)
+    })
+    .await?;
+    written.map_err(|err| IpcError::io(&err))?;
+    state.mark_saved(app, &snapshot, path)
+}
+
+/// Changes canvas size, frame rate and sample rate as one undoable entry. Clip times are kept
+/// exactly. Settings equal to the current ones change nothing and record nothing. Out-of-range
+/// settings fail with `invalidEdit`.
+#[tauri::command]
+#[specta::specta]
+pub fn set_project_settings(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    settings: ProjectSettings,
+) -> Result<(), IpcError> {
+    state.edit(&app, |doc| {
+        if doc.project().settings == settings {
+            return Ok(None);
+        }
+        doc.execute(Box::new(SetProjectSettings::new(settings)))
+            .map(Some)
+    })?;
+    Ok(())
+}
+
+/// Closes the main window without asking again. Call it after the unsaved-changes prompt that
+/// `quitRequested` started (Save succeeded, or Don't save).
+#[tauri::command]
+#[specta::specta]
+pub fn confirm_close(app: AppHandle) -> Result<(), IpcError> {
+    let window = app
+        .get_webview_window(crate::MAIN_WINDOW)
+        .ok_or_else(|| IpcError::Internal("main window not found".into()))?;
+    // `destroy` does not raise `CloseRequested` again.
+    window.destroy()?;
+    Ok(())
 }

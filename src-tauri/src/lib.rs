@@ -2,22 +2,26 @@
 
 mod ipc;
 mod preview;
+mod project_file;
 mod protocol;
 mod smoke_test;
 mod state;
 
 use app_core::Project;
-use tauri::Manager;
-use tauri_specta::{Builder, collect_commands, collect_events};
+use tauri::{Manager, Window, WindowEvent};
+use tauri_specta::{Builder, Event, collect_commands, collect_events};
 use tracing_subscriber::EnvFilter;
 
 use crate::ipc::commands;
-use crate::ipc::events::ProjectChanged;
+use crate::ipc::events::{ProjectChanged, QuitRequested};
 use crate::preview::Preview;
 use crate::state::AppState;
 
 /// Where the generated TypeScript bindings live. Committed to the repo.
 pub const BINDINGS_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/src/bindings.ts");
+
+/// Label of the editor window in `tauri.conf.json`.
+const MAIN_WINDOW: &str = "main";
 
 /// The full IPC surface. Adding a command or event here is all it takes to expose it to the UI.
 pub fn ipc_builder() -> Builder<tauri::Wry> {
@@ -34,8 +38,16 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             commands::get_app_info,
             commands::set_preview_rect,
             commands::set_preview_visible,
+            commands::new_project,
+            commands::open_project,
+            commands::save_project,
+            commands::save_project_as,
+            commands::set_project_settings,
+            commands::confirm_close,
         ])
-        .events(collect_events![ProjectChanged])
+        .events(collect_events![ProjectChanged, QuitRequested])
+        // The only place the UI gets the project file extension from (ADR-0002 amendment §1).
+        .constant("PROJECT_FILE_EXTENSION", app_core::PROJECT_FILE_EXTENSION)
         // The phase argument of gesture-capable commands (ADR-0006 §4). Exported on its own so the
         // UI's gesture helper can use it before the first such command lands.
         .typ::<app_core::EditPhase>()
@@ -71,15 +83,17 @@ pub fn run() {
     }
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(ipc.invoke_handler())
+        .on_window_event(on_window_event)
         .register_asynchronous_uri_scheme_protocol(protocol::SCHEME, protocol::handle)
         .setup(move |app| {
             ipc.mount_events(app);
 
             let main = app
-                .get_webview_window("main")
+                .get_webview_window(MAIN_WINDOW)
                 .ok_or("main window missing from tauri.conf.json")?;
-            let project = Project::new("Untitled project");
+            let project = Project::new(commands::DEFAULT_PROJECT_NAME);
             let preview = Preview::create(&main, &project.settings);
             app.manage(AppState::new(project, preview));
 
@@ -90,6 +104,29 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running the application");
+}
+
+/// Closing the main window with unsaved changes is stopped and handed to the UI, which asks
+/// Save / Don't save / Cancel and calls `confirm_close`. A clean project closes right away, even if
+/// the webview does not respond.
+fn on_window_event(window: &Window, event: &WindowEvent) {
+    let WindowEvent::CloseRequested { api, .. } = event else {
+        return;
+    };
+    if window.label() != MAIN_WINDOW {
+        return;
+    }
+    let Some(state) = window.try_state::<AppState>() else {
+        return;
+    };
+    if !state.is_dirty() {
+        return;
+    }
+    match QuitRequested.emit(window.app_handle()) {
+        Ok(()) => api.prevent_close(),
+        // Without the event nobody would ever close the window; let it close.
+        Err(err) => tracing::error!(%err, "failed to ask the UI about unsaved changes"),
+    }
 }
 
 #[cfg(test)]
