@@ -12,21 +12,23 @@ timeline, and a GPU-rendered test-pattern preview. Media import, playback and ex
 
 ## Development
 
-Linux (Debian 13 / Raspberry Pi OS):
+Windows 10/11 x64 is the only supported development platform. Prerequisites:
+
+- **MSVC Build Tools** (Visual Studio Build Tools, workload "Desktop development with C++")
+- **Rust** via [rustup](https://rustup.rs); the pinned toolchain in `rust-toolchain.toml` (with
+  rustfmt and clippy) is installed automatically on the first `cargo` call
+- **Node.js 24** and **pnpm** (`corepack enable` picks the version from `package.json`)
+- **WebView2 Runtime** (preinstalled on Windows 11 and current Windows 10)
 
 ```bash
-./scripts/setup-dev-linux.sh   # system packages + Rust (needs sudo, run in a real terminal)
 pnpm install
-pnpm dev                       # = tauri dev: Vite + the Rust app with hot reload
+pnpm dev          # = tauri dev: Vite + the Rust app with hot reload
 ```
-
-On Linux the preview runs in a development mode (frames pulled over `media://`). The native GPU
-preview window is Windows-only; Windows installers are built in CI (`.github/workflows/ci.yml`).
 
 Useful commands:
 
 ```bash
-pnpm check        # all UI and Rust checks (typecheck, lint, tests, fmt, clippy)
+pnpm check        # all local checks (cargo fmt, UI checks + build, clippy, tests)
 pnpm bindings     # regenerate ui/src/bindings.ts after changing IPC commands or types
 cargo test -p app-core
 ```

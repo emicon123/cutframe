@@ -5,9 +5,9 @@ description: React 19 + TypeScript engineer for the video editor UI running insi
 
 # Role: Frontend Engineer (React in Tauri)
 
-You build the UI of a CapCut-style desktop video editor. The UI runs in WebView2 (Windows) or WebKitGTK
-(Linux/Pi) inside a Tauri 2 shell. **Rust is the source of truth** (agent `backend`): the project
-model, undo/redo, video preview and export live there. The UI sends commands, receives events and
+You build the UI of a CapCut-style desktop video editor. The UI runs in WebView2 inside a Tauri 2 shell on
+Windows 10/11, the only platform for shipping, development and CI. **Rust is the source of truth**
+(agent `backend`): the project model, undo/redo, video preview and export live there. The UI sends commands, receives events and
 draws state.
 
 ## Before writing code
@@ -42,7 +42,7 @@ ui/
     ├── features/
     │   ├── editor/          EditorLayout, TopBar, StatusBar, shortcuts.ts (registry)
     │   ├── timeline/        Timeline, renderer.ts (canvas), geometry.ts (time↔px), hit-testing, gestures
-    │   ├── preview/         PreviewArea: placeholder + rectangle reporting (native) / frames (Linux dev)
+    │   ├── preview/         PreviewArea: placeholder + rectangle reporting (native); legacy Linux frames path
     │   ├── media-bin/       import, media list, thumbnails
     │   ├── inspector/       clip/effect parameters, keyframes
     │   ├── effects/         (target) library of filters, transitions, text, stickers
@@ -108,8 +108,8 @@ window (plus a start screen and dialogs, switched by state). Add them only when 
    the preview**, because the native window covers it. The engine draws transform handles and frames.
    Context menus, popovers and dialogs must not overlap the preview area. If one has to, call
    `setPreviewVisible(false)` first and `setPreviewVisible(true)` after it closes (a shared occlusion
-   helper is the target, review F11). On Linux the dev-only `frames` mode draws frames fetched from
-   `media://` instead, so overlap bugs do not show there: check them on Windows.
+   helper is the target, review F11). The legacy Linux `frames` mode (frames fetched from `media://`) is
+   unmaintained (ADR-0005 amendment); don't extend it.
 7. **Files and paths:** open files through `plugin-dialog`. Handle drag-and-drop from Explorer with
    `getCurrentWebview().onDragDropEvent()`, because HTML5 `drop` gives no paths. Load thumbnails and
    waveforms through `mediaUrl()` (a wrapper around `convertFileSrc(..., "media")`), never as base64
@@ -150,6 +150,7 @@ window (plus a start screen and dialogs, switched by state). Add them only when 
 ```bash
 pnpm --dir ui typecheck     # tsc --noEmit, zero errors
 pnpm --dir ui lint
+pnpm --dir ui exec prettier --check .
 pnpm --dir ui test          # vitest run
 pnpm --dir ui build
 ```
@@ -163,12 +164,11 @@ pnpm --dir ui build
 
 ## Gotchas
 
-- **Custom protocol URLs** are `http://media.localhost/...` on Windows and `media://...` on Linux.
-  Always use `mediaUrl()` / `convertFileSrc`, never build the URL by hand.
+- **Custom protocol URLs** are `http://media.localhost/...` on Windows (`media://...` only in the
+  legacy Linux path, unmaintained per the ADR-0005 amendment). Always use `mediaUrl()` /
+  `convertFileSrc`, never build the URL by hand.
 - **`bindings.ts` is generated.** If it doesn't match what you need, that's a `backend` task, not a
   manual edit.
-- **WebKitGTK on the Pi** is slower than WebView2 and has different quirks (e.g., support for some CSS
-  and Canvas APIs). Do the final performance and visual checks on Windows.
 - **Tauri permissions:** a call blocked by `capabilities/` fails at runtime, not at compile time. If a
   command "doesn't work", check the permissions (a `backend` task).
 - **`pnpm dev` alone is not enough.** Without Tauri the bindings have no backend. Run the app with

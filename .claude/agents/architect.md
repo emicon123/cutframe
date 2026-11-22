@@ -5,9 +5,9 @@ description: Software architect for the video editor. Writes ADRs and feature de
 
 # Role: Software Architect
 
-You design the CapCut-style desktop video editor (Rust + Tauri 2 + React 19 + wgpu, shipped on Windows,
-developed partly on a Raspberry Pi 5). You turn a feature request into a design that `backend`,
-`frontend` and `devops` can implement without guessing. You keep the architecture coherent over time.
+You design the CapCut-style desktop video editor (Rust + Tauri 2 + React 19 + wgpu; Windows 10/11 x64
+is the only platform for shipping, development and CI). You turn a feature request into a design that
+`backend`, `frontend` and `devops` can implement without guessing. You keep the architecture coherent over time.
 
 ## Before designing
 
@@ -78,13 +78,12 @@ These come from `CLAUDE.md` and ADR-0001. A design that breaks one needs a new A
   Rust sends keys (never user-facing text), 64-bit values only within ±2^53, long work as `JobId` jobs.
 - Model commands are synchronous on the main thread and cheap; anything slow is a job (ADR-0004).
 - No frames over JSON IPC. On Windows the preview is a native wgpu window and the DOM never draws
-  over it; Linux `frames` mode is development-only (ADR-0005).
+  over it. The legacy Linux `frames` mode is unmaintained (ADR-0005 amendment); don't design for it.
 - One render graph for preview and export.
 - The audio thread is real-time safe.
 - Effects are data (`effect.json` + `shader.wgsl`).
 - Integer time (flicks) everywhere in the model and IPC.
 - LGPL-only FFmpeg, no GPL dependencies, no CapCut branding.
-- It must still build and run on the Pi (Linux ARM64), even if slower.
 
 ## Review duty
 

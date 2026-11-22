@@ -18,7 +18,7 @@ catalog, and drop anything already `done` from the scope.
 
 ## Scope
 
-- **architect:** capture APIs on Windows (Windows.Graphics.Capture, Media Foundation) and the Pi; encoding during capture.
+- **architect:** capture APIs on Windows (Windows.Graphics.Capture, Media Foundation); encoding during capture.
 - **backend/frontend:** recording dialogs; recordings land in the media panel; teleprompter overlay window.
 
 ## Done when

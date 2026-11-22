@@ -1,6 +1,7 @@
 # ADR-0001: Tech stack — Rust + Tauri 2 + React 19 + wgpu
 
-- **Status:** Accepted
+- **Status:** Accepted, amended 2026-11-22 (Windows is the only platform, see "Amendment
+  2026-11-22" at the end)
 - **Date:** 2026-11-21
 
 ## Context
@@ -11,8 +12,9 @@ Top-level requirements:
 1. The most modern technology stack available.
 2. **Easy installation:** one small installer, no admin rights, automatic updates.
 3. Smooth real-time preview (1080p/4K, multiple tracks, GPU effects).
-4. Development must also work on a Raspberry Pi 5 (Linux ARM64). Logic, UI and rendering must be
-   cross-platform, even though the shipped product is Windows-only.
+4. ~~Development must also work on a Raspberry Pi 5 (Linux ARM64). Logic, UI and rendering must be
+   cross-platform, even though the shipped product is Windows-only.~~ **Withdrawn 2026-11-22:**
+   Windows 10/11 x64 is the only platform for shipping, development and CI.
 
 Options considered: C++20 + Qt 6/QML, Rust + Tauri 2 + React, Electron + native addon, C#/WinUI 3.
 
@@ -23,13 +25,13 @@ FFmpeg (media I/O).**
 
 | Area | Technology |
 |---|---|
-| App shell | Tauri 2 (WebView2 on Windows, WebKitGTK on Linux) |
+| App shell | Tauri 2 (WebView2) |
 | UI | React 19, TypeScript, Vite, Tailwind CSS v4, shadcn/ui |
 | UI state | Zustand (a mirror of the Rust-side model) |
 | Timeline | Canvas 2D (not DOM, so it stays fast with thousands of clips) |
 | Typed IPC | `tauri-specta` (TypeScript types generated from Rust) |
 | Engine language | Rust (edition 2024, latest stable) |
-| GPU rendering | `wgpu` (D3D12 on Windows, Vulkan/GLES on the Pi), WGSL shaders |
+| GPU rendering | `wgpu` (D3D12, WARP as the software fallback), WGSL shaders |
 | Text / 2D graphics | `cosmic-text` + `glyphon`, `vello` (vectors, stickers, Lottie via `velato`) |
 | Decode / encode | FFmpeg 7.x (LGPL, shared) via `rsmpeg`; HW: D3D11VA/D3D12VA, NVENC/QSV/AMF |
 | Audio | `cpal` (WASAPI), resampling via FFmpeg `swresample` |
@@ -40,7 +42,7 @@ FFmpeg (media I/O).**
 | Installer | Tauri bundler → **NSIS** `.exe` (`currentUser` mode, no admin), WebView2 `embedBootstrapper` |
 | Updates | `tauri-plugin-updater` + GitHub Releases |
 | Code signing | Azure Trusted Signing (removes the SmartScreen warning) |
-| CI/CD | GitHub Actions: `windows-latest` + `tauri-action` (build, sign, release); Linux ARM64 checks |
+| CI/CD | GitHub Actions on `windows-latest`: checks, NSIS installer + smoke test; `tauri-action` (build, sign, release) |
 
 ## Architecture
 
@@ -89,24 +91,42 @@ Principles:
   installs per user without admin rights and has a built-in auto-updater. WebView2 ships with
   Windows 10/11.
 - **UI velocity:** React/TS + shadcn/ui makes it fast to build a rich CapCut-style interface.
-- **Cross-platform:** the same code builds on the Pi (Linux ARM64) for development and on Windows for
-  release.
+- **Cross-platform (historical):** the same code builds on the Pi (Linux ARM64) for development and on
+  Windows for release. Since 2026-11-22 this is no longer a requirement, and the decision rests on the
+  reasons above.
 
 Rejected:
 - **Qt 6/C++:** mature, but an older ecosystem, slower UI development and no memory safety.
 - **Electron:** installer of ~150 MB+ and high RAM use. It has the same preview problem as Tauri.
-- **C#/WinUI 3:** Windows-only, so there would be no way to develop on the Pi.
+- **C#/WinUI 3:** Windows-only, so there would be no way to develop on the Pi. *(2026-11-22: this
+  reason is historical, because Windows is now the only platform. The decision is not reopened: the
+  stack stands on the reasons above, and the code is already built on it.)*
 
 ## Consequences and risks
 
 - **Main risk: compositing the native wgpu window with WebView2.** This must be validated first, as a
   spike in stage 0 on Windows. Plan B: pass frames to the WebView through `ICoreWebView2SharedBuffer`
   (shared memory) and display them with WebGPU in the UI. This is slower but has no compositing issues.
-- On Linux (Pi) the child-window mechanism works differently (GTK). A simpler development-only preview
-  mode is acceptable there.
-- The Pi 5 has hardware decode for HEVC only, so H.264 is decoded in software. Measure performance
-  on Windows only.
+- *(Historical since 2026-11-22.)* On Linux (Pi) the child-window mechanism works differently (GTK).
+  A simpler development-only preview mode is acceptable there.
+- *(Historical since 2026-11-22.)* The Pi 5 has hardware decode for HEVC only, so H.264 is decoded in
+  software. Measure performance on Windows only.
 - **Licensing:** FFmpeg is used only as an LGPL build, dynamically linked (DLLs next to the `.exe`).
   No x264/x265 (GPL). Encoding goes through NVENC/QSV/AMF, with OpenH264 as the fallback.
 - **Branding:** use our own name and assets. No CapCut logos, names or materials in the product.
 - MSI (WiX) installers can only be built on Windows, so releases are built in CI on `windows-latest`.
+
+## Amendment 2026-11-22: Windows is the only platform
+
+Decided by the user on 2026-11-22.
+
+- **Windows 10/11 x64 is the only platform** for shipping, development and CI. Linux ARM64 (Raspberry
+  Pi 5, Debian 13) is no longer a development or CI platform, and requirement 4 is withdrawn.
+- **Quality gates:** the local checks on the Windows development machine (`pnpm check`) are the
+  primary gate. Windows CI is the second line: a clean checkout running the same checks, plus the
+  NSIS installer and the `--smoke-test`.
+- **Existing Linux code paths** (the `frames` preview mode, the lavapipe software fallback,
+  `cfg(not(windows))` branches) stay in the code for now but are no longer maintained or tested.
+  Removing them is a separate, later decision (see the ADR-0005 amendment).
+- **Unchanged:** the stack, the architecture principles and the licensing and branding rules.
+  Performance budgets are measured on Windows hardware, including a low-end integrated-GPU machine.

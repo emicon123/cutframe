@@ -29,7 +29,7 @@ warned that `pnpm/action-setup@v4` still targets the deprecated Node.js 20 runti
 | `actions-rust-lang/setup-rust-toolchain` | v1 | v2.0.1 | |
 | `actions/upload-artifact` | v4 | v7.0.2 | |
 | `tauri-apps/tauri-action` | v0 | action-v1.0.0 | check input/env changes (`GITHUB_TOKEN`, `tagName`, `releaseDraft`) |
-| `taiki-e/install-action` + `cargo-deny` | v2 + 0.22.0 | — | replaced `EmbarkStudios/cargo-deny-action` (x86_64 Docker image, failed on ARM64); re-check both |
+| `taiki-e/install-action` + `cargo-deny` | v2 + 0.22.0 | — | prebuilt binary; `EmbarkStudios/cargo-deny-action` is a Docker action and does not run on Windows runners; re-check both |
 
 Not yet dependencies (pick current versions when they land, not here): FFmpeg 7.x / `rsmpeg`, `cpal`.
 
@@ -49,15 +49,15 @@ Not yet dependencies (pick current versions when they land, not here): FFmpeg 7.
 
 - No pre-release or alpha versions (Tauri 3 alpha, RC-only crates other than the existing specta pins).
 - LGPL-only / no GPL: `cargo deny check` must pass; new npm deps checked for licence too.
-- Must still build and pass tests on Linux ARM64 (Raspberry Pi 5 / CI `ubuntu-24.04-arm`).
 - Do not change the bundle identifier, product name or installer mode.
 
 ## Done when
 
 - every row above is at its latest stable version, or the row says why it is held back
-- `pnpm check` passes locally; Prettier check, UI build and `cargo deny check` pass
-- CI is green on both jobs (Linux ARM64 and Windows installer + smoke test) with no Node.js
-  deprecation annotations
+- `pnpm check` (includes the Prettier check and the UI build) and `cargo deny --all-features check`
+  pass locally on Windows
+- CI is green on the Windows job (checks, installer + smoke test) with no Node.js deprecation
+  annotations
 - a `v*` tag test is **not** required; a local `pnpm tauri build` + silent install + `--smoke-test`
   (as in `ci.yml`) is enough to prove the release path
 - `docs/adr/0001-tech-stack.md` version table/notes updated if it lists versions

@@ -9,7 +9,7 @@
     "dev": "tauri dev",
     "build": "tauri build",
     "bindings": "cargo test -p cutframe export_typescript_bindings",
-    "check": "pnpm --dir ui typecheck && pnpm --dir ui lint && pnpm --dir ui test && cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace"
+    "check": "cargo fmt --all --check && pnpm --dir ui typecheck && pnpm --dir ui lint && pnpm --dir ui exec prettier --check . && pnpm --dir ui test && pnpm --dir ui build && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.6"

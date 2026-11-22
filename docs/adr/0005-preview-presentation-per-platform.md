@@ -1,6 +1,7 @@
 # ADR-0005: Preview presentation per platform
 
-- **Status:** Accepted (2026-11-22, after the spike results below)
+- **Status:** Accepted (2026-11-22, after the spike results below), amended 2026-11-22 (the Linux
+  `frames` mode is legacy, see "Amendment 2026-11-22" at the end)
 - **Date:** 2026-11-21
 
 ## Context
@@ -37,7 +38,9 @@ recorded in "Spike results (2026-11-22)" below.
    and safe areas are drawn by the engine.
 5. **Linux `frames` mode is development-only.** It is never shipped, never tuned and never used for
    performance numbers. It stays functional because the Pi is a development machine. It uses the same
-   renderer as the native path, so only presentation differs.
+   renderer as the native path, so only presentation differs. *(Amended 2026-11-22: the Pi is no
+   longer a development machine, so the mode is legacy: unmaintained, not tested in CI, and it may be
+   removed later. See the amendment.)*
 6. **Renderer independence:** renderers encode into any `wgpu::TextureView` (window surface,
    offscreen texture, encoder input). The presentation mode never changes what is rendered.
 7. **Spike acceptance (ADR-0001 stage 0).** The native mode counts as validated when all of the
@@ -129,3 +132,18 @@ Rejected:
 - The native mode is validated on one hybrid-GPU laptop with the stage-0 test pattern only. The
   remaining checks in "Spike results" are release blockers, and any failure among them reopens this
   ADR.
+
+## Amendment 2026-11-22: the Linux `frames` mode is legacy
+
+Since the ADR-0001 amendment of 2026-11-22, Windows 10/11 x64 is the only platform for shipping,
+development and CI, and Linux ARM64 is no longer a development or CI platform.
+
+- **`frames` mode (§5) is legacy.** The code (`media://…/preview/frame`, the canvas path in
+  `PreviewArea.tsx`, the Linux branch of `preview/mod.rs`) stays for now but is not maintained and not
+  tested in CI. New work does not have to keep it working, and it may be removed in a later decision.
+  It must still never be used on Windows (rejected option above).
+- **`native` (§1) is the only supported mode**, and `unavailable` stays as the no-GPU fallback.
+- **Rule 4 is now testable during development.** Airspace bugs (DOM over the preview) show up on every
+  development machine, so the hide/show protocol is verified on Windows directly.
+- §6 (renderer independence) is unchanged: renderers still encode into any `wgpu::TextureView`,
+  because export and the `--smoke-test`/GPU tests use offscreen targets.

@@ -21,7 +21,7 @@ Finish timeline ergonomics: zoom controls, keyboard navigation and clip thumbnai
 
 ## Done when
 
-- timeline with 200 clips scrolls and zooms at 60 fps on the Pi
+- timeline with 200 clips scrolls and zooms at 60 fps on a low-end Windows machine with an integrated GPU (e.g. Intel Iris Xe / UHD), measured in a release build
 - every feature above works end-to-end in `pnpm dev` and has tests (`app-core` unit/property tests for commands, Vitest for UI logic, golden frames for rendering)
 - each row above is updated in `docs/feature-catalog.md` (status + short evidence note); partial rows say what is missing
 - `pnpm check` passes; after any IPC change `pnpm bindings` is re-run and `ui/src/bindings.ts` committed

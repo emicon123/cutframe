@@ -12,9 +12,11 @@
   (520 packages). Nothing was built. Overview: [architecture.md](architecture.md).
 
 **Status key:** **OK** = conforms. **Drift** = the code contradicts a doc. **Gap** = a decision is missing
-or undocumented. **Risk** = allowed today but likely to hurt later.
+or undocumented. **Risk** = allowed today but likely to hurt later. **Obsolete** = withdrawn by a
+later decision (dated, row kept for history).
 
-**Totals: 49 findings. 16 OK, 4 Drift, 12 Gap, 17 Risk.**
+**Totals: 49 findings. 16 OK, 4 Drift, 12 Gap, 17 Risk.** Since 2026-11-22 (Windows is the only
+platform, ADR-0001 amendment) three are obsolete: F27 and F35 (were Risk) and F36 (was OK).
 
 ## Verdict per rule
 
@@ -28,7 +30,7 @@ or undocumented. **Risk** = allowed today but likely to hurt later.
 | Rule 6: time is `i64` flicks in model and IPC | **OK.** The rule for casting 64-bit values was implicit | F19, F20, F21 |
 | Rule 7 and hard constraint: LGPL-only FFmpeg, dynamically linked | **OK for crates.** No check yet for the FFmpeg binaries | F25, F26, F27, F28 |
 | Rule 8 and hard constraint: no reference-product names or assets | **OK in the product.** The reference product is named in the README and ADR-0001 | F29, F49 |
-| Windows 10/11 x64 only. CI green on Linux ARM64 | **OK.** Windows-only code is never linted | F30, F34, F35, F36, F37 |
+| Windows 10/11 x64 only. ~~CI green on Linux ARM64~~ (withdrawn 2026-11-22: Windows is the only platform for shipping, development and CI, ADR-0001 amendment) | **OK.** Windows-only code is never linted | F30, F34, F35, F36, F37 |
 | NSIS `currentUser`, no admin, self-update | **Partly met.** Installer OK. No updater, no signing | F30, F31, F32 |
 | Identifier is a codename, frozen before release | **Open** (user decision) | F33 |
 | `bindings.ts` generated, never hand-written | **OK** | F22, F23 |
@@ -46,9 +48,9 @@ or undocumented. **Risk** = allowed today but likely to hurt later.
 | F06 | Revision across projects | Risk | `Document::new` starts the revision at 0 (`document.rs:30`), and the UI drops lower revisions without looking at the project (`projectStore.ts:18`). After open or new project, the UI would ignore updates | Move the revision counter to `AppState` and make it monotonic per session (ADR-0003 §6) | backend |
 | F07 | Load validation | Risk | Invariant "sorted, never overlapping" (`crates/app-core/src/model.rs:93`) is not checked by `from_json` (`serialization.rs:26-30`) | `Project::validate` in the load pipeline, with proptest (ADR-0002 §3) | backend |
 | F08 | Native preview | OK | Win32 child window plus wgpu surface (`src-tauri/src/preview/windows.rs`, `preview/mod.rs:42-63`, `crates/engine/src/preview.rs:261-304`). The UI only reports a rect (`ui/src/features/preview/PreviewArea.tsx:40-69`) | none | — |
-| F09 | Linux frames mode | Gap | RGBA pulled over `media://` (`src-tauri/src/protocol.rs:36-66`, `PreviewArea.tsx:72-118`). ADR-0001 allows a dev mode but did not define it | Accept ADR-0005 (§5: dev-only, same renderer) | architect (done) |
+| F09 | Linux frames mode | Gap | RGBA pulled over `media://` (`src-tauri/src/protocol.rs:36-66`, `PreviewArea.tsx:72-118`). ADR-0001 allows a dev mode but did not define it | Accept ADR-0005 (§5: dev-only, same renderer). *2026-11-22: the mode is now legacy and unmaintained (ADR-0005 amendment)* | architect (done) |
 | F10 | Compositing spike | Risk | ADR-0001's main risk has no recorded result. `--smoke-test` renders offscreen only (`src-tauri/src/lib.rs:91-115`, `.github/workflows/ci.yml:76-86`). The adapter is picked without `compatible_surface` (`crates/engine/src/render/gpu.rs:42-56`) | Run the ADR-0005 §7 checklist and record it. Extend the smoke test to present into the child window. After attaching, check the adapter can present to the surface, else try the next adapter (follow-up, not in an ADR) | backend, devops |
-| F11 | Airspace | Risk | On Linux, DOM overlays draw over the preview without problems, so the bug is invisible on the Pi. `setPreviewVisible` is called only on unmount (`PreviewArea.tsx:64`) | One shared hide/show helper for overlays (ADR-0005 §4). Add a frontend review item | frontend |
+| F11 | Airspace | Risk | On Linux, DOM overlays draw over the preview without problems, so the bug is invisible on the Pi. `setPreviewVisible` is called only on unmount (`PreviewArea.tsx:64`). *2026-11-22: development is Windows-only now, so the bug is visible during development; the action still stands* | One shared hide/show helper for overlays (ADR-0005 §4). Add a frontend review item | frontend |
 | F12 | `media://` threads | Risk | One `std::thread::spawn` per request (`protocol.rs:22-26`) | Bounded pool before thumbnails ship (ADR-0004 §3) | backend |
 | F13 | `media://` scheme | OK | Registered (`lib.rs:71`), CSP allows it (`src-tauri/tauri.conf.json:25`), per-platform URL (`ui/src/ipc/media.ts:9-12`) | Add thumbnail and waveform routes by id (ADR-0003 §9) | backend |
 | F14 | Idle rendering | Risk | The render loop draws every vsync while visible (`crates/engine/src/preview.rs:194-216`) | Render on change, continuously only during playback (ADR-0004 §3) | backend |
@@ -64,16 +66,16 @@ or undocumented. **Risk** = allowed today but likely to hurt later.
 | F24 | Layering | OK | `engine` has no Tauri dependency (`crates/engine/Cargo.toml`). `app-core` has only serde, uuid, thiserror and optional specta (`crates/app-core/Cargo.toml:13-18`) | none | — |
 | F25 | Crate licences | OK | `deny.toml:10-28` allows permissive licences only. No GPL-only crate among 520 packages (`r-efi` is MIT OR Apache-2.0 OR LGPL) | none | — |
 | F26 | FFmpeg binaries | Gap | cargo-deny cannot see FFmpeg (`deny.toml:13`). There is no provisioning, no runtime check and no notices | Pinned, checksummed LGPL shared build. A CI assertion on `avutil_license()`. LGPL notice and source offer in the installer | devops, backend |
-| F27 | Pi FFmpeg | Risk | The setup script installs Debian's libav* packages (`scripts/setup-dev-linux.sh:13-15`), which are built with GPL options | Code and tests never select GPL-only encoders. Check encoder availability at runtime | backend |
+| F27 | Pi FFmpeg | Obsolete (2026-11-22) | The setup script installs Debian's libav* packages (`scripts/setup-dev-linux.sh:13-15`), which are built with GPL options. *Withdrawn: the Pi is no longer a platform (ADR-0001 amendment)* | ~~Code and tests never select GPL-only encoders. Check encoder availability at runtime~~ The encoder rule itself stays, justified by the LGPL-only rule (CLAUDE.md rule 7) and tracked in task 0200 | — |
 | F28 | OpenH264 fallback | Risk | ADR-0001 names OpenH264 as the fallback encoder. Cisco's patent licence covers only Cisco binaries downloaded at runtime, not bundled ones | Decide in the export design (download on demand or no software fallback) | architect |
 | F29 | Branding in product | OK | `productName` and identifier are Cutframe (`tauri.conf.json:3-4`). Own icon (`src-tauri/icons/source.svg`). UI strings in `ui/src/i18n/en.ts` | none | — |
 | F30 | Windows ship path | OK | NSIS `currentUser` plus `embedBootstrapper` (`tauri.conf.json:29-43`). CI does install, silent install and smoke test (`ci.yml:73-91`). Draft release on tag with version check (`release.yml:16-37`) | none | — |
 | F31 | Self-update | Gap | No `tauri-plugin-updater`, no `plugins.updater` or `createUpdaterArtifacts`. Only a TODO (`release.yml:30-31`) | Updater config, key in GitHub secrets, `latest.json` (devops). Register the plugin and add the update-check UX (backend) | devops, backend |
 | F32 | Code signing | Gap | Releases are unsigned (`release.yml:30-36`) | Azure Trusted Signing once the account exists | devops |
 | F33 | Release identity | Risk | Codename identifier (`tauri.conf.json:4`). The install directory is derived from it (`ci.yml:81`). Updater key not created yet | Release checklist: freeze the name, identifier, project-file extension (ADR-0002 §1) and updater key before the first public release | devops (user decision) |
-| F34 | Windows lint | Risk | clippy and fmt run only on Linux (`ci.yml:47-48` vs `57-71`). `cfg(windows)` code (`preview/windows.rs`, the MSVC branch of `build.rs`) is never linted | Add `cargo clippy --workspace --all-targets -- -D warnings` to the Windows job | devops |
-| F35 | Pi parity | Risk | CI uses `ubuntu-24.04-arm` (`ci.yml:19`). The Pi runs Debian 13 (`setup-dev-linux.sh:2`). Low priority | Optional Debian 13 arm64 container job | devops |
-| F36 | Pi dev path | OK | Downlevel limits (`gpu.rs:62-64`), software fallback (`gpu.rs:48-56`), frames mode (`preview/mod.rs:65-69`) | none | — |
+| F34 | Windows lint | Risk | clippy and fmt run only on Linux (`ci.yml:47-48` vs `57-71`). `cfg(windows)` code (`preview/windows.rs`, the MSVC branch of `build.rs`) is never linted. *2026-11-22: with the Linux job removed, every check (fmt included) must run in the Windows job* | Add `cargo clippy --workspace --all-targets -- -D warnings` to the Windows job | devops |
+| F35 | Pi parity | Obsolete (2026-11-22) | CI uses `ubuntu-24.04-arm` (`ci.yml:19`). The Pi runs Debian 13 (`setup-dev-linux.sh:2`). Low priority. *Withdrawn: Linux ARM64 is no longer a development or CI platform (ADR-0001 amendment)* | ~~Optional Debian 13 arm64 container job~~ none | — |
+| F36 | Pi dev path | Obsolete (2026-11-22) | Downlevel limits (`gpu.rs:62-64`), software fallback (`gpu.rs:48-56`), frames mode (`preview/mod.rs:65-69`). *Withdrawn: the Pi dev path is legacy and no longer maintained (ADR-0001 and ADR-0005 amendments)* | none | — |
 | F37 | Windows GPU backend | OK | D3D12 only, `WGPU_BACKEND` override (`gpu.rs:32-41`, `f5ee53a`). Matches ADR-0001 and ADR-0005 §1 | none | — |
 | F38 | Schema versioning | OK | `CURRENT_SCHEMA_VERSION`, `migrate`, `TooNew`, v1 fixture (`serialization.rs:10-47`, `tests/fixtures/project-v1.json`) | none | — |
 | F39 | Project-file decisions | Gap | Undecided: contents, media references, atomic save, backups, validation | Accept ADR-0002 and implement it with open/save | backend |
@@ -85,7 +87,7 @@ or undocumented. **Risk** = allowed today but likely to hurt later.
 | F45 | UI stack | OK | React 19, Vite 8, Tailwind 4, Zustand, Radix/shadcn (`ui/package.json`). Canvas 2D timeline (`features/timeline/renderer.ts`) | none | — |
 | F46 | Preview visibility | Drift | `set_rect` always uses `SWP_SHOWWINDOW` (`preview/windows.rs:108`) and enables rendering whenever the rect is non-empty (`preview/mod.rs:95-96`). That overrides `set_preview_visible(false)` (`ipc/commands.rs:120-127`). This contradicts ADR-0005 §3 | Track the UI's visibility request separately and show the window only if requested and the rect is non-empty. The UI requests visible on mount | backend, then frontend |
 | F47 | Agent prompts | Drift | `backend.md:98, 103, 110` names `app-core/src/migrations/`, `ipc/commands/*.rs` and `project_changed { revision, view }`. `frontend.md:74, 85, 93-94` names `lib/timecode.ts` and `hidePreview`/`showPreview`. None of these exist (actual: `serialization.rs`, `ipc/commands.rs`, `project-changed` with `ProjectState`, `lib/time.ts`, `setPreviewVisible`) | Align the prompts with the code and ADR-0003 | orchestrator |
-| F48 | Offscreen allocations | Risk | `render_offscreen` creates a texture and a read-back buffer on every call (`offscreen.rs:27-53`) | Reuse targets per size before export or a faster frames mode | backend |
+| F48 | Offscreen allocations | Risk | `render_offscreen` creates a texture and a read-back buffer on every call (`offscreen.rs:27-53`) | Reuse targets per size before export ~~or a faster frames mode~~ (frames mode is legacy since 2026-11-22) | backend |
 | F49 | Reference product named in docs | Risk | `README.md:3` and `docs/adr/0001-tech-stack.md:8, 91, 111` name the reference product. Not in the shipped product | Decide whether repo docs may name it. If not, reword README and supersede the wording in ADR-0001 | user decision |
 
 ## `src-tauri/build.rs` + `windows-app-manifest.xml` (commit `bf2d92b`)
@@ -126,7 +128,7 @@ Follow-ups:
 2. **backend:** bounded `media://` pool (F12), render on change (F14), `ProjectChanged` benchmark
    (F41), `Project::validate` and atomic save (F07, ADR-0002).
 3. **devops + backend:** LGPL FFmpeg provisioning, a licence assertion in CI and at runtime, installer
-   notices (F26). Encoder selection that works without GPL codecs (F27).
+   notices (F26). Encoder selection that works without GPL codecs (LGPL rule; F27 itself is obsolete).
 4. **frontend:** shared preview-occlusion helper and a review checklist item (F11).
 
 **P2: before the first public release**
@@ -138,4 +140,5 @@ Follow-ups:
    targets (F48), and the `build.rs` follow-ups (F43).
 4. **architect:** the export design decides the OpenH264 fallback (F28). The effects design doc
    (F18).
-5. **devops:** optional Debian 13 job (F35).
+5. ~~**devops:** optional Debian 13 job (F35).~~ Withdrawn 2026-11-22: Linux ARM64 is no longer a
+   CI platform (ADR-0001 amendment).

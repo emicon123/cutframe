@@ -14,21 +14,15 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  linux-arm64:
-    name: Linux ARM64 (fmt, clippy, tests, UI, licenses)
-    runs-on: ubuntu-24.04-arm
+  # Windows is the only platform (CLAUDE.md, decision of 2026-11-22). Local checks on the developer's
+  # Windows machine are the primary gate; this job is the second line on a clean checkout.
+  # Cheap checks run first so a formatting or UI error fails within minutes, before the Rust build.
+  windows:
+    name: Windows (checks, tests, licences, installer, smoke test)
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
-
-      - name: System packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev \
-            mesa-vulkan-drivers libvulkan1
-
-      - uses: actions-rust-lang/setup-rust-toolchain@v1 # reads rust-toolchain.toml, caches cargo
-
+      - uses: actions-rust-lang/setup-rust-toolchain@v1 # reads rust-toolchain.toml (rustfmt, clippy), caches cargo
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v5
         with:
@@ -36,24 +30,33 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
-      - name: UI checks
-        run: |
-          pnpm --dir ui typecheck
-          pnpm --dir ui lint
-          pnpm --dir ui exec prettier --check .
-          pnpm --dir ui test
-          pnpm --dir ui build
-
+      # .gitattributes forces LF in every checkout (core.autocrlf=true included), so rustfmt and
+      # Prettier see the same bytes as on any other machine.
       - run: cargo fmt --all --check
+
+      # One step per check: unless $PSNativeCommandUseErrorActionPreference is on, the default pwsh
+      # shell fails a step only on the exit code of its LAST native command, so a multi-line `run:`
+      # could hide an earlier failure.
+      - run: pnpm --dir ui typecheck
+      - run: pnpm --dir ui lint
+      - run: pnpm --dir ui exec prettier --check .
+      - run: pnpm --dir ui test
+      - run: pnpm --dir ui build
+
+      # Covers cfg(windows) code too (preview/windows.rs, the MSVC branch of build.rs). Runs before
+      # the tests to fail fast; it shares build scripts and proc macros with them.
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Tests (GPU tests run on lavapipe)
+
+      - name: Tests (GPU tests run on WARP)
         run: cargo test --workspace
 
+      # `cargo test` runs `export_typescript_bindings`, which rewrites ui/src/bindings.ts. git
+      # compares it after LF normalisation (.gitattributes), so only real contract drift fails here.
       - name: Generated bindings are up to date
         run: git diff --exit-code -- ui/src/bindings.ts
 
-      # Native aarch64 binary: EmbarkStudios/cargo-deny-action is a Docker action with an x86_64
-      # binary and fails on this runner with "Exec format error". The tool version is pinned so a
+      # taiki-e/install-action downloads a prebuilt binary; EmbarkStudios/cargo-deny-action is a
+      # Docker container action and does not run on Windows runners. The tool version is pinned so a
       # new cargo-deny release cannot change the policy check without a commit.
       - uses: taiki-e/install-action@v2
         with:
@@ -62,28 +65,6 @@ jobs:
       # deny.toml's [graph] defaults to the default feature set for a plain local `cargo deny check`.
       - name: Licences, advisories, bans and sources (cargo-deny)
         run: cargo deny --all-features check
-
-  windows:
-    name: Windows (tests, installer, smoke test)
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions-rust-lang/setup-rust-toolchain@v1 # reads rust-toolchain.toml (incl. clippy)
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-
-      # cfg(windows) code (preview/windows.rs, the MSVC branch of build.rs) is only compiled here.
-      # Runs before the tests to fail fast; it shares build scripts and proc macros with them.
-      # No `cargo fmt` here: rustfmt ignores cfg, so the Linux job already covers these files.
-      - name: Clippy (Windows-only code)
-        run: cargo clippy --workspace --all-targets -- -D warnings
-
-      - name: Tests (GPU tests run on WARP)
-        run: cargo test --workspace
 
       - name: Build NSIS installer
         run: pnpm tauri build

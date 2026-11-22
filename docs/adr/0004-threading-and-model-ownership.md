@@ -85,5 +85,7 @@ Rejected:
   only its source changes.
 - The shared GPU device means a device loss affects preview and export together. Recovery is handled
   in one place.
-- Thread count must stay bounded on the Pi (4 cores): the pools are sized from
-  `std::thread::available_parallelism`.
+- Thread count must stay bounded, so that low-core machines (for example a 4-core laptop) are not
+  oversubscribed: the pools are sized from `std::thread::available_parallelism`. *(2026-11-22: the
+  original justification was the Pi 5, which is no longer a platform per the ADR-0001 amendment. The
+  rule stays.)*
