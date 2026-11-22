@@ -30,6 +30,14 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
+      # Pinned LGPL shared FFmpeg (scripts/ffmpeg.json): download, SHA-256 check, licence gate
+      # (scripts/check-ffmpeg-license.ps1 fails on any non-LGPL DLL or GPL configure flag), then
+      # FFMPEG_DIR / FFMPEG_INCLUDE_DIR / FFMPEG_LIBS_DIR / FFMPEG_LINK_MODE / LIBCLANG_PATH go to
+      # GITHUB_ENV and .ffmpeg\bin to GITHUB_PATH. Must run before any cargo step: src-tauri's
+      # bundle.resources glob needs .ffmpeg\bin\*.dll and rsmpeg links against .ffmpeg\lib.
+      - name: Provision FFmpeg (pinned, SHA-256 and LGPL checked)
+        run: ./scripts/fetch-ffmpeg.ps1
+
       # .gitattributes forces LF in every checkout (core.autocrlf=true included), so rustfmt and
       # Prettier see the same bytes as on any other machine.
       - run: cargo fmt --all --check
@@ -79,6 +87,9 @@ jobs:
         env:
           NO_COLOR: "1" # plain tracing output, no ANSI escapes
         run: |
+          # Like a user's machine: the installed exe must load the FFmpeg DLLs that the installer put
+          # next to it, not the provisioned .ffmpeg\bin that the build steps put on PATH.
+          $env:Path = ($env:Path -split ';' | Where-Object { $_ -notlike '*\.ffmpeg\bin' }) -join ';'
           $installer = Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
           Start-Process -FilePath $installer.FullName -ArgumentList '/S' -Wait
           $dir = Join-Path $env:LOCALAPPDATA 'Cutframe'
@@ -92,6 +103,7 @@ jobs:
             3 = 'no adapter can present to the native preview window'
             4 = 'fewer than 30 frames presented to the preview window within 20 s'
             5 = 'watchdog: the smoke test did not finish within 90 s (hang)'
+            6 = 'linked FFmpeg failed the LGPL licence check'
           }
 
           # The release exe is a GUI-subsystem app: Start-Process -Wait loses its log, piping keeps
@@ -127,6 +139,21 @@ jobs:
             Fail "fewer than 30 frames presented: $line"
           }
           Write-Host "Smoke test passed: $line"
+
+      # Licence gate on what users actually get: the DLLs the installer put next to the .exe.
+      # Separate steps, so each one fails on its own exit code.
+      - name: Installed FFmpeg DLLs are the pinned LGPL build
+        run: ./scripts/check-ffmpeg-license.ps1 -Path (Join-Path $env:LOCALAPPDATA 'Cutframe')
+
+      - name: Installed FFmpeg licence and notice are present
+        run: |
+          foreach ($f in 'licenses\ffmpeg\LICENSE.txt', 'licenses\ffmpeg\NOTICE.txt') {
+            $p = Join-Path (Join-Path $env:LOCALAPPDATA 'Cutframe') $f
+            if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { throw "missing $p" }
+          }
+          if (-not (Select-String -LiteralPath (Join-Path $env:LOCALAPPDATA 'Cutframe\licenses\ffmpeg\LICENSE.txt') -Pattern 'GNU LESSER GENERAL PUBLIC LICENSE' -Quiet)) {
+            throw 'licenses\ffmpeg\LICENSE.txt is not the LGPL text'
+          }
 
       - uses: actions/upload-artifact@v7
         with:

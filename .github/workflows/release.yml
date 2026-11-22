@@ -27,6 +27,12 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
+      # Pinned LGPL shared FFmpeg (scripts/ffmpeg.json): SHA-256 check and licence gate; a non-LGPL
+      # build fails the release here. Sets the FFMPEG_* / LIBCLANG_PATH env for the Rust build, and
+      # bundle.resources in tauri.conf.json ships .ffmpeg\bin\*.dll next to the .exe.
+      - name: Provision FFmpeg (pinned, SHA-256 and LGPL checked)
+        run: ./scripts/fetch-ffmpeg.ps1
+
       # Code signing (Azure Trusted Signing) and the updater (latest.json) are added once the
       # signing account and the updater key exist. Until then releases are unsigned.
       - uses: tauri-apps/tauri-action@v1

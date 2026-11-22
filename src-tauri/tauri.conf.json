@@ -36,6 +36,11 @@
       "icons/icon.ico",
       "icons/icon.png"
     ],
+    "resources": {
+      "../.ffmpeg/bin/*.dll": "",
+      "../.ffmpeg/LICENSE.txt": "licenses/ffmpeg/LICENSE.txt",
+      "../.ffmpeg/NOTICE.txt": "licenses/ffmpeg/NOTICE.txt"
+    },
     "windows": {
       "webviewInstallMode": { "type": "embedBootstrapper" },
       "nsis": { "installMode": "currentUser" }

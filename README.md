@@ -19,11 +19,20 @@ Windows 10/11 x64 is the only supported development platform. Prerequisites:
   rustfmt and clippy) is installed automatically on the first `cargo` call
 - **Node.js 24** and **pnpm** (`corepack enable` picks the version from `package.json`)
 - **WebView2 Runtime** (preinstalled on Windows 11 and current Windows 10)
+- **LLVM** (`winget install LLVM.LLVM`): `libclang` for the FFmpeg bindings
 
 ```bash
 pnpm install
+pnpm setup:ffmpeg # pinned LGPL FFmpeg 7.1 into .ffmpeg/ (SHA-256 + licence checked), sets FFMPEG_* env
 pnpm dev          # = tauri dev: Vite + the Rust app with hot reload
 ```
+
+`pnpm setup:ffmpeg` (`scripts/fetch-ffmpeg.ps1`) is idempotent and needs no admin rights. It
+downloads the build pinned in `scripts/ffmpeg.json`, refuses it on a hash mismatch or if any DLL is
+not LGPL, and sets `FFMPEG_DIR`, `FFMPEG_INCLUDE_DIR`, `FFMPEG_LIBS_DIR`, `FFMPEG_LINK_MODE` (and
+`LIBCLANG_PATH` if LLVM is in Program Files) as user variables, with `.ffmpeg\bin` on the user
+`PATH`. Open a new terminal afterwards. The Rust build needs it: the installer bundles
+`.ffmpeg/bin/*.dll` next to the `.exe`.
 
 Useful commands:
 
