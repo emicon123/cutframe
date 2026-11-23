@@ -445,6 +445,25 @@ pub struct PreviewRect {
     pub height: u32,
 }
 
+/// How a `seek` is meant (playback.md §8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum SeekMode {
+    /// A click, a step or the end of a drag: show the exact frame.
+    Exact,
+    /// While the playhead is dragged: show the nearest ready frame at once.
+    Scrub,
+}
+
+impl From<SeekMode> for engine::transport::SeekMode {
+    fn from(mode: SeekMode) -> Self {
+        match mode {
+            SeekMode::Exact => Self::Exact,
+            SeekMode::Scrub => Self::Scrub,
+        }
+    }
+}
+
 /// The GPU capability report (status bar, Preferences → Performance).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]

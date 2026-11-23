@@ -401,7 +401,6 @@ pub(crate) mod tests {
     fn snapshot(name: &str, file_path: Option<PathBuf>) -> SaveSnapshot {
         let state = AppState::new(
             Project::new(name),
-            None,
             store(Path::new("unused")),
             crate::jobs::JobManager::for_tests(),
             std::sync::Arc::new(crate::previews::Previews::new(None)),

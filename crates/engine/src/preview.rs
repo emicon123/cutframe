@@ -1,26 +1,42 @@
-//! The preview thread. It owns the GPU and renders the preview either into a native window
-//! (Windows: a child window over the UI's preview area) or into offscreen frames that the UI pulls
-//! (Linux development mode, see ADR-0001).
+//! The preview thread. It owns the preview surface and renders the preview either into a native
+//! window (Windows: a child window over the UI's preview area) or into offscreen frames that the
+//! UI pulls (legacy Linux `frames` mode, ADR-0005 amendment).
 //!
 //! All communication goes through a channel, so callers never block on rendering.
 //!
-//! When the GPU device is lost (driver reset, TDR), the thread recreates the context on the same
-//! window following [`after_device_loss`] and reports the new GPU through the `on_gpu_changed`
-//! callback.
+//! **Render on change** (render-graph.md §7, ADR-0005 amendment): while paused the thread blocks
+//! on its channel and draws and presents once per wake message ([`PreviewHandle::snapshot_changed`],
+//! [`PreviewHandle::seek`], resize, becoming visible, [`FrameReadyNotifier::notify`],
+//! [`PreviewHandle::request_redraw`] and device recreation). Nothing changes, nothing is presented.
+//! Vsync-paced playback comes with task 0330.
+//!
+//! **Inputs:** the project snapshot (`Arc<ArcSwap<Project>>`, published by the shell after every
+//! change) and the [`TransportShared`] playhead are read lock-free when drawing. The engine never
+//! takes the document lock (ADR-0004 §2).
+//!
+//! **GPU:** the thread creates the [`GpuContext`] (so the adapter can present to the window,
+//! ADR-0005) and shares it as `Arc<GpuContext>` ([`PreviewHandle::gpu`]). When the device is lost
+//! (driver reset, TDR), the thread recreates the context on the same window following
+//! [`after_device_loss`], publishes the **new** `Arc` and reports the new GPU through the
+//! `on_gpu_changed` callback. Holders of the old `Arc` (readers, compositor state, an export) must
+//! drop every resource created on the old device and take the new context; `Arc::ptr_eq` tells
+//! whether a held context is still the current one.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use arc_swap::ArcSwap;
-use crossbeam_channel::{Receiver, Sender, bounded, unbounded};
+use app_core::{Project, ProjectSettings};
+use arc_swap::{ArcSwap, ArcSwapOption};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded, unbounded};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
 use crate::render::{
     AdapterMode, FallbackReason, GpuContext, GpuError, GpuInfo, OFFSCREEN_FORMAT, OffscreenFrame,
     PatternParams, TestPattern, render_offscreen,
 };
+use crate::transport::{SeekMode, TransportShared, clamp_to_timeline};
 
 /// Called on the preview thread after the GPU changed at runtime: the new report, and whether the
 /// preview still renders (`false` = it gave up after repeated device losses).
@@ -55,7 +71,17 @@ enum Message {
         height: u32,
     },
     SetVisible(bool),
-    SetCanvasAspect(f32),
+    /// The shell published a new project snapshot.
+    SnapshotChanged,
+    /// The playhead moved ([`TransportShared`] already holds the new time).
+    Seek {
+        generation: u32,
+        mode: SeekMode,
+    },
+    /// A reader decoded a frame (coalesced by [`FrameReadyNotifier`]).
+    FrameReady,
+    /// Draw and present once although no input changed (`--smoke-test`).
+    Redraw,
     /// The device of context `generation` was lost (sent by its device-lost callback).
     DeviceLost {
         generation: u32,
@@ -68,10 +94,66 @@ enum Message {
     Shutdown,
 }
 
+impl std::fmt::Debug for Message {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Message::Resize { .. } => "Resize",
+            Message::SetVisible(_) => "SetVisible",
+            Message::SnapshotChanged => "SnapshotChanged",
+            Message::Seek { .. } => "Seek",
+            Message::FrameReady => "FrameReady",
+            Message::Redraw => "Redraw",
+            Message::DeviceLost { .. } => "DeviceLost",
+            Message::RenderFrame { .. } => "RenderFrame",
+            Message::Shutdown => "Shutdown",
+        })
+    }
+}
+
+/// Wakes the render thread because a reader has a new frame. Cheap to clone, never blocks, and
+/// safe to call from any thread: calls between two draws coalesce into one wake (an
+/// `AtomicBool` guards the channel send), so a reader may call it for every decoded frame.
+#[derive(Debug, Clone)]
+pub struct FrameReadyNotifier {
+    /// Set by [`Self::notify`], cleared by the render thread before it draws.
+    pending: Arc<AtomicBool>,
+    tx: Sender<Message>,
+}
+
+impl FrameReadyNotifier {
+    fn new(tx: Sender<Message>) -> Self {
+        Self {
+            pending: Arc::new(AtomicBool::new(false)),
+            tx,
+        }
+    }
+
+    /// Asks for a redraw because a frame is ready. Call it after the frame is visible to the
+    /// render thread (pushed to the reader's queue).
+    pub fn notify(&self) {
+        if !self.pending.swap(true, Ordering::AcqRel) {
+            // A stopped render thread needs no wake.
+            let _ = self.tx.send(Message::FrameReady);
+        }
+    }
+
+    /// Render thread: called before drawing, so a frame that arrives during the draw wakes it
+    /// again.
+    fn clear(&self) {
+        self.pending.store(false, Ordering::Release);
+    }
+}
+
 /// Handle to the preview thread. Dropping it stops the thread.
 #[derive(Debug)]
 pub struct PreviewHandle {
     tx: Sender<Message>,
+    /// The project the preview shows; read for clamping seeks.
+    snapshot: Arc<ArcSwap<Project>>,
+    transport: Arc<TransportShared>,
+    frame_ready: FrameReadyNotifier,
+    /// The current GPU context; replaced after a device loss, `None` once the preview gave up.
+    gpu: Arc<ArcSwapOption<GpuContext>>,
     /// The current GPU; replaced by the preview thread after a device loss.
     gpu_info: Arc<ArcSwap<GpuInfo>>,
     /// False once the preview gave up after repeated device losses.
@@ -81,69 +163,75 @@ pub struct PreviewHandle {
     thread: Option<JoinHandle<()>>,
 }
 
-impl std::fmt::Debug for Message {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Message::Resize { .. } => "Resize",
-            Message::SetVisible(_) => "SetVisible",
-            Message::SetCanvasAspect(_) => "SetCanvasAspect",
-            Message::DeviceLost { .. } => "DeviceLost",
-            Message::RenderFrame { .. } => "RenderFrame",
-            Message::Shutdown => "Shutdown",
-        })
-    }
-}
-
 impl PreviewHandle {
     /// Starts the preview thread for offscreen rendering and initializes the GPU on it.
-    /// `on_gpu_changed` is called after a runtime device loss (see [`GpuChanged`]).
-    pub fn spawn(canvas_aspect: f32, on_gpu_changed: GpuChanged) -> Result<Self, GpuError> {
-        Self::spawn_inner(canvas_aspect, None, on_gpu_changed)
+    /// `snapshot` is the project to show (the shell stores new snapshots into it and calls
+    /// [`Self::snapshot_changed`]). `on_gpu_changed` is called after a runtime device loss (see
+    /// [`GpuChanged`]).
+    pub fn spawn(
+        snapshot: Arc<ArcSwap<Project>>,
+        on_gpu_changed: GpuChanged,
+    ) -> Result<Self, GpuError> {
+        Self::spawn_inner(snapshot, None, on_gpu_changed)
     }
 
     /// Starts the preview thread rendering into a native window. The GPU adapter is chosen so
-    /// that it can present to this window (see [`GpuContext::with_window`]). Rendering is paused
-    /// and the window is 1 x 1 pixels until [`Self::resize`] and [`Self::set_visible`] are
-    /// called. [`Self::has_window`] reports whether the window could be attached.
-    /// `on_gpu_changed` is called after a runtime device loss (see [`GpuChanged`]).
+    /// that it can present to this window (see [`GpuContext::with_window`]). Nothing is drawn and
+    /// the window is 1 x 1 pixels until [`Self::resize`] and [`Self::set_visible`] are called.
+    /// [`Self::has_window`] reports whether the window could be attached. `snapshot` and
+    /// `on_gpu_changed` as in [`Self::spawn`].
     ///
     /// # Safety
     /// `window` (and `display`, if given) must be valid handles, and the window must stay alive
     /// until this `PreviewHandle` is dropped.
     pub unsafe fn spawn_with_window(
-        canvas_aspect: f32,
+        snapshot: Arc<ArcSwap<Project>>,
         window: RawWindowHandle,
         display: Option<RawDisplayHandle>,
         on_gpu_changed: GpuChanged,
     ) -> Result<Self, GpuError> {
         Self::spawn_inner(
-            canvas_aspect,
+            snapshot,
             Some(NativeWindow { window, display }),
             on_gpu_changed,
         )
     }
 
     fn spawn_inner(
-        canvas_aspect: f32,
+        snapshot: Arc<ArcSwap<Project>>,
         window: Option<NativeWindow>,
         on_gpu_changed: GpuChanged,
     ) -> Result<Self, GpuError> {
         let (tx, rx) = unbounded();
         let (ready_tx, ready_rx) = bounded(1);
-        let presented = Arc::new(AtomicU64::new(0));
-        let available = Arc::new(AtomicBool::new(true));
         let shared = Shared {
-            presented: Arc::clone(&presented),
-            available: Arc::clone(&available),
+            presented: Arc::new(AtomicU64::new(0)),
+            available: Arc::new(AtomicBool::new(true)),
+            gpu: Arc::new(ArcSwapOption::empty()),
+            snapshot: Arc::clone(&snapshot),
+            transport: Arc::new(TransportShared::new()),
+            frame_ready: FrameReadyNotifier::new(tx.clone()),
             tx: tx.clone(),
             on_gpu_changed,
+        };
+        let mut handle = Self {
+            tx,
+            snapshot,
+            transport: Arc::clone(&shared.transport),
+            frame_ready: shared.frame_ready.clone(),
+            gpu: Arc::clone(&shared.gpu),
+            // Replaced by the report from the render thread below.
+            gpu_info: Arc::new(ArcSwap::from_pointee(detached_info())),
+            available: Arc::clone(&shared.available),
+            presented: Arc::clone(&shared.presented),
+            thread: None,
         };
         let thread = thread::Builder::new()
             .name("preview-render".into())
             .spawn(
                 move || match create_gpu(window.as_ref(), AdapterMode::Auto) {
                     Ok((gpu, surface)) => {
-                        let render = RenderLoop::new(gpu, canvas_aspect, surface, window, shared);
+                        let render = RenderLoop::new(Arc::new(gpu), surface, window, shared);
                         let _ = ready_tx.send(Ok(Arc::clone(&render.info)));
                         render.run(&rx);
                     }
@@ -153,21 +241,22 @@ impl PreviewHandle {
                 },
             )
             .expect("failed to spawn the preview thread");
-        let gpu_info = ready_rx
+        handle.gpu_info = ready_rx
             .recv()
             .expect("preview thread exited during GPU initialization")?;
-        Ok(Self {
-            tx,
-            gpu_info,
-            available,
-            presented,
-            thread: Some(thread),
-        })
+        handle.thread = Some(thread);
+        Ok(handle)
     }
 
     /// The GPU in use now. Changes after a runtime device loss.
     pub fn gpu_info(&self) -> Arc<GpuInfo> {
         self.gpu_info.load_full()
+    }
+
+    /// The shared GPU context, for consumers on other threads (export). A new `Arc` after a
+    /// device loss (see the module docs); `None` once the preview gave up.
+    pub fn gpu(&self) -> Option<Arc<GpuContext>> {
+        self.gpu.load_full()
     }
 
     /// Whether the native window passed to [`Self::spawn_with_window`] is rendered into.
@@ -185,19 +274,46 @@ impl PreviewHandle {
         self.presented.load(Ordering::Relaxed)
     }
 
-    /// New size of the attached window, in physical pixels.
+    /// The transport the render thread reads (the paused playhead and the seek generation).
+    pub fn transport(&self) -> &Arc<TransportShared> {
+        &self.transport
+    }
+
+    /// A notifier for readers: wakes the render thread when a frame is ready.
+    pub fn frame_ready_notifier(&self) -> FrameReadyNotifier {
+        self.frame_ready.clone()
+    }
+
+    /// New size of the attached window, in physical pixels. Redraws.
     pub fn resize(&self, width: u32, height: u32) {
         self.send(Message::Resize { width, height });
     }
 
-    /// Pauses (hidden) or resumes (visible) rendering into the attached window.
+    /// Stops (hidden) or allows (visible) drawing into the attached window. Becoming visible
+    /// redraws.
     pub fn set_visible(&self, visible: bool) {
         self.send(Message::SetVisible(visible));
     }
 
-    /// Width / height of the project canvas.
-    pub fn set_canvas_aspect(&self, aspect: f32) {
-        self.send(Message::SetCanvasAspect(aspect));
+    /// The snapshot passed at spawn holds a new project: redraw.
+    pub fn snapshot_changed(&self) {
+        self.send(Message::SnapshotChanged);
+    }
+
+    /// Moves the playhead to `time`, clamped to `0..=duration` of the current snapshot, and
+    /// redraws. Returns the new seek generation. Never blocks: it updates the transport atomics
+    /// and sends a message.
+    pub fn seek(&self, time: app_core::Time, mode: SeekMode) -> u32 {
+        let time = clamp_to_timeline(time, self.snapshot.load().duration());
+        let generation = self.transport.seek(time);
+        self.send(Message::Seek { generation, mode });
+        generation
+    }
+
+    /// Draws and presents once even though no input changed. For `--smoke-test`, which needs a
+    /// number of presents from an otherwise idle preview.
+    pub fn request_redraw(&self) {
+        self.send(Message::Redraw);
     }
 
     /// Renders one offscreen frame. Returns `None` if the thread does not answer within `timeout`.
@@ -226,6 +342,101 @@ impl PreviewHandle {
         if self.tx.send(message).is_err() {
             tracing::error!("preview thread is not running");
         }
+    }
+}
+
+impl Drop for PreviewHandle {
+    fn drop(&mut self) {
+        let _ = self.tx.send(Message::Shutdown);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// The report of a handle without a GPU (before the render thread answers, or detached).
+fn detached_info() -> GpuInfo {
+    GpuInfo {
+        adapter: "none".into(),
+        backend: "none".into(),
+        software: false,
+        device_type: crate::render::DeviceKind::Other,
+        driver: String::new(),
+        presents_to_window: false,
+        fallback: None,
+    }
+}
+
+/// A wake message seen by a [`WakeProbe`].
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wake {
+    Resize {
+        width: u32,
+        height: u32,
+    },
+    SetVisible(bool),
+    SnapshotChanged,
+    Seek {
+        generation: u32,
+        mode: SeekMode,
+    },
+    FrameReady,
+    Redraw,
+    /// Device loss, offscreen frame request or shutdown.
+    Other,
+}
+
+/// The receiving end of a [`PreviewHandle::detached`] handle: what a render thread would see.
+#[cfg(any(test, feature = "test-support"))]
+#[derive(Debug)]
+pub struct WakeProbe {
+    rx: Receiver<Message>,
+    frame_ready: FrameReadyNotifier,
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl WakeProbe {
+    /// The next message sent to the render thread, or `None` after `timeout`. A `FrameReady` is
+    /// consumed like the render thread does (the next notify wakes again).
+    pub fn next(&self, timeout: Duration) -> Option<Wake> {
+        let message = self.rx.recv_timeout(timeout).ok()?;
+        Some(match message {
+            Message::Resize { width, height } => Wake::Resize { width, height },
+            Message::SetVisible(visible) => Wake::SetVisible(visible),
+            Message::SnapshotChanged => Wake::SnapshotChanged,
+            Message::Seek { generation, mode } => Wake::Seek { generation, mode },
+            Message::FrameReady => {
+                self.frame_ready.clear();
+                Wake::FrameReady
+            }
+            Message::Redraw => Wake::Redraw,
+            Message::DeviceLost { .. } | Message::RenderFrame { .. } | Message::Shutdown => {
+                Wake::Other
+            }
+        })
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+impl PreviewHandle {
+    /// A handle without a render thread or GPU, for tests of the shell: its messages go to the
+    /// returned probe. [`Self::gpu`] is `None`, offscreen frames are never rendered.
+    pub fn detached(snapshot: Arc<ArcSwap<Project>>) -> (Self, WakeProbe) {
+        let (tx, rx) = unbounded();
+        let frame_ready = FrameReadyNotifier::new(tx.clone());
+        let handle = Self {
+            tx,
+            snapshot,
+            transport: Arc::new(TransportShared::new()),
+            frame_ready: frame_ready.clone(),
+            gpu: Arc::new(ArcSwapOption::empty()),
+            gpu_info: Arc::new(ArcSwap::from_pointee(detached_info())),
+            available: Arc::new(AtomicBool::new(true)),
+            presented: Arc::new(AtomicU64::new(0)),
+            thread: None,
+        };
+        (handle, WakeProbe { rx, frame_ready })
     }
 }
 
@@ -271,18 +482,38 @@ fn watch_device(gpu: &GpuContext, generation: u32, tx: &Sender<Message>) {
 struct Shared {
     presented: Arc<AtomicU64>,
     available: Arc<AtomicBool>,
+    /// The current context, published for [`PreviewHandle::gpu`].
+    gpu: Arc<ArcSwapOption<GpuContext>>,
+    snapshot: Arc<ArcSwap<Project>>,
+    transport: Arc<TransportShared>,
+    /// Cleared before every draw. The compositor step hands clones to the readers.
+    frame_ready: FrameReadyNotifier,
     /// The loop's own channel, for device-lost callbacks.
     tx: Sender<Message>,
     on_gpu_changed: GpuChanged,
 }
 
-impl Drop for PreviewHandle {
-    fn drop(&mut self) {
-        let _ = self.tx.send(Message::Shutdown);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
-    }
+/// Surface formats the preview prefers, best first: 8-bit and **not** `*Srgb`. The working values
+/// of the render graph are display-referred R'G'B' (render-graph.md §5.1), so an sRGB surface
+/// would encode them a second time.
+const PREFERRED_SURFACE_FORMATS: [wgpu::TextureFormat; 2] = [
+    wgpu::TextureFormat::Bgra8Unorm,
+    wgpu::TextureFormat::Rgba8Unorm,
+];
+
+/// The preview surface format among the `supported` ones: a preferred format, else the first
+/// non-sRGB one. `Rgba16Float` is skipped: DXGI treats a float swap chain as linear scRGB.
+/// `None` when every supported format is sRGB.
+fn preview_surface_format(supported: &[wgpu::TextureFormat]) -> Option<wgpu::TextureFormat> {
+    PREFERRED_SURFACE_FORMATS
+        .into_iter()
+        .find(|format| supported.contains(format))
+        .or_else(|| {
+            supported
+                .iter()
+                .copied()
+                .find(|format| !format.is_srgb() && *format != wgpu::TextureFormat::Rgba16Float)
+        })
 }
 
 struct WindowTarget {
@@ -306,13 +537,12 @@ impl WindowTarget {
             return None;
         };
         let capabilities = surface.get_capabilities(&gpu.adapter);
-        if let Some(srgb) = capabilities
-            .formats
-            .iter()
-            .copied()
-            .find(wgpu::TextureFormat::is_srgb)
-        {
-            config.format = srgb;
+        match preview_surface_format(&capabilities.formats) {
+            Some(format) => config.format = format,
+            None => tracing::warn!(
+                format = ?config.format, supported = ?capabilities.formats,
+                "no non-sRGB preview surface format; colours will look too bright"
+            ),
         }
         config.present_mode = wgpu::PresentMode::AutoVsync;
         config.desired_maximum_frame_latency = 2;
@@ -339,8 +569,8 @@ const LONG_GAP_FACTOR: f64 = 1.5;
 
 /// Present-rate accumulator for the preview window: fed with the time of every successful
 /// present, it reports statistics once per [`PRESENT_STATS_WINDOW`] of continuous drawing.
-/// [`Self::reset`] drops the current window, so pauses (hidden, resized, occluded) never count as
-/// gaps. No allocation after construction.
+/// [`Self::reset`] drops the current window, so pauses (idle, hidden, resized, occluded) never
+/// count as gaps. No allocation after construction.
 struct PresentStats {
     /// Intervals between consecutive presents in the current window.
     intervals: Vec<Duration>,
@@ -426,8 +656,24 @@ fn millis(duration: Duration) -> f64 {
     (duration.as_secs_f64() * 10_000.0).round() / 10.0
 }
 
+/// Retry delay after a draw that could not present because the surface was busy or outdated.
+const RETRY_SOON: Duration = Duration::from_millis(16);
+/// Retry delay while the window is occluded (minimised) or after a validation error.
+const RETRY_LATER: Duration = Duration::from_millis(100);
+/// A wait for input at least this long is a pause, not a gap in the present rate.
+const IDLE_RESET: Duration = Duration::from_millis(100);
+
+/// What a handled message asks of the loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Handled {
+    Done,
+    /// An input of the picture changed: draw and present.
+    Redraw,
+    Shutdown,
+}
+
 struct RenderLoop {
-    gpu: GpuContext,
+    gpu: Arc<GpuContext>,
     /// Adapter of `gpu`, cached for the present-rate log.
     adapter: wgpu::AdapterInfo,
     /// Increases with every recreated context; stale device-lost messages are ignored.
@@ -440,8 +686,6 @@ struct RenderLoop {
     native: Option<NativeWindow>,
     /// Last size from [`Message::Resize`], in physical pixels.
     size: (u32, u32),
-    started: Instant,
-    canvas_aspect: f32,
     offscreen_pattern: Option<TestPattern>,
     window: Option<WindowTarget>,
     visible: bool,
@@ -451,14 +695,14 @@ struct RenderLoop {
 
 impl RenderLoop {
     fn new(
-        gpu: GpuContext,
-        canvas_aspect: f32,
+        gpu: Arc<GpuContext>,
         surface: Option<wgpu::Surface<'static>>,
         native: Option<NativeWindow>,
         shared: Shared,
     ) -> Self {
         let window = surface.and_then(|surface| WindowTarget::new(&gpu, surface, 1, 1));
         watch_device(&gpu, 0, &shared.tx);
+        shared.gpu.store(Some(Arc::clone(&gpu)));
         let info = Arc::new(ArcSwap::from_pointee(report(&gpu, window.is_some())));
         Self {
             adapter: gpu.adapter.get_info(),
@@ -468,11 +712,9 @@ impl RenderLoop {
             info,
             native,
             size: (1, 1),
-            started: Instant::now(),
-            canvas_aspect,
             offscreen_pattern: None,
             window,
-            // Paused until the shell shows the window.
+            // Hidden until the shell shows the window.
             visible: false,
             shared,
             present_stats: PresentStats::new(),
@@ -482,7 +724,9 @@ impl RenderLoop {
     /// Recreates the context after a device loss, following [`after_device_loss`], and reports
     /// the result through `on_gpu_changed`. Gives up (stops drawing) when the policy says so.
     fn recover(&mut self) {
-        // A window takes one swap chain at a time: drop the old surface before creating a new one.
+        // Everything made on the lost device goes. A window takes one swap chain at a time: drop
+        // the old surface before creating a new one. (The compositor step drops its readers and
+        // source cache here as well, render-graph.md §10.)
         self.window = None;
         self.offscreen_pattern = None;
         self.present_stats.reset();
@@ -494,6 +738,7 @@ impl RenderLoop {
                     "GPU lost repeatedly; the preview is unavailable"
                 );
                 self.shared.available.store(false, Ordering::Relaxed);
+                self.shared.gpu.store(None);
                 let mut info = GpuInfo::clone(&self.info.load());
                 info.presents_to_window = false;
                 (self.shared.on_gpu_changed)(info, false);
@@ -504,8 +749,10 @@ impl RenderLoop {
                     gpu.fallback = Some(FallbackReason::DeviceLost);
                     self.generation += 1;
                     watch_device(&gpu, self.generation, &self.shared.tx);
-                    // The lost context is dropped here.
-                    self.gpu = gpu;
+                    // The loop's reference to the lost context is dropped here; other holders
+                    // replace theirs when they see the new `Arc`.
+                    self.gpu = Arc::new(gpu);
+                    self.shared.gpu.store(Some(Arc::clone(&self.gpu)));
                     self.adapter = self.gpu.adapter.get_info();
                     let (width, height) = self.size;
                     self.window = surface
@@ -530,42 +777,59 @@ impl RenderLoop {
         !self.shared.available.load(Ordering::Relaxed)
     }
 
+    /// Render on change: block until a message arrives, handle every queued message, then draw
+    /// and present once if any of them changed the picture. A draw that could not present is
+    /// retried after a short delay (or with the next message).
     fn run(mut self, rx: &Receiver<Message>) {
+        // A frame was asked for and is not on screen yet.
+        let mut dirty = false;
+        let mut retry: Option<Duration> = None;
         loop {
-            // Block while there is nothing to draw; otherwise drain messages and draw a frame.
-            if !self.is_drawing() {
-                // A pause is not a gap in the present rate.
-                self.present_stats.reset();
-                match rx.recv() {
-                    Ok(message) => {
-                        if !self.handle(message) {
-                            return;
-                        }
+            let first = match retry.take() {
+                Some(delay) => match rx.recv_timeout(delay) {
+                    Ok(message) => Some(message),
+                    Err(RecvTimeoutError::Timeout) => None,
+                    Err(RecvTimeoutError::Disconnected) => return,
+                },
+                None => {
+                    // Idle: no timer, no presents until an input changes.
+                    let idle = Instant::now();
+                    let Ok(message) = rx.recv() else {
+                        return;
+                    };
+                    if idle.elapsed() >= IDLE_RESET {
+                        self.present_stats.reset();
                     }
-                    Err(_) => return,
+                    Some(message)
+                }
+            };
+            for message in first.into_iter().chain(rx.try_iter()) {
+                match self.handle(message) {
+                    Handled::Done => {}
+                    Handled::Redraw => dirty = true,
+                    Handled::Shutdown => return,
                 }
             }
-            for message in rx.try_iter() {
-                if !self.handle(message) {
-                    return;
-                }
-            }
-            if self.is_drawing() {
-                self.draw_window();
+            if !self.is_drawing() {
+                // Becoming visible or a new size redraws anyway.
+                dirty = false;
+            } else if dirty {
+                retry = self.draw_window();
+                dirty = retry.is_some();
             }
         }
     }
 
     fn is_drawing(&self) -> bool {
         self.visible
+            && !self.gave_up()
             && self
                 .window
                 .as_ref()
                 .is_some_and(|w| w.config.width > 0 && w.config.height > 0)
     }
 
-    /// Returns `false` on shutdown.
-    fn handle(&mut self, message: Message) -> bool {
+    fn handle(&mut self, message: Message) -> Handled {
         match message {
             Message::Resize { width, height } => {
                 self.size = (width.max(1), height.max(1));
@@ -575,15 +839,32 @@ impl RenderLoop {
                     target.surface.configure(&self.gpu.device, &target.config);
                 }
                 self.present_stats.reset();
+                Handled::Redraw
             }
             Message::SetVisible(visible) => {
                 self.visible = visible;
                 self.present_stats.reset();
+                if visible {
+                    Handled::Redraw
+                } else {
+                    Handled::Done
+                }
             }
-            Message::SetCanvasAspect(aspect) => self.canvas_aspect = aspect,
+            Message::SnapshotChanged | Message::Redraw => Handled::Redraw,
+            Message::Seek { generation, mode } => {
+                tracing::trace!(generation, ?mode, "seek");
+                Handled::Redraw
+            }
+            Message::FrameReady => {
+                self.shared.frame_ready.clear();
+                Handled::Redraw
+            }
             Message::DeviceLost { generation } => {
                 if generation == self.generation && !self.gave_up() {
                     self.recover();
+                    Handled::Redraw
+                } else {
+                    Handled::Done
                 }
             }
             Message::RenderFrame {
@@ -593,46 +874,53 @@ impl RenderLoop {
             } => {
                 if self.gave_up() {
                     // Dropping `reply` answers "no frame" right away.
-                    return true;
+                    return Handled::Done;
                 }
-                let time = self.elapsed();
+                let params = self.pattern_inputs();
                 let pattern = self
                     .offscreen_pattern
                     .get_or_insert_with(|| TestPattern::new(&self.gpu, OFFSCREEN_FORMAT));
-                let frame =
-                    render_offscreen(&self.gpu, pattern, width, height, time, self.canvas_aspect);
+                let frame = render_offscreen(&self.gpu, pattern, width, height, params.0, params.1);
                 let _ = reply.send(frame);
+                Handled::Done
             }
-            Message::Shutdown => return false,
+            Message::Shutdown => Handled::Shutdown,
         }
-        true
     }
 
-    fn draw_window(&mut self) {
-        let time = self.elapsed();
-        let canvas_aspect = self.canvas_aspect;
-        let Some(target) = &mut self.window else {
-            return;
-        };
+    /// The test pattern's inputs from the shared state: the playhead in seconds and the canvas
+    /// aspect of the current snapshot. (The compositor replaces this with `build_plan`.)
+    fn pattern_inputs(&self) -> (f32, f32) {
+        let time = self.shared.transport.playhead().as_seconds_f64() as f32;
+        (time, canvas_aspect(&self.shared.snapshot.load().settings))
+    }
+
+    /// Draws and presents one frame. Returns the delay after which to retry when nothing could be
+    /// presented (surface busy, outdated, occluded or invalid).
+    fn draw_window(&mut self) -> Option<Duration> {
+        let (time, canvas_aspect) = self.pattern_inputs();
+        let target = self.window.as_mut()?;
 
         let (frame, suboptimal) = match target.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => (frame, false),
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => (frame, true),
-            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+            wgpu::CurrentSurfaceTexture::Timeout => {
                 self.present_stats.reset();
-                thread::sleep(Duration::from_millis(16));
-                return;
+                return Some(RETRY_SOON);
+            }
+            wgpu::CurrentSurfaceTexture::Occluded => {
+                self.present_stats.reset();
+                return Some(RETRY_LATER);
             }
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
                 self.present_stats.reset();
                 target.surface.configure(&self.gpu.device, &target.config);
-                return;
+                return Some(RETRY_SOON);
             }
             wgpu::CurrentSurfaceTexture::Validation => {
                 self.present_stats.reset();
                 tracing::error!("validation error while acquiring the preview frame");
-                thread::sleep(Duration::from_millis(100));
-                return;
+                return Some(RETRY_LATER);
             }
         };
 
@@ -679,11 +967,13 @@ impl RenderLoop {
             target.surface.configure(&self.gpu.device, &target.config);
             self.present_stats.reset();
         }
+        None
     }
+}
 
-    fn elapsed(&self) -> f32 {
-        self.started.elapsed().as_secs_f32()
-    }
+/// Width / height of the project canvas.
+fn canvas_aspect(settings: &ProjectSettings) -> f32 {
+    settings.width.max(1) as f32 / settings.height.max(1) as f32
 }
 
 /// The report for `gpu`; `presents` = it renders into the native window.
@@ -696,10 +986,140 @@ fn report(gpu: &GpuContext, presents: bool) -> GpuInfo {
 
 #[cfg(test)]
 mod tests {
+    use app_core::Time;
+
     use super::*;
 
     fn ignore_gpu_changes() -> GpuChanged {
         Box::new(|_, _| {})
+    }
+
+    fn snapshot(project: Project) -> Arc<ArcSwap<Project>> {
+        Arc::new(ArcSwap::from_pointee(project))
+    }
+
+    fn empty_project() -> Arc<ArcSwap<Project>> {
+        snapshot(Project::new("Test"))
+    }
+
+    /// A project whose timeline is `seconds` long (one colour clip).
+    fn project_of(seconds: i64) -> Project {
+        let mut project = Project::new("Test");
+        project.tracks[0].clips.push(app_core::Clip::color(
+            "Colour",
+            Time::ZERO,
+            Time::from_seconds(seconds),
+            app_core::Rgba8::BLACK,
+        ));
+        project
+    }
+
+    const SHORT: Duration = Duration::from_millis(50);
+
+    #[test]
+    fn surface_format_is_never_srgb() {
+        use wgpu::TextureFormat::*;
+        // The usual D3D12 list.
+        assert_eq!(
+            preview_surface_format(&[Bgra8UnormSrgb, Bgra8Unorm, Rgba8UnormSrgb, Rgba8Unorm]),
+            Some(Bgra8Unorm)
+        );
+        assert_eq!(
+            preview_surface_format(&[Rgba8UnormSrgb, Rgba8Unorm]),
+            Some(Rgba8Unorm)
+        );
+        // No preferred format: the first non-sRGB one, never a linear float swap chain.
+        assert_eq!(
+            preview_surface_format(&[Bgra8UnormSrgb, Rgba16Float, Rgb10a2Unorm]),
+            Some(Rgb10a2Unorm)
+        );
+        assert_eq!(preview_surface_format(&[Bgra8UnormSrgb]), None);
+        assert_eq!(preview_surface_format(&[]), None);
+    }
+
+    #[test]
+    fn seek_clamps_to_the_timeline_and_counts_generations() {
+        let (preview, probe) = PreviewHandle::detached(snapshot(project_of(10)));
+        assert_eq!(preview.transport().seek_generation(), 0);
+
+        assert_eq!(preview.seek(Time::from_seconds(4), SeekMode::Scrub), 1);
+        assert_eq!(preview.transport().playhead(), Time::from_seconds(4));
+        assert_eq!(
+            probe.next(SHORT),
+            Some(Wake::Seek {
+                generation: 1,
+                mode: SeekMode::Scrub
+            })
+        );
+
+        assert_eq!(preview.seek(Time::from_seconds(60), SeekMode::Exact), 2);
+        assert_eq!(preview.transport().playhead(), Time::from_seconds(10));
+        assert_eq!(preview.seek(Time(-5), SeekMode::Exact), 3);
+        assert_eq!(preview.transport().playhead(), Time::ZERO);
+        assert_eq!(preview.transport().seek_generation(), 3);
+    }
+
+    #[test]
+    fn frame_ready_wakes_coalesce_until_the_render_thread_takes_them() {
+        let (preview, probe) = PreviewHandle::detached(empty_project());
+        let notifier = preview.frame_ready_notifier();
+        let other = notifier.clone();
+        notifier.notify();
+        other.notify();
+        notifier.notify();
+        assert_eq!(probe.next(SHORT), Some(Wake::FrameReady));
+        assert_eq!(probe.next(SHORT), None, "three notifies, one wake");
+
+        // Taken: the next frame wakes again.
+        other.notify();
+        assert_eq!(probe.next(SHORT), Some(Wake::FrameReady));
+    }
+
+    #[test]
+    fn inputs_send_wake_messages() {
+        let (preview, probe) = PreviewHandle::detached(empty_project());
+        preview.snapshot_changed();
+        preview.resize(640, 360);
+        preview.set_visible(true);
+        preview.request_redraw();
+        assert_eq!(probe.next(SHORT), Some(Wake::SnapshotChanged));
+        assert_eq!(
+            probe.next(SHORT),
+            Some(Wake::Resize {
+                width: 640,
+                height: 360
+            })
+        );
+        assert_eq!(probe.next(SHORT), Some(Wake::SetVisible(true)));
+        assert_eq!(probe.next(SHORT), Some(Wake::Redraw));
+        assert_eq!(probe.next(SHORT), None);
+        assert!(preview.gpu().is_none());
+    }
+
+    /// The real render thread handles wakes while it has no window to draw into: it stays
+    /// responsive, presents nothing and shares its context.
+    #[test]
+    fn an_offscreen_preview_wakes_but_never_presents() {
+        let preview = match PreviewHandle::spawn(empty_project(), ignore_gpu_changes()) {
+            Ok(preview) => preview,
+            Err(err) => {
+                eprintln!("skipping GPU test: {err}");
+                return;
+            }
+        };
+        let gpu = preview.gpu().expect("shared context");
+        assert_eq!(gpu.info().adapter, preview.gpu_info().adapter);
+        preview.snapshot_changed();
+        preview.seek(Time::from_seconds(1), SeekMode::Exact);
+        preview.frame_ready_notifier().notify();
+        preview.set_visible(true);
+        preview.request_redraw();
+        assert!(
+            preview
+                .render_frame(16, 9, Duration::from_secs(30))
+                .is_some()
+        );
+        assert_eq!(preview.presented_frames(), 0);
     }
 
     #[test]
@@ -719,7 +1139,7 @@ mod tests {
         let on_changed: GpuChanged = Box::new(move |info, available| {
             let _ = changed_tx.send((info, available));
         });
-        let preview = match PreviewHandle::spawn(16.0 / 9.0, on_changed) {
+        let preview = match PreviewHandle::spawn(empty_project(), on_changed) {
             Ok(preview) => preview,
             Err(err) => {
                 eprintln!("skipping GPU test: {err}");
@@ -730,6 +1150,7 @@ mod tests {
             preview.gpu_info().fallback,
             Some(FallbackReason::DeviceLost)
         );
+        let first = preview.gpu().expect("shared context");
 
         preview.simulate_device_lost(0);
         let (info, available) = changed
@@ -739,6 +1160,12 @@ mod tests {
         assert_eq!(info.fallback, Some(FallbackReason::DeviceLost));
         assert_eq!(*preview.gpu_info(), info);
         assert!(preview.is_available());
+        let second = preview.gpu().expect("recreated context");
+        assert!(
+            !Arc::ptr_eq(&first, &second),
+            "a new context after the loss"
+        );
+        assert_eq!(second.fallback, Some(FallbackReason::DeviceLost));
         let frame = preview
             .render_frame(64, 36, Duration::from_secs(30))
             .expect("frame after recovery");
@@ -768,6 +1195,7 @@ mod tests {
             assert!(!available);
         }
         assert!(!preview.is_available());
+        assert!(preview.gpu().is_none());
         assert!(
             preview
                 .render_frame(8, 8, Duration::from_secs(30))
@@ -777,7 +1205,7 @@ mod tests {
 
     #[test]
     fn renders_frames_on_request() {
-        let preview = match PreviewHandle::spawn(16.0 / 9.0, ignore_gpu_changes()) {
+        let preview = match PreviewHandle::spawn(empty_project(), ignore_gpu_changes()) {
             Ok(preview) => preview,
             Err(err) => {
                 eprintln!("skipping GPU test: {err}");

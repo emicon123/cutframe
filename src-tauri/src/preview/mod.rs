@@ -11,9 +11,11 @@ mod windows;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use app_core::ProjectSettings;
+use app_core::{Project, Time};
+use arc_swap::ArcSwap;
 use engine::preview::{GpuChanged, PreviewHandle};
 use engine::render::{GpuError, GpuInfo, OffscreenFrame};
+use engine::transport::SeekMode;
 use tauri::{AppHandle, Manager, WebviewWindow};
 use tauri_specta::Event;
 
@@ -34,9 +36,10 @@ pub struct Preview {
 }
 
 impl Preview {
-    /// Starts the preview for `main`. Must run on the main thread (window creation).
-    /// Returns `None` when no GPU is available; the app keeps working without a preview.
-    pub fn create(main: &WebviewWindow, settings: &ProjectSettings) -> Option<Self> {
+    /// Starts the preview for `main`, showing the project in `snapshot` (`AppState`'s shared
+    /// snapshot). Must run on the main thread (window creation). Returns `None` when no GPU is
+    /// available; the app keeps working without a preview.
+    pub fn create(main: &WebviewWindow, snapshot: Arc<ArcSwap<Project>>) -> Option<Self> {
         let visibility = Mutex::new(Visibility::INITIAL);
         let on_gpu_changed = report_gpu_changes(main.app_handle().clone());
 
@@ -55,7 +58,7 @@ impl Preview {
             // engine (the app exits when the main window closes).
             let engine = unsafe {
                 PreviewHandle::spawn_with_window(
-                    aspect(settings),
+                    snapshot,
                     child.raw_window_handle(),
                     Some(windows::raw_display_handle()),
                     on_gpu_changed,
@@ -73,7 +76,7 @@ impl Preview {
         #[cfg(not(windows))]
         {
             let _ = main;
-            let engine = start(PreviewHandle::spawn(aspect(settings), on_gpu_changed))?;
+            let engine = start(PreviewHandle::spawn(snapshot, on_gpu_changed))?;
             Some(Self { engine, visibility })
         }
     }
@@ -91,9 +94,20 @@ impl Preview {
         self.engine.presented_frames()
     }
 
+    /// Draws and presents once although nothing changed (`--smoke-test`).
+    #[cfg(windows)]
+    pub fn request_redraw(&self) {
+        self.engine.request_redraw();
+    }
+
     /// The platform's mode, or `unavailable` once the engine gave up after GPU losses.
     pub fn mode(&self) -> PreviewMode {
-        preview_mode(self.engine.is_available())
+        preview_mode(self.is_available())
+    }
+
+    /// False once the engine gave up after repeated GPU losses.
+    pub fn is_available(&self) -> bool {
+        self.engine.is_available()
     }
 
     /// The GPU in use now; changes after a runtime device loss.
@@ -101,8 +115,14 @@ impl Preview {
         self.engine.gpu_info()
     }
 
-    pub fn set_canvas_aspect(&self, settings: &ProjectSettings) {
-        self.engine.set_canvas_aspect(aspect(settings));
+    /// `AppState` published a new snapshot: the engine redraws.
+    pub fn snapshot_changed(&self) {
+        self.engine.snapshot_changed();
+    }
+
+    /// Moves the engine's playhead (clamped to the timeline) and returns the seek generation.
+    pub fn seek(&self, time: Time, mode: SeekMode) -> u32 {
+        self.engine.seek(time, mode)
     }
 
     /// Moves the preview over `rect`. Shows it only if the UI has requested it; an empty `rect`
@@ -157,6 +177,18 @@ impl Preview {
         let height = height.clamp(1, MAX_FRAME_SIZE.1);
         self.engine
             .render_frame(width, height, Duration::from_secs(5))
+    }
+
+    /// A preview around an engine handle without a window, for tests of `AppState`. Its window
+    /// methods must not be called.
+    #[cfg(test)]
+    pub fn detached(engine: PreviewHandle) -> Self {
+        Self {
+            engine,
+            visibility: Mutex::new(Visibility::INITIAL),
+            #[cfg(windows)]
+            child: windows::ChildWindow::detached(),
+        }
     }
 
     fn visibility(&self) -> MutexGuard<'_, Visibility> {
@@ -248,10 +280,6 @@ fn start(engine: Result<PreviewHandle, GpuError>) -> Option<PreviewHandle> {
             None
         }
     }
-}
-
-fn aspect(settings: &ProjectSettings) -> f32 {
-    settings.width.max(1) as f32 / settings.height.max(1) as f32
 }
 
 #[cfg(test)]

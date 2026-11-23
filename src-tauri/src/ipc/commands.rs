@@ -6,14 +6,14 @@ use app_core::command::{
     AddTrack, RemoveMedia, RemoveTrack, RenameProject, RenameTrack, SetProjectSettings,
 };
 use app_core::serialization::{self, CURRENT_SCHEMA_VERSION};
-use app_core::{MediaId, Project, ProjectSettings, TrackId, TrackKind};
+use app_core::{MediaId, Project, ProjectSettings, Time, TrackId, TrackKind};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 
 use super::IpcError;
 use super::types::{
-    AppInfo, CacheInfo, JobId, PreviewMode, PreviewRect, ProjectState, RecoveryEntry,
+    AppInfo, CacheInfo, JobId, PreviewMode, PreviewRect, ProjectState, RecoveryEntry, SeekMode,
 };
 use crate::import;
 use crate::media_paths;
@@ -165,6 +165,17 @@ pub fn set_preview_visible(app: AppHandle, state: State<'_, AppState>, visible: 
     if let Some(preview) = &state.preview {
         preview.set_visible(&app, visible);
     }
+}
+
+/// Moves the preview to `time` and redraws it: `scrub` while the playhead is dragged, `exact` for
+/// a click and at the end of a drag. `time` is clamped to `0..=` the timeline duration. Returns the
+/// seek generation, which increases with every seek (playback ticks of an older generation are
+/// stale, task 0330). Fails with `invalidEdit` for a time outside ±2^53 flicks and with
+/// `unavailable` when there is no preview engine. Never blocks.
+#[tauri::command]
+#[specta::specta]
+pub fn seek(state: State<'_, AppState>, time: Time, mode: SeekMode) -> Result<u32, IpcError> {
+    state.seek(time, mode.into())
 }
 
 /// Replaces the open project with an empty one (default tracks) with `settings`, or the default

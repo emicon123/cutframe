@@ -4,8 +4,10 @@
 //! 1. One offscreen frame (all platforms).
 //! 2. Windows only: shows the native preview child window through the same calls the UI's
 //!    `set_preview_rect` / `set_preview_visible` make, and waits until the engine has presented
-//!    [`FRAMES_TO_PRESENT`] frames into it (ADR-0005 §7). Linux uses the `frames` mode, which
-//!    step 1 already covers.
+//!    [`FRAMES_TO_PRESENT`] frames into it (ADR-0005 §7). The preview renders on change, so the
+//!    test asks for a redraw every [`REDRAW_INTERVAL`] until then. Afterwards it logs how many
+//!    frames the idle preview presented in [`IDLE_CHECK`] (expected: 0; logged, not checked).
+//!    Linux uses the `frames` mode, which step 1 already covers.
 //!
 //! Exit codes (see [`Outcome`]):
 //!
@@ -36,6 +38,12 @@ const FRAMES_TO_PRESENT: u64 = 30;
 /// Time allowed for presenting [`FRAMES_TO_PRESENT`] frames once the window is shown.
 #[cfg_attr(not(windows), allow(dead_code))]
 const PRESENT_TIMEOUT: Duration = Duration::from_secs(20);
+/// How often the smoke test asks the idle preview for a redraw while counting presents.
+#[cfg_attr(not(windows), allow(dead_code))]
+const REDRAW_INTERVAL: Duration = Duration::from_millis(10);
+/// How long the smoke test watches the idle preview after the presents.
+#[cfg_attr(not(windows), allow(dead_code))]
+const IDLE_CHECK: Duration = Duration::from_millis(500);
 /// Hard limit for the whole run, from process start (GPU and webview start-up included).
 const OVERALL_TIMEOUT: Duration = Duration::from_secs(90);
 
@@ -93,8 +101,8 @@ fn check(app: &AppHandle) -> Outcome {
         }
     }
 
-    let presented = match present(app, preview) {
-        Ok(presented) => presented,
+    let (presented, idle_presents) = match present(app, preview) {
+        Ok(counts) => counts,
         Err(outcome) => return outcome,
     };
     tracing::info!(
@@ -103,15 +111,16 @@ fn check(app: &AppHandle) -> Outcome {
         software = gpu.software,
         mode = ?preview.mode(),
         presented,
+        idle_presents,
         "smoke test passed"
     );
     Outcome::Passed
 }
 
-/// Shows the native preview window and waits for presented frames. Returns how many were
-/// presented.
+/// Shows the native preview window, requests redraws until enough frames are presented, then
+/// watches the idle preview. Returns the presented frames and the presents while idle.
 #[cfg(windows)]
-fn present(app: &AppHandle, preview: &Preview) -> Result<u64, Outcome> {
+fn present(app: &AppHandle, preview: &Preview) -> Result<(u64, u64), Outcome> {
     use std::time::Instant;
 
     use crate::ipc::types::PreviewRect;
@@ -141,7 +150,7 @@ fn present(app: &AppHandle, preview: &Preview) -> Result<u64, Outcome> {
     loop {
         let presented = preview.presented_frames() - before;
         if presented >= FRAMES_TO_PRESENT {
-            return Ok(presented);
+            return Ok((presented, idle_presents(preview)));
         }
         if Instant::now() >= deadline {
             tracing::error!(
@@ -153,12 +162,29 @@ fn present(app: &AppHandle, preview: &Preview) -> Result<u64, Outcome> {
             );
             return Err(Outcome::TooFewFramesPresented);
         }
-        thread::sleep(Duration::from_millis(10));
+        // Render on change: nothing else changes, so ask for the next frame.
+        preview.request_redraw();
+        thread::sleep(REDRAW_INTERVAL);
     }
+}
+
+/// Presents of the preview within [`IDLE_CHECK`] after the last redraw request settled. Render on
+/// change (render-graph.md §7) makes it 0 unless something else (e.g. the UI) changed an input.
+#[cfg(windows)]
+fn idle_presents(preview: &Preview) -> u64 {
+    // Let the redraws already queued finish.
+    thread::sleep(Duration::from_millis(100));
+    let before = preview.presented_frames();
+    thread::sleep(IDLE_CHECK);
+    let idle = preview.presented_frames() - before;
+    if idle > 0 {
+        tracing::warn!(idle, "the idle preview kept presenting");
+    }
+    idle
 }
 
 /// Linux and other development platforms use the `frames` mode: nothing is presented natively.
 #[cfg(not(windows))]
-fn present(_app: &AppHandle, _preview: &Preview) -> Result<u64, Outcome> {
-    Ok(0)
+fn present(_app: &AppHandle, _preview: &Preview) -> Result<(u64, u64), Outcome> {
+    Ok((0, 0))
 }

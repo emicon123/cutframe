@@ -88,6 +88,15 @@ impl ChildWindow {
         Ok(Self { hwnd })
     }
 
+    /// Tests of `AppState` only: a value that names no window. Never pass it to Win32 (no
+    /// `set_rect`, `set_visible` or `raw_window_handle`).
+    #[cfg(test)]
+    pub fn detached() -> Self {
+        Self {
+            hwnd: NonZeroIsize::MAX,
+        }
+    }
+
     pub fn raw_window_handle(&self) -> RawWindowHandle {
         RawWindowHandle::Win32(Win32WindowHandle::new(self.hwnd))
     }

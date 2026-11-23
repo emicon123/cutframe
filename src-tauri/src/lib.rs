@@ -61,6 +61,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             commands::get_app_info,
             commands::set_preview_rect,
             commands::set_preview_visible,
+            commands::seek,
             commands::new_project,
             commands::open_project,
             commands::save_project,
@@ -174,7 +175,6 @@ pub fn run() {
                 .get_webview_window(MAIN_WINDOW)
                 .ok_or("main window missing from tauri.conf.json")?;
             let project = Project::new(commands::DEFAULT_PROJECT_NAME);
-            let preview = Preview::create(&main, &project.settings);
             let recovery = RecoveryStore::new(
                 app.path().app_data_dir()?.join("recovery"),
                 uuid::Uuid::now_v7(),
@@ -203,8 +203,12 @@ pub fn run() {
                     state.report_missing(&handle, asset);
                 }
             }));
+            let state = AppState::new(project, recovery.clone(), jobs, previews);
+            // The engine reads the state's snapshot; every publish wakes it.
+            let preview = Preview::create(&main, state.shared_snapshot());
             app.manage(
-                AppState::new(project, preview, recovery.clone(), jobs, previews)
+                state
+                    .with_preview(preview)
                     .with_preferences(preferences)
                     .with_launch_path(launch_path),
             );

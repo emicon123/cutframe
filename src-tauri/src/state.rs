@@ -6,8 +6,9 @@ use std::time::Duration;
 
 use app_core::command::CommandError;
 use app_core::serialization::CURRENT_SCHEMA_VERSION;
-use app_core::{Document, HistoryPosition, Project};
+use app_core::{Document, HistoryPosition, MAX_IPC_FLICKS, Project, Time};
 use arc_swap::ArcSwap;
+use engine::transport::SeekMode;
 use tauri::AppHandle;
 use tauri_specta::Event;
 
@@ -26,10 +27,12 @@ use crate::recovery::{RecoveryStore, Restored};
 #[derive(Debug)]
 pub struct AppState {
     session: Mutex<Session>,
-    /// Latest project snapshot for engine threads. Lock-free reads.
-    snapshot: ArcSwap<Project>,
+    /// Latest project snapshot, shared with the engine (the preview thread). Lock-free reads;
+    /// engine threads never take the document lock (ADR-0004 §2).
+    snapshot: Arc<ArcSwap<Project>>,
     /// Serializes saves, so two saves never write the same file at once or mark clean out of order.
     save_lock: tauri::async_runtime::Mutex<()>,
+    /// Set once in `setup` ([`AppState::with_preview`]); `None` without a GPU and in tests.
     pub preview: Option<Preview>,
     /// This process's recovery directory and session id.
     recovery: RecoveryStore,
@@ -161,21 +164,17 @@ impl SaveSnapshot {
 impl AppState {
     pub fn new(
         project: Project,
-        preview: Option<Preview>,
         recovery: RecoveryStore,
         jobs: JobManager,
         previews: Arc<Previews>,
     ) -> Self {
         let session = Session::new(project);
-        let snapshot = ArcSwap::new(session.document.snapshot());
-        if let Some(preview) = &preview {
-            preview.set_canvas_aspect(&session.document.project().settings);
-        }
+        let snapshot = Arc::new(ArcSwap::new(session.document.snapshot()));
         Self {
             session: Mutex::new(session),
             snapshot,
             save_lock: tauri::async_runtime::Mutex::new(()),
-            preview,
+            preview: None,
             recovery,
             autosave: OnceLock::new(),
             jobs,
@@ -191,6 +190,17 @@ impl AppState {
             launch_path: Mutex::new(None),
             media_check: Mutex::new(None),
         }
+    }
+
+    /// Attaches the preview, which must have been created with [`AppState::shared_snapshot`].
+    pub fn with_preview(mut self, preview: Option<Preview>) -> Self {
+        self.preview = preview;
+        self
+    }
+
+    /// The snapshot the engine reads; [`AppState::publish`] stores every new project into it.
+    pub fn shared_snapshot(&self) -> Arc<ArcSwap<Project>> {
+        Arc::clone(&self.snapshot)
     }
 
     /// Uses the preferences read at startup instead of the defaults.
@@ -404,11 +414,27 @@ impl AppState {
         Ok(())
     }
 
-    /// Hands the document's current state to the engine.
+    /// Hands the document's current state to the engine: stores the snapshot, then wakes the
+    /// preview thread (render on change). Never blocks.
     fn publish(&self, document: &Document) {
         self.snapshot.store(document.snapshot());
         if let Some(preview) = &self.preview {
-            preview.set_canvas_aspect(&document.project().settings);
+            preview.snapshot_changed();
+        }
+    }
+
+    /// Moves the preview's playhead (the `seek` command). Returns the new seek generation.
+    /// `time` outside ±2^53 flicks is `invalidEdit`; no preview engine is `unavailable`.
+    pub fn seek(&self, time: Time, mode: SeekMode) -> Result<u32, IpcError> {
+        if time.flicks().unsigned_abs() > MAX_IPC_FLICKS.unsigned_abs() {
+            return Err(IpcError::InvalidEdit(format!(
+                "seek time {} is outside ±2^53 flicks",
+                time.flicks()
+            )));
+        }
+        match &self.preview {
+            Some(preview) if preview.is_available() => Ok(preview.seek(time, mode)),
+            _ => Err(IpcError::Unavailable("no preview engine".into())),
         }
     }
 
@@ -573,6 +599,7 @@ impl Session {
 mod tests {
     use app_core::command::{AddTrack, HistoryLabel, RemoveTrack, RenameProject};
     use app_core::{TrackId, TrackKind};
+    use engine::preview::{PreviewHandle, Wake, WakeProbe};
 
     use super::*;
 
@@ -586,7 +613,6 @@ mod tests {
         let recovery = crate::recovery::RecoveryStore::new(PathBuf::new(), uuid::Uuid::now_v7());
         AppState::new(
             Project::new("Test"),
-            None,
             recovery,
             crate::jobs::JobManager::for_tests(),
             std::sync::Arc::new(crate::previews::Previews::new(None)),
@@ -953,5 +979,76 @@ mod tests {
             CURRENT_SCHEMA_VERSION,
         );
         assert_eq!(session.save_snapshot().backup_of_version(&opened), None);
+    }
+
+    /// An `AppState` whose preview has no render thread: the probe sees what it would receive.
+    fn app_state_with_preview() -> (AppState, WakeProbe) {
+        let state = app_state();
+        let (engine, probe) = PreviewHandle::detached(state.shared_snapshot());
+        (state.with_preview(Some(Preview::detached(engine))), probe)
+    }
+
+    const WAIT: Duration = Duration::from_millis(200);
+
+    #[test]
+    fn publishing_stores_the_snapshot_then_wakes_the_render_thread() {
+        let (state, probe) = app_state_with_preview();
+        let engine_snapshot = state.shared_snapshot();
+        state.test_edit(|doc| {
+            doc.execute(Box::new(RenameProject::new("Renamed")))
+                .map(Some)
+        });
+        assert_eq!(probe.next(WAIT), Some(Wake::SnapshotChanged));
+        // The wake follows the store, so the engine reads the new project.
+        assert_eq!(engine_snapshot.load().name, "Renamed");
+        assert_eq!(probe.next(WAIT), None, "one wake per publish");
+    }
+
+    #[test]
+    fn seek_returns_increasing_generations_and_wakes_the_preview() {
+        let (state, probe) = app_state_with_preview();
+        assert_eq!(state.seek(Time::from_seconds(3), SeekMode::Scrub), Ok(1));
+        assert_eq!(
+            probe.next(WAIT),
+            Some(Wake::Seek {
+                generation: 1,
+                mode: SeekMode::Scrub
+            })
+        );
+        assert_eq!(state.seek(Time::ZERO, SeekMode::Exact), Ok(2));
+        assert_eq!(state.seek(Time::ZERO, SeekMode::Exact), Ok(3));
+        assert_eq!(
+            probe.next(WAIT),
+            Some(Wake::Seek {
+                generation: 2,
+                mode: SeekMode::Exact
+            })
+        );
+    }
+
+    #[test]
+    fn seek_rejects_times_outside_the_ipc_range() {
+        let (state, probe) = app_state_with_preview();
+        for flicks in [MAX_IPC_FLICKS + 1, -MAX_IPC_FLICKS - 1, i64::MAX, i64::MIN] {
+            assert!(
+                matches!(
+                    state.seek(Time(flicks), SeekMode::Exact),
+                    Err(IpcError::InvalidEdit(_))
+                ),
+                "{flicks}"
+            );
+        }
+        assert_eq!(probe.next(WAIT), None, "a rejected seek changes nothing");
+        // The bounds themselves are accepted (and clamped to the timeline).
+        assert_eq!(state.seek(Time(MAX_IPC_FLICKS), SeekMode::Exact), Ok(1));
+        assert_eq!(state.seek(Time(-MAX_IPC_FLICKS), SeekMode::Exact), Ok(2));
+    }
+
+    #[test]
+    fn seek_without_a_preview_engine_is_unavailable() {
+        assert!(matches!(
+            app_state().seek(Time::ZERO, SeekMode::Exact),
+            Err(IpcError::Unavailable(_))
+        ));
     }
 }

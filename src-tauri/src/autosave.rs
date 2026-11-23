@@ -258,7 +258,6 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let state = AppState::new(
                 Project::new("Start"),
-                None,
                 store(dir.path()),
                 crate::jobs::JobManager::for_tests(),
                 std::sync::Arc::new(crate::previews::Previews::new(None)),
@@ -323,7 +322,6 @@ mod tests {
         fs::write(&blocked, "not a directory").unwrap();
         let state = AppState::new(
             Project::new("Start"),
-            None,
             store(&blocked),
             crate::jobs::JobManager::for_tests(),
             std::sync::Arc::new(crate::previews::Previews::new(None)),
@@ -419,7 +417,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let state = AppState::new(
             Project::new("Start"),
-            None,
             store(dir.path()),
             crate::jobs::JobManager::for_tests(),
             std::sync::Arc::new(crate::previews::Previews::new(None)),
@@ -454,7 +451,6 @@ mod tests {
         let handle = spawn(s, Some(lock), Some(Duration::from_secs(60)), || {
             AppState::new(
                 Project::new("P"),
-                None,
                 store(Path::new("unused")),
                 crate::jobs::JobManager::for_tests(),
                 std::sync::Arc::new(crate::previews::Previews::new(None)),
@@ -497,7 +493,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let state = AppState::new(
             Project::new("Start"),
-            None,
             store(dir.path()),
             crate::jobs::JobManager::for_tests(),
             std::sync::Arc::new(crate::previews::Previews::new(None)),
@@ -537,7 +532,6 @@ mod tests {
         let project = crate::project_file::tests::large_project();
         let state = AppState::new(
             Project::new("Start"),
-            None,
             store(dir.path()),
             crate::jobs::JobManager::for_tests(),
             std::sync::Arc::new(crate::previews::Previews::new(None)),

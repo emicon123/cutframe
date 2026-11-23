@@ -48,6 +48,14 @@ export const commands = {
 	 */
 	setPreviewVisible: (visible: boolean, options?: InvokeOptions) => __TAURI_INVOKE<void>("set_preview_visible", { visible }, options),
 	/**
+	 *  Moves the preview to `time` and redraws it: `scrub` while the playhead is dragged, `exact` for
+	 *  a click and at the end of a drag. `time` is clamped to `0..=` the timeline duration. Returns the
+	 *  seek generation, which increases with every seek (playback ticks of an older generation are
+	 *  stale, task 0330). Fails with `invalidEdit` for a time outside ±2^53 flicks and with
+	 *  `unavailable` when there is no preview engine. Never blocks.
+	 */
+	seek: (time: Time, mode: SeekMode, options?: InvokeOptions) => __TAURI_INVOKE<number>("seek", { time, mode }, options),
+	/**
 	 *  Replaces the open project with an empty one (default tracks) with `settings`, or the default
 	 *  settings. The history is cleared and the project is clean. Ask about unsaved changes first.
 	 */
@@ -1010,6 +1018,13 @@ export type Result<T, E> = ({ Ok: T }) & { Err?: never } | ({ Err: E }) & { Ok?:
 /**  An sRGB colour with straight alpha, written as `"#rrggbbaa"` (lowercase hex). */
 export type Rgba8 = string;
 
+/**  How a `seek` is meant (playback.md §8). */
+export type SeekMode = 
+/**  A click, a step or the end of a drag: show the exact frame. */
+"exact" | 
+/**  While the playhead is dragged: show the nearest ready frame at once. */
+"scrub";
+
 /**
  *  A point in time or a duration, in flicks.
  * 
@@ -1141,6 +1156,7 @@ export type MockCommandHandlers = {
     getAppInfo: () => AppInfo_Serialize | Promise<AppInfo_Serialize>,
     setPreviewRect: (args: { rect: PreviewRect }) => void | Promise<void>,
     setPreviewVisible: (args: { visible: boolean }) => void | Promise<void>,
+    seek: (args: { time: Time; mode: SeekMode }) => number | Promise<number>,
     newProject: (args: { settings: ProjectSettings | null }) => null | Promise<null>,
     openProject: (args: { path: string }) => null | Promise<null>,
     saveProject: () => boolean | Promise<boolean>,
@@ -1200,6 +1216,7 @@ export function mockCommands(handlers: Partial<MockCommandHandlers> = {}): void 
             case "get_app_info": return mockCommandHandler(mockHandlers.getAppInfo, "get_app_info", args);
             case "set_preview_rect": return mockCommandHandler(mockHandlers.setPreviewRect, "set_preview_rect", args);
             case "set_preview_visible": return mockCommandHandler(mockHandlers.setPreviewVisible, "set_preview_visible", args);
+            case "seek": return mockCommandHandler(mockHandlers.seek, "seek", args);
             case "new_project": return mockCommandHandler(mockHandlers.newProject, "new_project", args);
             case "open_project": return mockCommandHandler(mockHandlers.openProject, "open_project", args);
             case "save_project": return mockCommandHandler(mockHandlers.saveProject, "save_project", args);
