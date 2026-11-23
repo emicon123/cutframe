@@ -4,9 +4,10 @@
   quality, zoom, full screen) and 0350 (clip properties). After implementation this file is a
   record, not a spec. **Spike (0320 step 1, §5.4):** D3D12VA zero-copy on wgpu's device works
   on the RTX 3070 Ti (4K60 HEVC Main 10, 4K30 H.264 and 4K60 AV1 10-bit at 150-350 fps, under 7 %
-  of one core, 1/255 against software, no debug-layer errors); the Iris Xe with its 2022 driver
-  has no D3D12 video interface and decodes in software until its driver is updated (§5.4 "Spike
-  result").
+  of one core, 1/255 against software, no debug-layer errors), and on the Iris Xe after a driver
+  update to 32.0.101.7092 (170-350 fps, under 11 % of one core with the GPU convert, 1/255, no
+  debug-layer errors). With its 2022 driver the Iris Xe had no D3D12 video interface; such
+  drivers decode in software (§5.4 "Spike result").
 - **Date:** 2026-11-22
 - **Features:** none directly. Unblocks F1.58, F1.61–F1.63, F1.70–F1.76, F1.93, F3.31 and F3.45
   (both Tier 1 since 2026-11-22), and gives the export design (task 0380) its offline entry point.
@@ -475,7 +476,22 @@ frames in flight and drops each after its submission completed.
 | same three, software (8 threads) | software | 196 / 230 / 169 | 175 / 71 / 109 | reference | 0 | not run |
 | 64 x 64 fixtures | software (below the hardware minimum) | - | - | - | 0 | - |
 
-**Iris Xe (i7-12700H, driver 31.0.101.3413 of 2022-08-19)**
+**Iris Xe (i7-12700H, driver 32.0.101.7092 of 2026-09-03), D3D12VA on wgpu's device** (rerun
+on 2026-11-23 after the driver update)
+
+| Clip | Path | Decode fps | CPU, % of one core | Max diff | Debug-layer errors | Long loop |
+|---|---|---|---|---|---|---|
+| HEVC 4K60 Main 10 HLG | zero-copy | 347 (289 with convert) | 1.9 (10.2 with convert) | 1/255 | 0 | 6000 frames, 10 surfaces, every pass complete |
+| H.264 4K30 | zero-copy | 198 (172 with convert) | 1.1 (5.3) | 1/255 | 0 | 6000 frames, 23 surfaces, every pass complete |
+| AV1 4K60 10-bit PQ | zero-copy | 257 (210 with convert) | 1.9 (7.7) | 1/255 | 0 | 6000 frames, 14 surfaces, every pass complete |
+| same three, download | download | 61 / 121 / 57 | 38 / 12 / 37 | 0/255 | FFmpeg's copy-queue barriers (below) | not run |
+| same three, software | software | 160 / 198 / 179 | 205 / 83 / 112 | reference | 0 | not run |
+
+The only other messages are warnings from the harness's own read-back buffer
+(`WRITE_COMBINE` page property) and a clear without a clear value; the decode path itself is
+clean.
+
+**Iris Xe (i7-12700H, driver 31.0.101.3413 of 2022-08-19)**, first run on 2026-11-22
 
 | Clip | Path | Decode fps | CPU, % of one core | Max diff | Debug-layer errors | Long loop |
 |---|---|---|---|---|---|---|
@@ -486,11 +502,10 @@ frames in flight and drops each after its submission completed.
 **WARP:** `HwDevice::new` refuses the software adapter; every clip decodes in software, no
 debug-layer messages.
 
-**Verdict.** The chosen path works on the dGPU and meets every criterion above. The iGPU fails
-on its old driver alone: D3D11VA decodes all three clips fast on the same chip, so a current
-Intel driver (which ships D3D12 video) should pass. The D3D11VA shared-texture fallback is not
-built: rerun the spike after a driver update first, and build it only if D3D12 video is still
-missing then. Until then the iGPU is software decode (4K60 HEVC at about 2 cores per reader).
+**Verdict.** The chosen path works on both GPUs and meets every criterion above: on the dGPU,
+and on the iGPU once its driver was updated (the 2022 driver had no D3D12 video). The D3D11VA
+shared-texture fallback is therefore not built. An adapter without D3D12 video (old drivers,
+WARP) decodes in software; 4K60 HEVC then costs about 2 cores per reader.
 
 **Findings that change the implementation (all in `engine::media::d3d12`):**
 
