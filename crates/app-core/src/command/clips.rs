@@ -12,8 +12,8 @@ use crate::model::{
 use crate::props::{AudioProps, VisualProps};
 use crate::time::Time;
 use crate::timeline::{
-    Follow, IdPool, follow_main, normalize_links, place_clip, remove_emptied_tracks, repack_main,
-    section_index,
+    Follow, IdPool, follow_main, nearest_boundary, normalize_links, place_clip,
+    remove_emptied_tracks, repack_main, section_index,
 };
 
 /// What a new clip shows.
@@ -308,13 +308,7 @@ fn insert_main(
         project.main_index().ok_or(CommandError::MainTrack)?,
     )?;
     let track = &mut project.tracks[main];
-    let boundary = track
-        .clips
-        .iter()
-        .flat_map(|c| [c.start, c.end()])
-        .chain([Time::ZERO])
-        .min_by_key(|b| ((*b - at).flicks().unsigned_abs(), *b))
-        .unwrap_or(Time::ZERO);
+    let boundary = nearest_boundary(&track.clips, at);
     let total = clips
         .iter()
         .fold(Time::ZERO, |sum, (clip, _)| sum + clip.duration);

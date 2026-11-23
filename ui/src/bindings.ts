@@ -60,6 +60,90 @@ export const commands = {
 	 *  Errors: `trackLocked`, and `invalidEdit` (unknown clip, a time outside ±2^53 flicks).
 	 */
 	trimClip: (clip: ClipId, edge: Edge, time: Time, phase: EditPhase, options?: InvokeOptions) => __TAURI_INVOKE<null>("trim_clip", { clip, edge, time, phase }, options),
+	/**
+	 *  Splits clips at `at` (Ctrl+B, `splitClips`) and returns the ids of the right halves (select
+	 *  them), in track order. With `clips` empty, every clip under `at` on an unlocked track splits;
+	 *  otherwise the listed clips and their linked members do. A clip splits only when both halves
+	 *  are at least one project frame long; the right halves of a link group share a new link.
+	 * 
+	 *  Errors: `trackLocked` (a listed clip or linked member on a locked track), `invalidEdit` (no clip
+	 *  to split, unknown clip, a time outside `0..=2^53` flicks).
+	 */
+	splitClips: (clips: ClipId[], at: Time, options?: InvokeOptions) => __TAURI_INVOKE<ClipId[]>("split_clips", { clips, at }, options),
+	/**
+	 *  Deletes clips and their linked members (Delete: `ripple: false`, `deleteClips`; Shift+Delete:
+	 *  `ripple: true`, `rippleDeleteClips`). On the magnetic main track Delete always closes the gap.
+	 *  When main-track clips close up, the overlays, captions and audio over later clips follow, and
+	 *  the ones entirely inside a deleted main clip are deleted with it. With `ripple` and no
+	 *  main-track clip selected, each track that lost clips closes its gaps (linked members move too).
+	 *  A plain Delete elsewhere leaves a gap. Tracks the delete emptied are removed.
+	 * 
+	 *  Errors: `trackLocked`, `overlap` (a ripple would move a linked clip into another), and
+	 *  `invalidEdit` (no clips, unknown clip).
+	 */
+	deleteClips: (clips: ClipId[], ripple: boolean, options?: InvokeOptions) => __TAURI_INVOKE<null>("delete_clips", { clips, ripple }, options),
+	/**
+	 *  Closes the gap that contains `at` on `track` (`deleteGap`): the later clips on that track and
+	 *  their linked members move left by its length; on the main track the clips over them follow.
+	 *  A gap is the free span before the first clip or between two clips, never after the last.
+	 * 
+	 *  Errors: `trackLocked`, `overlap` (a linked clip would collide), `invalidEdit` (no gap at `at`,
+	 *  unknown track, a time outside `0..=2^53` flicks).
+	 */
+	deleteGap: (track: TrackId, at: Time, options?: InvokeOptions) => __TAURI_INVOKE<null>("delete_gap", { track, at }, options),
+	/**
+	 *  Deletes the part of clips left (Q, `side: left`) or right (W, `side: right`) of `at`
+	 *  (`trimToPlayhead`). With `clips` empty, the main-track clip under `at` is trimmed. Clips that
+	 *  `at` does not lie inside are skipped. Same clamping, linked members, ripple and following as
+	 *  `trimClip`: on the magnetic main track a left trim keeps the clip's start, so the content that
+	 *  was at `at` is now at the clip's start (move the playhead there).
+	 * 
+	 *  Errors: `trackLocked`, `invalidEdit` (nothing to trim, unknown clip, a time outside
+	 *  `0..=2^53` flicks).
+	 */
+	trimToPlayhead: (clips: ClipId[], at: Time, side: Side, options?: InvokeOptions) => __TAURI_INVOKE<null>("trim_to_playhead", { clips, at, side }, options),
+	/**
+	 *  Turns the magnetic main track on or off (`setMagnetic`). Turning it on closes every gap on the
+	 *  main track, and the clips over moved main clips follow, in one undo step. Setting the value it
+	 *  already has does nothing (no history entry, no event).
+	 * 
+	 *  Errors: `trackLocked` (the main track is locked and would move, or a clip linked to a moved
+	 *  main clip is on a locked track).
+	 */
+	setMagnetic: (on: boolean, options?: InvokeOptions) => __TAURI_INVOKE<null>("set_magnetic", { on }, options),
+	/**
+	 *  Copies clips and their linked members to the app's clip clipboard (Ctrl+C). Not the system
+	 *  clipboard; cleared when a project is created, opened or restored. No undo step, no event.
+	 * 
+	 *  Errors: `invalidEdit` (no clips, unknown clip).
+	 */
+	copyClips: (clips: ClipId[], options?: InvokeOptions) => __TAURI_INVOKE<null>("copy_clips", { clips }, options),
+	/**
+	 *  Copies clips to the clip clipboard and deletes them, as one undo step (Ctrl+X, `cutClips`).
+	 *  The delete is a plain Delete (it closes the gap on the magnetic main track). The clipboard
+	 *  changes only if the delete succeeds. Errors as `deleteClips`.
+	 */
+	cutClips: (clips: ClipId[], options?: InvokeOptions) => __TAURI_INVOKE<null>("cut_clips", { clips }, options),
+	/**
+	 *  Pastes the clip clipboard at `at` (Ctrl+V, `pasteClips`) and returns the new clips' ids
+	 *  (select them), in clipboard order: track order, then time. Main-track clips go into the main
+	 *  track (on the magnetic one at the clip boundary nearest `at`, with a ripple; the other pasted
+	 *  clips keep their offsets to them). Other clips go to their original track at `at` plus their
+	 *  offset when it is free and unlocked, else onto a new track above (video, text) or below
+	 *  (audio) the main track. Pasted link groups get new links.
+	 * 
+	 *  Errors: `invalidEdit` (the clipboard is empty, copied media was removed since, a time outside
+	 *  `0..=2^53` flicks), `trackLocked`.
+	 */
+	pasteClips: (at: Time, options?: InvokeOptions) => __TAURI_INVOKE<ClipId[]>("paste_clips", { at }, options),
+	/**
+	 *  Duplicates clips and their linked members right after the latest end among them (Ctrl+D,
+	 *  `duplicateClips`), like a paste there, without touching the clipboard. Returns the new clips'
+	 *  ids (select them).
+	 * 
+	 *  Errors: `invalidEdit` (no clips, unknown clip), `trackLocked`.
+	 */
+	duplicateClips: (clips: ClipId[], options?: InvokeOptions) => __TAURI_INVOKE<ClipId[]>("duplicate_clips", { clips }, options),
 	removeTrack: (id: TrackId, options?: InvokeOptions) => __TAURI_INVOKE<null>("remove_track", { id }, options),
 	renameTrack: (id: TrackId, name: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("rename_track", { id, name }, options),
 	renameProject: (name: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("rename_project", { name }, options),
@@ -587,7 +671,25 @@ export type HistoryLabel = "addTrack" | "removeTrack" | "renameTrack" | "renameP
 /**  Dragging clips in time or to another track (one drag or nudge). */
 "moveClips" | 
 /**  Dragging a clip edge (one drag or nudge). */
-"trimClip";
+"trimClip" | 
+/**  Splitting clips at the playhead (Ctrl+B). */
+"splitClips" | 
+/**  Deleting clips (Delete); closes the gap on the magnetic main track. */
+"deleteClips" | 
+/**  Deleting clips and closing the gaps they leave (Shift+Delete). */
+"rippleDeleteClips" | 
+/**  Cutting clips to the clipboard (Ctrl+X). */
+"cutClips" | 
+/**  Closing a gap on one track. */
+"deleteGap" | 
+/**  Deleting the part of clips left or right of the playhead (Q / W). */
+"trimToPlayhead" | 
+/**  Turning the magnetic main track on or off. */
+"setMagnetic" | 
+/**  Pasting the clipboard (Ctrl+V). */
+"pasteClips" | 
+/**  Duplicating clips (Ctrl+D). */
+"duplicateClips";
 
 export type HistoryState = HistoryState_Serialize | HistoryState_Deserialize;
 
@@ -1180,6 +1282,13 @@ export type Result<T, E> = ({ Ok: T }) & { Err?: never } | ({ Err: E }) & { Ok?:
 /**  An sRGB colour with straight alpha, written as `"#rrggbbaa"` (lowercase hex). */
 export type Rgba8 = string;
 
+/**  Which part of a clip [`TrimToPlayhead`] deletes. */
+export type Side = 
+/**  Delete left of the playhead (Q): the start edge moves to the playhead. */
+"left" | 
+/**  Delete right of the playhead (W): the end edge moves to the playhead. */
+"right";
+
 /**
  *  A point in time or a duration, in flicks.
  * 
@@ -1312,6 +1421,15 @@ export type MockCommandHandlers = {
     addClips: (args: { sources: NewClipSource[]; placement: Placement }) => ClipId[] | Promise<ClipId[]>,
     moveClips: (args: { clips: ClipId[]; anchor: ClipId; start: Time; track: TrackTarget; phase: EditPhase }) => null | Promise<null>,
     trimClip: (args: { clip: ClipId; edge: Edge; time: Time; phase: EditPhase }) => null | Promise<null>,
+    splitClips: (args: { clips: ClipId[]; at: Time }) => ClipId[] | Promise<ClipId[]>,
+    deleteClips: (args: { clips: ClipId[]; ripple: boolean }) => null | Promise<null>,
+    deleteGap: (args: { track: TrackId; at: Time }) => null | Promise<null>,
+    trimToPlayhead: (args: { clips: ClipId[]; at: Time; side: Side }) => null | Promise<null>,
+    setMagnetic: (args: { on: boolean }) => null | Promise<null>,
+    copyClips: (args: { clips: ClipId[] }) => null | Promise<null>,
+    cutClips: (args: { clips: ClipId[] }) => null | Promise<null>,
+    pasteClips: (args: { at: Time }) => ClipId[] | Promise<ClipId[]>,
+    duplicateClips: (args: { clips: ClipId[] }) => ClipId[] | Promise<ClipId[]>,
     removeTrack: (args: { id: TrackId }) => null | Promise<null>,
     renameTrack: (args: { id: TrackId; name: string }) => null | Promise<null>,
     renameProject: (args: { name: string }) => null | Promise<null>,
@@ -1380,6 +1498,15 @@ export function mockCommands(handlers: Partial<MockCommandHandlers> = {}): void 
             case "add_clips": return mockCommandHandler(mockHandlers.addClips, "add_clips", args);
             case "move_clips": return mockCommandHandler(mockHandlers.moveClips, "move_clips", args);
             case "trim_clip": return mockCommandHandler(mockHandlers.trimClip, "trim_clip", args);
+            case "split_clips": return mockCommandHandler(mockHandlers.splitClips, "split_clips", args);
+            case "delete_clips": return mockCommandHandler(mockHandlers.deleteClips, "delete_clips", args);
+            case "delete_gap": return mockCommandHandler(mockHandlers.deleteGap, "delete_gap", args);
+            case "trim_to_playhead": return mockCommandHandler(mockHandlers.trimToPlayhead, "trim_to_playhead", args);
+            case "set_magnetic": return mockCommandHandler(mockHandlers.setMagnetic, "set_magnetic", args);
+            case "copy_clips": return mockCommandHandler(mockHandlers.copyClips, "copy_clips", args);
+            case "cut_clips": return mockCommandHandler(mockHandlers.cutClips, "cut_clips", args);
+            case "paste_clips": return mockCommandHandler(mockHandlers.pasteClips, "paste_clips", args);
+            case "duplicate_clips": return mockCommandHandler(mockHandlers.duplicateClips, "duplicate_clips", args);
             case "remove_track": return mockCommandHandler(mockHandlers.removeTrack, "remove_track", args);
             case "rename_track": return mockCommandHandler(mockHandlers.renameTrack, "rename_track", args);
             case "rename_project": return mockCommandHandler(mockHandlers.renameProject, "rename_project", args);
