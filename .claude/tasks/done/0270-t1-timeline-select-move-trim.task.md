@@ -3,6 +3,10 @@
 **Tier:** 1 · **Agents:** `backend`, `frontend` · **Depends on:** `0260`
 **Spec:** `docs/feature-catalog.md` (feature IDs below), `docs/adr/`, `docs/design/`, `CLAUDE.md`
 
+> **Closed 2026-11-23 without the manual check (user's standing decision).** `pnpm check` passed on
+> Linux (PR #7); the Windows `pnpm check` and the drag, trim, marquee and snapping flows in `pnpm dev` were not
+> done by hand.
+
 ## Why
 
 Basic direct manipulation on the canvas timeline.
