@@ -25,3 +25,7 @@ The app opens straight into an untitled editor; there is no way to see or manage
 - each row above is updated in `docs/feature-catalog.md` (status + short evidence note); partial rows say what is missing
 - `pnpm check` passes; after any IPC change `pnpm bindings` is re-run and `ui/src/bindings.ts` committed
 - architecture rules in `CLAUDE.md` hold (model changes are undoable commands, no frames over JSON IPC, integer flicks, LGPL-only FFmpeg, no reference-product names or assets)
+
+## Closing note (2026-11-23)
+
+Moved to done after `pnpm check` and `cargo deny` passed on Windows. **The manual check in `pnpm dev` was not done** (real Recycle Bin move, Show in Explorer, cover images). The "manual check pending" notes in `docs/feature-catalog.md` still apply.
