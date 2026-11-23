@@ -7,13 +7,21 @@ pub mod command;
 pub mod document;
 pub mod media;
 pub mod model;
+pub mod props;
 pub mod serialization;
 pub mod time;
+pub mod timeline;
 pub mod validate;
 
 pub use document::{Document, EditPhase, HistoryPosition};
 pub use media::{MediaAsset, MediaId, MediaKind};
-pub use model::{Clip, ClipId, Project, ProjectId, ProjectSettings, Track, TrackId, TrackKind};
+pub use model::{
+    CanvasBackground, Clip, ClipId, ClipSource, LinkId, Project, ProjectId, ProjectSettings, Rgba8,
+    Track, TrackId, TrackKind,
+};
+pub use props::{
+    Animated, AudioProps, CropInsets, Easing, FitMode, Flip, Keyframe, Vec2, VisualProps,
+};
 pub use time::{FLICKS_PER_SECOND, FrameRate, MAX_IPC_FLICKS, Rational, Time};
 pub use validate::ValidationError;
 

@@ -118,9 +118,9 @@ export const commands = {
 	cancelJob: (id: JobId, options?: InvokeOptions) => __TAURI_INVOKE<null>("cancel_job", { id }, options),
 	/**
 	 *  Removes media items from the project as one undo step (`removeMedia`). Fails with
-	 *  `invalidEdit` for an empty list, an id that is not in the project, or media that clips still
-	 *  use (`MediaInUse`; clips reference media from task 0260 on, which then removes them in the same
-	 *  step after a warning). Cached previews stay on disk, so undo shows them again at once.
+	 *  `invalidEdit` for an empty list, an id that is not in the project, or media that clips or the
+	 *  canvas background still use (`MediaInUse`; `MediaView.usedBy` counts the clips). Removing the
+	 *  clips in the same step, after a warning, comes with `add_clips` in task 0260. Cached previews stay on disk, so undo shows them again at once.
 	 */
 	removeMedia: (ids: MediaId[], options?: InvokeOptions) => __TAURI_INVOKE<null>("remove_media", { ids }, options),
 	/**
@@ -199,6 +199,31 @@ export const PROJECT_FILE_EXTENSION = "cutframe" as const;
 export const WAVEFORM_BUCKETS_PER_SECOND = 100 as const;
 
 /* Types */
+/**  A property value that may be animated. */
+export type Animated<T> = Animated_Serialize<T> | Animated_Deserialize<T>;
+
+/**  A property value that may be animated. */
+export type Animated_Deserialize<T> = {
+	/**  The value when there are no keyframes. */
+	value: T,
+	/**
+	 *  Sorted by `time`, unique times, each within `0..=clip.duration`. Omitted from JSON when
+	 *  empty.
+	 */
+	keyframes?: Keyframe<T>[],
+};
+
+/**  A property value that may be animated. */
+export type Animated_Serialize<T> = {
+	/**  The value when there are no keyframes. */
+	value: T,
+	/**
+	 *  Sorted by `time`, unique times, each within `0..=clip.duration`. Omitted from JSON when
+	 *  empty.
+	 */
+	keyframes?: Keyframe<T>[],
+};
+
 export type AppInfo = AppInfo_Serialize | AppInfo_Deserialize;
 
 /**
@@ -238,6 +263,27 @@ export type AppInfo_Serialize = {
 	previewMode: PreviewMode,
 };
 
+/**  Audio properties of a clip that makes sound. */
+export type AudioProps = AudioProps_Serialize | AudioProps_Deserialize;
+
+/**  Audio properties of a clip that makes sound. */
+export type AudioProps_Deserialize = {
+	/**  Linear gain, 0..=4 (+12 dB); 1 = unchanged. */
+	volume: Animated_Deserialize<number | null>,
+	/**  Lengths of the linear fades, each >= 0, sum <= clip duration. Not animatable. */
+	fadeIn: Time,
+	fadeOut: Time,
+};
+
+/**  Audio properties of a clip that makes sound. */
+export type AudioProps_Serialize = {
+	/**  Linear gain, 0..=4 (+12 dB); 1 = unchanged. */
+	volume: Animated_Serialize<number | null>,
+	/**  Lengths of the linear fades, each >= 0, sum <= clip duration. Not animatable. */
+	fadeIn: Time,
+	fadeOut: Time,
+};
+
 export type AudioSummary = {
 	codec: string,
 	sampleRate: number,
@@ -255,15 +301,73 @@ export type CacheInfo = {
 	files: number,
 };
 
+/**  What fills the canvas behind the main track. */
+export type CanvasBackground = { kind: "color"; color: Rgba8 } | 
+/**  The frame of the main-track clip itself, blurred, behind it. `amount` is 0..=1. */
+{ kind: "blur"; amount: number | null } | 
+/**  An image media asset. */
+{ kind: "image"; media: MediaId };
+
 /**  Identifies a clip within a project. */
 export type ClipId = string;
 
-export type ClipView = {
+/**  What a clip shows or plays. */
+export type ClipSource = 
+/**
+ *  A video, audio or image file. `source_in` is the media time at the clip's start, in
+ *  flicks (seeked by timestamp, never a frame index); always 0 for images.
+ */
+{ kind: "media"; media: MediaId; sourceIn: Time } | 
+/**  A solid colour card. */
+{ kind: "color"; color: Rgba8 } | 
+/**  A title. Task 0510 adds the style fields and the rendering. */
+{ kind: "text"; content: string };
+
+export type ClipView = ClipView_Serialize | ClipView_Deserialize;
+
+export type ClipView_Deserialize = {
 	id: ClipId,
 	name: string,
 	start: Time,
 	duration: Time,
+	/**  Media (with `sourceIn`), colour or text. */
+	source: ClipSource,
+	/**  Clips with the same link move, trim, split and delete together. */
+	link?: LinkId | null,
+	/**  Present on clips of video and text tracks. */
+	visual?: VisualProps_Deserialize | null,
+	/**  Present on clips that make sound. */
+	audio?: AudioProps_Deserialize | null,
+	/**  Length of the clip's media, for trim limits; `None` for images, colour and text clips. */
+	sourceDuration?: Time | null,
 };
+
+export type ClipView_Serialize = {
+	id: ClipId,
+	name: string,
+	start: Time,
+	duration: Time,
+	/**  Media (with `sourceIn`), colour or text. */
+	source: ClipSource,
+	/**  Clips with the same link move, trim, split and delete together. */
+	link: LinkId | null,
+	/**  Present on clips of video and text tracks. */
+	visual: VisualProps_Serialize | null,
+	/**  Present on clips that make sound. */
+	audio: AudioProps_Serialize | null,
+	/**  Length of the clip's media, for trim limits; `None` for images, colour and text clips. */
+	sourceDuration: Time | null,
+};
+
+/**  Insets as fractions of the display-oriented source. */
+export type CropInsets = {
+	left: number | null,
+	top: number | null,
+	right: number | null,
+	bottom: number | null,
+};
+
+export type Easing = "linear" | "easeIn" | "easeOut" | "easeInOut" | "hold";
 
 /**  Which step of a continuous edit (drag, trim, slider) a command is (ADR-0006 §4). */
 export type EditPhase = 
@@ -286,6 +390,20 @@ export type FilmstripLayout = {
 	framesPerTile: number,
 	/**  Physical pixels; the height is `FILMSTRIP_FRAME_HEIGHT`. */
 	frameWidth: number,
+};
+
+/**  How a clip's picture is sized into the canvas before scale is applied. */
+export type FitMode = 
+/**  Contain: the whole picture is visible. */
+"fit" | 
+/**  Cover: the canvas is filled, the picture may be cut. */
+"fill" | 
+/**  Both axes scaled to the canvas, ignoring the aspect. */
+"stretch";
+
+export type Flip = {
+	horizontal: boolean,
+	vertical: boolean,
 };
 
 /**  A frame rate as a rational number of frames per second, e.g. `30000/1001` for 29.97 fps. */
@@ -497,6 +615,20 @@ export type JobStage =
 /**  Looking for missing media files in a folder (`relinkMediaFolder`). */
 "searchingFolder";
 
+export type Keyframe<T> = {
+	/**  Offset from the clip's start, in flicks. */
+	time: Time,
+	value: T,
+	/**  Interpolation from this keyframe to the next one. */
+	easing: Easing,
+};
+
+/**
+ *  Shared by the clips of one link group: clips that move, trim, split and delete together
+ *  (design `timeline-editing.md` §3.5). Not a unique id: every member carries the same value.
+ */
+export type LinkId = string;
+
 /**  Why a file could not be imported; a stable key the UI translates. */
 export type MediaErrorKind = "fileNotFound" | "accessDenied" | 
 /**  The path cannot be used (e.g. not valid UTF-8, not a file). */
@@ -604,7 +736,7 @@ export type MediaView_Deserialize = {
 	 *  relink.
 	 */
 	status: MediaStatus,
-	/**  Clips that reference this media; 0 until clips reference media (design 0250). */
+	/**  How many clips reference this media (the "used in timeline" badge). */
 	usedBy: number,
 	/**
 	 *  Append as `?v=` to every `media://` URL of this item. Opaque; it changes whenever a relink
@@ -647,7 +779,7 @@ export type MediaView_Serialize = {
 	 *  relink.
 	 */
 	status: MediaStatus,
-	/**  Clips that reference this media; 0 until clips reference media (design 0250). */
+	/**  How many clips reference this media (the "used in timeline" badge). */
 	usedBy: number,
 	/**
 	 *  Append as `?v=` to every `media://` URL of this item. Opaque; it changes whenever a relink
@@ -791,8 +923,17 @@ export type ProjectView_Deserialize = {
 	settings: ProjectSettings,
 	/**  End of the last clip, in flicks. */
 	duration: Time,
-	/**  Top to bottom as shown in the timeline. */
-	tracks: TrackView[],
+	/**  What fills the canvas behind the main track. */
+	background: CanvasBackground,
+	/**  The magnetic main track (always a video track in `tracks`). */
+	mainTrack: TrackId,
+	/**  While on, the main track has no gaps. */
+	magnetic: boolean,
+	/**
+	 *  Top to bottom as shown in the timeline: overlay tracks (video, text), the main track, then
+	 *  audio tracks.
+	 */
+	tracks: TrackView_Deserialize[],
 	/**  Imported media in import order. The media panel sorts and filters its own view of it. */
 	media: MediaView_Deserialize[],
 };
@@ -803,8 +944,17 @@ export type ProjectView_Serialize = {
 	settings: ProjectSettings,
 	/**  End of the last clip, in flicks. */
 	duration: Time,
-	/**  Top to bottom as shown in the timeline. */
-	tracks: TrackView[],
+	/**  What fills the canvas behind the main track. */
+	background: CanvasBackground,
+	/**  The magnetic main track (always a video track in `tracks`). */
+	mainTrack: TrackId,
+	/**  While on, the main track has no gaps. */
+	magnetic: boolean,
+	/**
+	 *  Top to bottom as shown in the timeline: overlay tracks (video, text), the main track, then
+	 *  audio tracks.
+	 */
+	tracks: TrackView_Serialize[],
 	/**  Imported media in import order. The media panel sorts and filters its own view of it. */
 	media: MediaView_Serialize[],
 };
@@ -857,6 +1007,9 @@ export type RecoveryEntry_Serialize = {
 
 export type Result<T, E> = ({ Ok: T }) & { Err?: never } | ({ Err: E }) & { Ok?: never };
 
+/**  An sRGB colour with straight alpha, written as `"#rrggbbaa"` (lowercase hex). */
+export type Rgba8 = string;
+
 /**
  *  A point in time or a duration, in flicks.
  * 
@@ -869,22 +1022,81 @@ export type TrackId = string;
 
 export type TrackKind = "video" | "audio" | "text";
 
-export type TrackView = {
+export type TrackView = TrackView_Serialize | TrackView_Deserialize;
+
+export type TrackView_Deserialize = {
 	id: TrackId,
 	kind: TrackKind,
 	name: string,
 	muted: boolean,
 	hidden: boolean,
-	clips: ClipView[],
+	locked: boolean,
+	clips: ClipView_Deserialize[],
+};
+
+export type TrackView_Serialize = {
+	id: TrackId,
+	kind: TrackKind,
+	name: string,
+	muted: boolean,
+	hidden: boolean,
+	locked: boolean,
+	clips: ClipView_Serialize[],
 };
 
 /**  UI language. The UI picks its translation table by this key. */
 export type UiLanguage = "en";
 
+export type Vec2 = {
+	x: number | null,
+	y: number | null,
+};
+
 /**  Hardware video codecs, by FFmpeg name (e.g. `h264_d3d11va`). Not filled yet. */
 export type VideoAccelerationView = {
 	decoders: string[],
 	encoders: string[],
+};
+
+/**  Visual properties of a clip that draws (everything on video and text tracks). */
+export type VisualProps = VisualProps_Serialize | VisualProps_Deserialize;
+
+/**  Visual properties of a clip that draws (everything on video and text tracks). */
+export type VisualProps_Deserialize = {
+	/**
+	 *  Offset of the clip's centre from the canvas centre, in canvas widths (x) and canvas heights
+	 *  (y, down). (0, 0) is centred.
+	 */
+	position: Animated_Deserialize<Vec2>,
+	/**  Multiplier of the fitted size; (1, 1) = as placed by `fit`. Non-zero, |s| <= 100. */
+	scale: Animated_Deserialize<Vec2>,
+	/**  Degrees, clockwise. Unbounded. */
+	rotation: Animated_Deserialize<number | null>,
+	/**  0..=1. */
+	opacity: Animated_Deserialize<number | null>,
+	/**  Each inset >= 0, left + right < 1, top + bottom < 1. Ignored for colour and text clips. */
+	crop: Animated_Deserialize<CropInsets>,
+	flip: Flip,
+	fit: FitMode,
+};
+
+/**  Visual properties of a clip that draws (everything on video and text tracks). */
+export type VisualProps_Serialize = {
+	/**
+	 *  Offset of the clip's centre from the canvas centre, in canvas widths (x) and canvas heights
+	 *  (y, down). (0, 0) is centred.
+	 */
+	position: Animated_Serialize<Vec2>,
+	/**  Multiplier of the fitted size; (1, 1) = as placed by `fit`. Non-zero, |s| <= 100. */
+	scale: Animated_Serialize<Vec2>,
+	/**  Degrees, clockwise. Unbounded. */
+	rotation: Animated_Serialize<number | null>,
+	/**  0..=1. */
+	opacity: Animated_Serialize<number | null>,
+	/**  Each inset >= 0, left + right < 1, top + bottom < 1. Ignored for colour and text clips. */
+	crop: Animated_Serialize<CropInsets>,
+	flip: Flip,
+	fit: FitMode,
 };
 
 /* Tauri Specta runtime */

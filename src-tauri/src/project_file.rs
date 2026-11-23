@@ -105,7 +105,7 @@ fn rename_with_retry(from: &Path, to: &Path) -> io::Result<()> {
 pub(crate) mod tests {
     use std::time::Instant;
 
-    use app_core::{Clip, ClipId, Project, Time, Track, TrackKind};
+    use app_core::{Clip, Project, Rgba8, Time, Track, TrackKind};
 
     use super::*;
 
@@ -228,20 +228,25 @@ pub(crate) mod tests {
     /// A 1,000-clip, 20-track project for timing tests.
     pub(crate) fn large_project() -> Project {
         let mut project = Project::new("Large");
+        project.magnetic = false;
         project.tracks = (0..20)
             .map(|t| {
                 let mut track = Track::new(TrackKind::Video, format!("Track {t}"));
                 track.clips = (0..50)
-                    .map(|c| Clip {
-                        id: ClipId::new(),
-                        name: format!("Clip {t}.{c}"),
-                        start: Time::from_seconds(c * 10),
-                        duration: Time::from_seconds(5),
+                    .map(|c| {
+                        Clip::color(
+                            format!("Clip {t}.{c}"),
+                            Time::from_seconds(c * 10),
+                            Time::from_seconds(5),
+                            Rgba8::rgb(0x20, 0x40, 0x80),
+                        )
                     })
                     .collect();
                 track
             })
             .collect();
+        // The bottom track is the main track; the others are overlays.
+        project.main_track = project.tracks[19].id;
         project
     }
 

@@ -6,8 +6,8 @@ use std::path::Path;
 use app_core::command::HistoryLabel;
 use app_core::media::{FilmstripLayout, HdrTransfer, MediaAsset};
 use app_core::{
-    ClipId, Document, MediaId, MediaKind, ProjectId, ProjectSettings, Rational, Time, TrackId,
-    TrackKind,
+    AudioProps, CanvasBackground, Clip, ClipId, ClipSource, Document, LinkId, MediaId, MediaKind,
+    Project, ProjectId, ProjectSettings, Rational, Time, Track, TrackId, TrackKind, VisualProps,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -61,7 +61,14 @@ pub struct ProjectView {
     pub settings: ProjectSettings,
     /// End of the last clip, in flicks.
     pub duration: Time,
-    /// Top to bottom as shown in the timeline.
+    /// What fills the canvas behind the main track.
+    pub background: CanvasBackground,
+    /// The magnetic main track (always a video track in `tracks`).
+    pub main_track: TrackId,
+    /// While on, the main track has no gaps.
+    pub magnetic: bool,
+    /// Top to bottom as shown in the timeline: overlay tracks (video, text), the main track, then
+    /// audio tracks.
     pub tracks: Vec<TrackView>,
     /// Imported media in import order. The media panel sorts and filters its own view of it.
     pub media: Vec<MediaView>,
@@ -75,7 +82,26 @@ pub struct TrackView {
     pub name: String,
     pub muted: bool,
     pub hidden: bool,
+    pub locked: bool,
     pub clips: Vec<ClipView>,
+}
+
+impl TrackView {
+    fn new(track: &Track, project: &Project) -> Self {
+        Self {
+            id: track.id,
+            kind: track.kind,
+            name: track.name.clone(),
+            muted: track.muted,
+            hidden: track.hidden,
+            locked: track.locked,
+            clips: track
+                .clips
+                .iter()
+                .map(|c| ClipView::new(c, project))
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -85,6 +111,36 @@ pub struct ClipView {
     pub name: String,
     pub start: Time,
     pub duration: Time,
+    /// Media (with `sourceIn`), colour or text.
+    pub source: ClipSource,
+    /// Clips with the same link move, trim, split and delete together.
+    pub link: Option<LinkId>,
+    /// Present on clips of video and text tracks.
+    pub visual: Option<VisualProps>,
+    /// Present on clips that make sound.
+    pub audio: Option<AudioProps>,
+    /// Length of the clip's media, for trim limits; `None` for images, colour and text clips.
+    pub source_duration: Option<Time>,
+}
+
+impl ClipView {
+    fn new(clip: &Clip, project: &Project) -> Self {
+        Self {
+            id: clip.id,
+            name: clip.name.clone(),
+            start: clip.start,
+            duration: clip.duration,
+            source: clip.source.clone(),
+            link: clip.link,
+            visual: clip.visual.clone(),
+            audio: clip.audio.clone(),
+            source_duration: clip
+                .source
+                .media()
+                .and_then(|id| project.media_asset(id))
+                .and_then(|m| m.info.duration),
+        }
+    }
 }
 
 impl ProjectState {
@@ -106,32 +162,32 @@ impl ProjectState {
                 name: project.name.clone(),
                 settings: project.settings,
                 duration: project.duration(),
+                background: project.background.clone(),
+                main_track: project.main_track,
+                magnetic: project.magnetic,
                 tracks: project
                     .tracks
                     .iter()
-                    .map(|t| TrackView {
-                        id: t.id,
-                        kind: t.kind,
-                        name: t.name.clone(),
-                        muted: t.muted,
-                        hidden: t.hidden,
-                        clips: t
-                            .clips
-                            .iter()
-                            .map(|c| ClipView {
-                                id: c.id,
-                                name: c.name.clone(),
-                                start: c.start,
-                                duration: c.duration,
-                            })
-                            .collect(),
-                    })
+                    .map(|t| TrackView::new(t, project))
                     .collect(),
-                media: project
-                    .media
-                    .iter()
-                    .map(|asset| MediaView::new(asset, statuses.get(asset)))
-                    .collect(),
+                media: {
+                    let mut used_by: std::collections::HashMap<MediaId, u32> =
+                        std::collections::HashMap::new();
+                    for media in project.clips().filter_map(|c| c.source.media()) {
+                        *used_by.entry(media).or_default() += 1;
+                    }
+                    project
+                        .media
+                        .iter()
+                        .map(|m| {
+                            MediaView::new(
+                                m,
+                                statuses.get(m),
+                                used_by.get(&m.id).copied().unwrap_or(0),
+                            )
+                        })
+                        .collect()
+                },
             },
             history: HistoryState {
                 can_undo: doc.can_undo(),
@@ -202,7 +258,7 @@ pub struct MediaView {
     /// check after open says otherwise; it changes at runtime when a file disappears, and after a
     /// relink.
     pub status: MediaStatus,
-    /// Clips that reference this media; 0 until clips reference media (design 0250).
+    /// How many clips reference this media (the "used in timeline" badge).
     pub used_by: u32,
     /// Append as `?v=` to every `media://` URL of this item. Opaque; it changes whenever a relink
     /// changes the file's path or content, so the UI fetches the previews again (also after an
@@ -236,7 +292,8 @@ pub enum MediaStatus {
 }
 
 impl MediaView {
-    pub fn new(asset: &MediaAsset, status: MediaStatus) -> Self {
+    /// The view of `asset`, used by `used_by` clips.
+    pub fn new(asset: &MediaAsset, status: MediaStatus, used_by: u32) -> Self {
         let video = asset.info.video.as_ref();
         let display = video.map(|v| v.display_size());
         Self {
@@ -257,7 +314,7 @@ impl MediaView {
                 stream_count: asset.info.audio.len() as u32,
             }),
             status,
-            used_by: 0,
+            used_by,
             preview_version: crate::previews::preview_version(asset),
             filmstrip: FilmstripLayout::of(asset),
         }
@@ -560,6 +617,47 @@ mod tests {
             });
             assert_eq!(serde_json::to_value(view.device_type).unwrap(), key);
         }
+    }
+
+    #[test]
+    fn project_view_counts_media_users_and_copies_clip_sources() {
+        use app_core::media::samples;
+
+        let mut project = Project::new("View");
+        project.media = vec![samples::video(1), samples::image(2)];
+        let video = project.media[0].id;
+        let mut clip = Clip::color("C", Time::ZERO, Time(10), app_core::Rgba8::BLACK);
+        clip.source = ClipSource::Media {
+            media: video,
+            source_in: Time(5),
+        };
+        project.tracks[0].clips.push(clip);
+        assert_eq!(project.validate(), Ok(()));
+
+        let view = ProjectState::new(
+            &Document::new(project.clone()),
+            1,
+            None,
+            false,
+            &crate::media_status::MediaStatuses::default(),
+        )
+        .project;
+        assert_eq!(view.media[0].used_by, 1);
+        assert_eq!(view.media[1].used_by, 0);
+        assert_eq!(view.main_track, project.main_track);
+        assert!(view.magnetic);
+        let clip = &view.tracks[0].clips[0];
+        assert_eq!(clip.source_duration, Some(Time::from_seconds(5)));
+        let json = serde_json::to_value(clip).unwrap();
+        assert_eq!(
+            json["source"],
+            serde_json::json!({ "kind": "media", "media": video, "sourceIn": 5 })
+        );
+        assert_eq!(json["visual"]["fit"], "fit");
+        assert_eq!(
+            serde_json::to_value(&view.background).unwrap(),
+            serde_json::json!({ "kind": "color", "color": "#000000ff" })
+        );
     }
 
     #[test]

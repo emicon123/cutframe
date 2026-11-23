@@ -411,9 +411,9 @@ pub fn cancel_job(state: State<'_, AppState>, id: JobId) -> Result<(), IpcError>
 }
 
 /// Removes media items from the project as one undo step (`removeMedia`). Fails with
-/// `invalidEdit` for an empty list, an id that is not in the project, or media that clips still
-/// use (`MediaInUse`; clips reference media from task 0260 on, which then removes them in the same
-/// step after a warning). Cached previews stay on disk, so undo shows them again at once.
+/// `invalidEdit` for an empty list, an id that is not in the project, or media that clips or the
+/// canvas background still use (`MediaInUse`; `MediaView.usedBy` counts the clips). Removing the
+/// clips in the same step, after a warning, comes with `add_clips` in task 0260. Cached previews stay on disk, so undo shows them again at once.
 #[tauri::command]
 #[specta::specta]
 pub fn remove_media(
