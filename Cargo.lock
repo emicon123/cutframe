@@ -1220,7 +1220,9 @@ dependencies = [
  "rusty_ffmpeg",
  "thiserror 2.0.21",
  "tracing",
+ "tracing-subscriber",
  "wgpu",
+ "windows",
 ]
 
 [[package]]

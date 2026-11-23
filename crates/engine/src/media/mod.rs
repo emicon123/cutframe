@@ -8,11 +8,14 @@
 //! - [`previews`]: poster, filmstrip and waveform generators for the media panel, on top of
 //!   [`picture`] (RGB pictures, JPEG), [`still`] (HEIF tile grids) and [`waveform`].
 //! - [`cache`]: the content-keyed preview cache on disk.
+//! - `d3d12` (Windows): D3D12VA hardware decode on the render device and zero-copy frames.
 //!
 //! FFmpeg 4+ registers its codecs and formats on its own, so there is no global init step.
 //! Opening or probing files is I/O: call it from a worker job, never from an IPC handler (ADR-0004).
 
 pub mod cache;
+#[cfg(windows)]
+mod d3d12;
 pub mod decode;
 pub mod encoders;
 mod error;

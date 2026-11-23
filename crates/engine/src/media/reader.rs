@@ -63,6 +63,18 @@ impl<'c> VideoReader<'c> {
         origin: Time,
         cancel: &'c AtomicBool,
     ) -> Result<Self, MediaError> {
+        Self::open_with(path, index, origin, cancel, open_decoder)
+    }
+
+    /// [`open`](Self::open) with the decoder made by `open_decoder` (e.g. a hardware decoder,
+    /// `media::d3d12`).
+    pub(crate) fn open_with(
+        path: &Path,
+        index: u32,
+        origin: Time,
+        cancel: &'c AtomicBool,
+        open_decoder: impl FnOnce(&ffi::AVStream) -> Result<AVCodecContext, MediaError>,
+    ) -> Result<Self, MediaError> {
         let input = Input::open(path, cancel)?;
         let index = index as usize;
         let stream = *input
@@ -84,6 +96,12 @@ impl<'c> VideoReader<'c> {
             need_key: false,
             skipped: 0,
         })
+    }
+
+    /// The decoder (e.g. to ask `media::d3d12::hw_active` after an error).
+    #[allow(dead_code)] // Called by the d3d12 spike; the hardware readers (0320 step 4) next.
+    pub(crate) fn decoder(&self) -> &AVCodecContext {
+        &self.decoder
     }
 
     /// The next decoded frame and its media time (`None` if it has no timestamp), or `None` at

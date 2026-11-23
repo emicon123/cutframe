@@ -2,7 +2,11 @@
 
 - **Status:** Proposed (task 0310). Implemented by tasks 0320 (graph, decode, HDR), 0340 (preview
   quality, zoom, full screen) and 0350 (clip properties). After implementation this file is a
-  record, not a spec.
+  record, not a spec. **Spike (0320 step 1, §5.4):** D3D12VA zero-copy on wgpu's device works
+  on the RTX 3070 Ti (4K60 HEVC Main 10, 4K30 H.264 and 4K60 AV1 10-bit at 150-350 fps, under 7 %
+  of one core, 1/255 against software, no debug-layer errors); the Iris Xe with its 2022 driver
+  has no D3D12 video interface and decodes in software until its driver is updated (§5.4 "Spike
+  result").
 - **Date:** 2026-11-22
 - **Features:** none directly. Unblocks F1.58, F1.61–F1.63, F1.70–F1.76, F1.93, F3.31 and F3.45
   (both Tier 1 since 2026-11-22), and gives the export design (task 0380) its offline entry point.
@@ -202,6 +206,9 @@ and `|scale|`), capped at the source's display size, rounded up to even. When tw
 same source frame, the larger size wins. When the downscale ratio is 2 or more, the convert shader
 averages `k x k` bilinear taps with `k = min(ceil(ratio), 4)`, so 4K sources do not alias in a
 small preview. Export uses the same code at canvas resolution, where the ratio is usually 1.
+(As built in 0320: `k` is chosen per axis from the source texels along each output axis after
+rotation; taps are averaged on code values and converted once; straight-alpha images average
+premultiplied taps and un-premultiply before the colour transform.)
 
 ### 4.3 Placeholder
 
@@ -307,7 +314,10 @@ Consequences:
    MSB-aligned) or `65535` (CPU 16-bit containers holding `bit_depth` bits, LSB-aligned).
 2. **Range.** Limited: `Y' = (code - 16 x 2^(b-8)) / (219 x 2^(b-8))`, `C = (code - 128 x 2^(b-8))
    / (224 x 2^(b-8))`. Full: `Y' = code / (2^b - 1)`, `C = (code - 2^(b-1)) / (2^b - 1)`.
-   Unknown range: limited for YUV formats, full for `yuvj*` and RGB.
+   Unknown range: limited for YUV formats, full for `yuvj*`, `gray*` and RGB. The bit depth `b`
+   and the scale come from the decoded frame's sample container (P010 from hardware,
+   `yuv420p10le` from software, 16-bit after `sws_scale`), not from the stream, so
+   `ConvertParams` carries no bit depth.
 3. **Matrix** (`color.matrix`): BT.601, BT.709 or BT.2020 non-constant luminance
    (`Kr, Kb` = 0.299/0.114, 0.2126/0.0722, 0.2627/0.0593). Unknown: BT.709 when the coded height
    is 720 or more, else BT.601 (the convention of FFmpeg and most players).
@@ -320,7 +330,10 @@ Consequences:
      light `E`, then the OOTF for a 1000-nit nominal display, `Fd = 1000 x Ys^(1.2 - 1) x E` with
      `Ys = 0.2627 R + 0.6780 G + 0.0593 B`.
    - **Source peak** `Lsrc`: PQ uses `max_cll_nits`, else `mastering_max_nits`, else 1000,
-     clamped to 400..=10000. HLG uses 1000.
+     clamped to 400..=10000. HLG uses 1000. A metadata value of 0 counts as missing (some
+     encoders write 0 for "unknown"). With these values HLG reference white (75 % signal, about
+     203 nits) lies above the knee for `Lsrc = 1000` and lands at about 0.90 after the EETF: one
+     of the inputs to the tone-map taste risk below.
    - **Tone curve:** BT.2390 EETF in the PQ domain, applied to `m = max(R, G, B)`, from
      `[0, Lsrc]` to `[0, 203 nits]` (target peak = SDR white, BT.2408 reference white). With
      `maxLum = PQinv(203) / PQinv(Lsrc)` the knee starts at `KS = 1.5 x maxLum - 0.5`; below it
@@ -333,7 +346,9 @@ Consequences:
 6. **Orientation and shape:** the pass writes an upright texture of `display_size()` (scaled to
    the convert size): quarter turns are a UV swizzle, the sample aspect only changes the output
    size. Coded padding (a 1088-line HEVC surface for 1080p) is excluded with a UV scale from the
-   frame's visible size. Chroma siting is ignored (centre).
+   frame's visible size, and each plane's UV is clamped to the centre of its last valid texel
+   (`ceil(visible / subsampling)` for chroma): a UV scale alone lets the last luma row of a
+   1080-in-1088 surface blend 25 % of chroma padding row 540. Chroma siting is ignored (centre).
 7. **Alpha:** video is opaque; images with alpha are premultiplied here.
 
 The constants and the tone curve also exist as plain Rust functions (`engine::color`), the
@@ -436,6 +451,78 @@ iPhone clip (Dolby Vision 8.4) and a 4K30 H.264 clip.
   into a shared NT-handle texture opened by D3D12, fence sync); if that fails too, hardware decode
   with download becomes the tier-1 path and 4K60 HDR moves to half quality in the budget. The
   outcome is recorded in this doc's status line.
+
+#### Spike result (2026-11-22)
+
+Harness: `engine::media::d3d12` plus the ignored test `media::d3d12::spike::spike_report`
+(release build, `WGPU_VALIDATION=1`, debug-layer messages read from `ID3D12InfoQueue`). Clips:
+NVENC 4K60 HEVC Main 10 HLG (BT.2020, coded 3840 x 2176), NVENC 4K30 H.264 High, SVT-AV1 4K60
+10-bit PQ, and the committed 64 x 64 HEVC HLG and AV1 PQ fixtures. Decode fps is unthrottled;
+CPU is process user + kernel time per frame, scaled to % of one core at the clip's own rate. "Max
+diff" compares the zero-copy frame converted on the GPU (`Plane0`/`Plane1` views, BT.709/BT.2020
+limited range, `Rgba8Unorm`) with the software-decoded frame of the same pts converted on the
+CPU. The long loop decodes 6000 frames (looping the clip), converts each on the GPU, keeps 6
+frames in flight and drops each after its submission completed.
+
+**RTX 3070 Ti Laptop (driver 32.0.16.1742), D3D12VA on wgpu's device**
+
+| Clip | Path | Decode fps | CPU, % of one core | Max diff | Debug-layer errors | Long loop |
+|---|---|---|---|---|---|---|
+| HEVC 4K60 Main 10 HLG | zero-copy | 277 (332 with convert) | 1.4 (6.3 with convert) | 1/255 | 0 | 6000 frames, 10 surfaces, every pass complete |
+| H.264 4K30 | zero-copy | 152 (147 with convert) | 2.7 (4.8) | 1/255 | 0 | 6000 frames, 37 surfaces, every pass complete |
+| AV1 4K60 10-bit PQ | zero-copy | 284 (350 with convert) | 2.5 (4.4) | 1/255 | 0 | 6000 frames, 14 surfaces, every pass complete |
+| same three, download | download | 51 / 115 / 48 | 49 / 13 / 51 | 0/255 | FFmpeg's copy-queue barriers (below) | not run |
+| same three, software (8 threads) | software | 196 / 230 / 169 | 175 / 71 / 109 | reference | 0 | not run |
+| 64 x 64 fixtures | software (below the hardware minimum) | - | - | - | 0 | - |
+
+**Iris Xe (i7-12700H, driver 31.0.101.3413 of 2022-08-19)**
+
+| Clip | Path | Decode fps | CPU, % of one core | Max diff | Debug-layer errors | Long loop |
+|---|---|---|---|---|---|---|
+| all | software: the driver's D3D12 device has no `ID3D12VideoDevice` (`E_NOINTERFACE`), so neither zero-copy nor D3D12VA download exists | HEVC 169, H.264 214, AV1 127 | 208 / 79 / 149 | - | 0 | - |
+| D3D11VA, FFmpeg CLI, no download | D3D11VA decode only (interop not built) | HEVC 334, H.264 161, AV1 ~390 | 16 / 19 / 12 | - | - | - |
+| D3D11VA, FFmpeg CLI, with download | D3D11VA + download | HEVC 64, H.264 63, AV1 38 | 102 / 50 / 133 | - | - | - |
+
+**WARP:** `HwDevice::new` refuses the software adapter; every clip decodes in software, no
+debug-layer messages.
+
+**Verdict.** The chosen path works on the dGPU and meets every criterion above. The iGPU fails
+on its old driver alone: D3D11VA decodes all three clips fast on the same chip, so a current
+Intel driver (which ships D3D12 video) should pass. The D3D11VA shared-texture fallback is not
+built: rerun the spike after a driver update first, and build it only if D3D12 video is still
+missing then. Until then the iGPU is software decode (4K60 HEVC at about 2 cores per reader).
+
+**Findings that change the implementation (all in `engine::media::d3d12`):**
+
+- **Surface size.** FFmpeg 7.1's D3D12VA `frame_params` sizes surfaces to the display size. A
+  4K HEVC stream with a conformance window (3840 x 2160 shown, 3840 x 2176 coded, as NVENC and
+  many cameras write it) gets surfaces 16 lines short and the NVIDIA driver removes the device
+  (`DXGI_ERROR_DRIVER_INTERNAL_ERROR`); the FFmpeg CLI fails the same way. The engine creates the
+  frames context itself in `get_format` with the coded size aligned like FFmpeg's D3D11VA code
+  (128 for HEVC/AV1, 32 for MPEG-2, else 16). `GpuFrame::coded` is that surface size and
+  `visible` the picture, so the convert pass needs the UV scale of §5.2 step 6 on every frame.
+- **Minimum size.** A hwaccel that fails to initialise for an unsupported extent (the 64 x 64
+  fixtures) also removes the device, which takes the preview down with it. Streams below 256
+  pixels in either dimension never open in hardware.
+- **No in-decoder software fallback.** When D3D12VA cannot be used, `get_format` returns
+  `AV_PIX_FMT_NONE` and the decode fails (`hw_active() == false`); the reader reopens the stream
+  with the software decoder. FFmpeg's own fallback would run single-threaded, and the native
+  `av1` decoder has no software path at all.
+- **Release state (adds to step 5).** wgpu leaves a sampled surface in the shader-resource
+  state, while FFmpeg's decode queue expects `D3D12_RESOURCE_STATE_COMMON` when it reuses the
+  surface as a reference or output. Without a transition back the debug layer reports a state
+  mismatch on every decode submission (108 errors in a 60-frame loop). The render thread records
+  `GpuFrame::record_release` (a `transition_resources` to `TextureUses::PRESENT`, which wgpu-hal
+  dx12 writes as `COMMON`) in the encoder of the frame's last use; with it the zero-copy path is
+  error-free.
+- **Download path.** FFmpeg 7.1's `av_hwframe_transfer_data` for D3D12 triggers debug-layer
+  errors (`COPY_SOURCE` layout on a copy queue, which expects `COMMON`) on every frame, and costs
+  about 50 % of a core at 4K60. It stays the per-stream fallback for a failed wrap only.
+- **Pool.** The D3D12VA frames pool is dynamic (`initial_pool_size` 0), so it cannot be
+  exhausted; the risk is leaking frames instead. With the release rule the number of distinct
+  surfaces stays at 10-37 over 6000 frames, so frames are recycled.
+- **Debug layer.** Its messages do not reach the log through wgpu-hal's `OutputDebugString`
+  handler in a normal run; `d3d12::take_debug_messages` reads them from `ID3D12InfoQueue`.
 
 ## 6. Caches
 

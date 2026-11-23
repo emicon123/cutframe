@@ -314,12 +314,33 @@ fn create_instance() -> wgpu::Instance {
     wgpu::Instance::new(descriptor.with_env())
 }
 
+/// Video texture formats requested when the adapter has them, never required (render-graph.md
+/// §5.1): `NV12` and `P010` sample hardware-decoded frames in place (zero-copy, D3D12), and
+/// `16BIT_NORM` holds 10-bit CPU planes (every D3D12 adapter, WARP included).
+const OPTIONAL_FEATURES: wgpu::Features = wgpu::Features::TEXTURE_FORMAT_NV12
+    .union(wgpu::Features::TEXTURE_FORMAT_P010)
+    .union(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM);
+
+/// The features zero-copy hardware decode needs (render-graph.md §5.4).
+const ZERO_COPY_FEATURES: wgpu::Features =
+    wgpu::Features::TEXTURE_FORMAT_NV12.union(wgpu::Features::TEXTURE_FORMAT_P010);
+
+impl GpuContext {
+    /// Whether decoded D3D12VA frames can be sampled in place: the device is D3D12 and has both
+    /// `NV12` and `P010` textures. It says nothing about hardware video decode itself (WARP has
+    /// the formats but no video decoder); opening the hardware decoder decides that.
+    pub fn supports_zero_copy_video(&self) -> bool {
+        self.adapter.get_info().backend == wgpu::Backend::Dx12
+            && self.device.features().contains(ZERO_COPY_FEATURES)
+    }
+}
+
 fn request_device(
     adapter: &wgpu::Adapter,
 ) -> Result<(wgpu::Device, wgpu::Queue), wgpu::RequestDeviceError> {
     pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
         label: Some("engine"),
-        required_features: wgpu::Features::empty(),
+        required_features: adapter.features() & OPTIONAL_FEATURES,
         // The Pi's V3D GPU only guarantees downlevel limits; stay within what it offers.
         required_limits: wgpu::Limits::downlevel_defaults().using_resolution(adapter.limits()),
         memory_hints: wgpu::MemoryHints::Performance,

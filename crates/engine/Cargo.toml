@@ -21,5 +21,19 @@ thiserror.workspace = true
 tracing.workspace = true
 wgpu.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+# D3D12VA interop with wgpu's own device (`media::d3d12`, render-graph.md §5.4).
+windows = { workspace = true, features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Direct3D12",
+  "Win32_Graphics_Dxgi_Common",
+  "Win32_Security",
+  "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+# Logs (and counts D3D12 debug-layer messages) in the ignored hardware-decode spike tests.
+tracing-subscriber.workspace = true
+
 [lints]
 workspace = true

@@ -22,6 +22,14 @@ use super::probe::{codec_name, decoder_for, par, ts_to_time};
 const JOB_DECODER_THREADS: i32 = 2;
 
 pub(crate) fn open_decoder(stream: &ffi::AVStream) -> Result<AVCodecContext, MediaError> {
+    open_decoder_with_threads(stream, JOB_DECODER_THREADS)
+}
+
+/// A software decoder for `stream` with `threads` decoder threads.
+pub(crate) fn open_decoder_with_threads(
+    stream: &ffi::AVStream,
+    threads: i32,
+) -> Result<AVCodecContext, MediaError> {
     let codec = decoder_for(stream).ok_or_else(|| {
         MediaError::new(
             MediaErrorKind::UnsupportedCodec,
@@ -36,7 +44,7 @@ pub(crate) fn open_decoder(stream: &ffi::AVStream) -> Result<AVCodecContext, Med
     }
     ctx.set_pkt_timebase(stream.time_base);
     // SAFETY: setting a plain field before `avcodec_open2`.
-    unsafe { (*ctx.as_mut_ptr()).thread_count = JOB_DECODER_THREADS };
+    unsafe { (*ctx.as_mut_ptr()).thread_count = threads };
     ctx.open(None).map_err(|err| {
         MediaError::new(
             MediaErrorKind::UnsupportedCodec,
