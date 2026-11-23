@@ -12,6 +12,9 @@
 //! - `/filmstrip/<mediaId>?tile=<n>&v=<v>`: JPEG strip of the tile's frames side by side, each
 //!   `frameWidth x 96` (video).
 //! - `/waveform/<mediaId>?v=<v>`: binary waveform, `CFWF` layout (video with audio, audio).
+//! - `/cover/<hash>`: JPEG cover of a recent project (home screen), by content hash (no `v`: the
+//!   hash is the content key). From the covers folder, else copied there from the preview cache's
+//!   poster; `400` unless 32 lowercase hex characters, `404` when neither has it.
 //! - `/preview/frame?w=<px>&h=<px>`: one preview frame (legacy `frames` preview mode). Body: width
 //!   and height as little-endian `u32`, followed by tightly packed RGBA8 rows.
 //!
@@ -20,16 +23,18 @@
 //! full or the file unreachable with nothing cached, `500` generation failed (remembered for the
 //! session).
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use app_core::{MediaAsset, MediaId, Project};
 use crossbeam_channel::{Sender, TrySendError};
-use engine::media::cache::Product;
+use engine::media::cache::{Product, valid_hash};
 use tauri::http::{Response, StatusCode};
 use tauri::{Manager, Runtime};
 
 use crate::jobs::JobSpawner;
 use crate::previews::{Key, Outcome, Previews, has_product, preview_version};
+use crate::recent;
 use crate::state::AppState;
 
 pub const SCHEME: &str = "media";
@@ -50,6 +55,10 @@ pub enum Route {
         product: Product,
         version: String,
     },
+    /// A recent project's cover by content hash (checked: 32 lowercase hex characters).
+    Cover {
+        hash: String,
+    },
     PreviewFrame,
 }
 
@@ -65,6 +74,12 @@ pub fn parse(path: &str, query: &str) -> Result<Route, StatusCode> {
     let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
     let (kind, id) = match segments.as_slice() {
         ["preview", "frame"] => return Ok(Route::PreviewFrame),
+        ["cover", hash] if valid_hash(hash) => {
+            return Ok(Route::Cover {
+                hash: (*hash).to_owned(),
+            });
+        }
+        ["cover", _] => return Err(StatusCode::BAD_REQUEST),
         [kind @ ("poster" | "filmstrip" | "waveform"), id] => (*kind, *id),
         _ => return Err(StatusCode::NOT_FOUND),
     };
@@ -102,6 +117,8 @@ pub struct ServerContext {
     pub spawner: JobSpawner,
     /// Serves `/preview/frame` (legacy `frames` mode); its query string is passed in.
     pub preview_frame: Box<FrameServer>,
+    /// The recent projects' covers folder (`/cover/<hash>`).
+    pub covers: PathBuf,
 }
 
 impl std::fmt::Debug for ServerContext {
@@ -184,6 +201,7 @@ fn serve(context: &ServerContext, pending: Pending) {
     };
     let (id, product, version) = match route {
         Route::PreviewFrame => return respond((context.preview_frame)(&query)),
+        Route::Cover { hash } => return respond(cover(context, &hash)),
         Route::Product {
             id,
             product,
@@ -219,6 +237,19 @@ fn serve(context: &ServerContext, pending: Pending) {
         .request(&context.spawner, asset.clone(), product, waiter);
 }
 
+fn cover(context: &ServerContext, hash: &str) -> Response<Vec<u8>> {
+    let poster = || {
+        context.previews.cached(&Key {
+            hash: hash.to_owned(),
+            product: Product::Poster,
+        })
+    };
+    match recent::read_cover(&context.covers, hash, poster) {
+        Some(bytes) => ok(Product::Poster, bytes),
+        None => error(StatusCode::NOT_FOUND, "no cover"),
+    }
+}
+
 fn ok(product: Product, body: Vec<u8>) -> Response<Vec<u8>> {
     Response::builder()
         .status(StatusCode::OK)
@@ -235,6 +266,7 @@ pub fn context(
     app: &tauri::AppHandle,
     previews: Arc<Previews>,
     spawner: JobSpawner,
+    covers: PathBuf,
 ) -> ServerContext {
     let snapshot_app = app.clone();
     let frame_app = app.clone();
@@ -243,6 +275,7 @@ pub fn context(
         previews,
         spawner,
         preview_frame: Box::new(move |query| preview_frame(&frame_app, query)),
+        covers,
     }
 }
 
@@ -350,6 +383,18 @@ mod tests {
             Ok(true)
         );
         assert_eq!(parse("/preview/frame", "w=1&h=1"), Ok(Route::PreviewFrame));
+        let hash = "0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            parse(&format!("/cover/{hash}"), ""),
+            Ok(Route::Cover { hash: hash.into() })
+        );
+        for bad_hash in ["0123", "0123456789ABCDEF0123456789ABCDEF", "..", ""] {
+            assert_eq!(
+                parse(&format!("/cover/{bad_hash}"), ""),
+                Err(StatusCode::BAD_REQUEST),
+                "{bad_hash}"
+            );
+        }
 
         let bad = StatusCode::BAD_REQUEST;
         assert_eq!(parse("/poster/not-a-uuid", "v=a"), Err(bad));
@@ -420,6 +465,7 @@ mod tests {
                 previews,
                 spawner: jobs.spawner(),
                 preview_frame: Box::new(|_| error(StatusCode::SERVICE_UNAVAILABLE, "no preview")),
+                covers: root.join("covers"),
             },
             2,
             QUEUE_CAPACITY,
@@ -609,6 +655,7 @@ mod tests {
                 previews,
                 spawner: jobs.spawner(),
                 preview_frame: Box::new(|_| error(StatusCode::SERVICE_UNAVAILABLE, "no preview")),
+                covers: root.join("covers"),
             },
             1,
             2,
@@ -628,5 +675,31 @@ mod tests {
             assert_eq!(status(rx).0, StatusCode::OK);
         }
         std::fs::remove_dir_all(root).ok();
+    }
+    #[test]
+    fn covers_are_served_from_the_covers_folder_then_the_preview_cache() {
+        let video = samples::video(1);
+        let f = fixture("covers", vec![video.clone()], Duration::ZERO);
+        let hash = &video.fingerprint.hash;
+        let covers = f.root.join("covers");
+        let cover = |hash: &str| status(&get(&f.server, &format!("/cover/{hash}")));
+
+        // Neither a cover nor a cached poster.
+        assert_eq!(cover(hash).0, StatusCode::NOT_FOUND);
+        assert_eq!(cover("bad").0, StatusCode::BAD_REQUEST);
+
+        // The poster gets cached; the cover is copied from it.
+        let (code, poster) = status(&get(&f.server, &url("poster", &video, "")));
+        assert_eq!(code, StatusCode::OK);
+        assert_eq!(cover(hash), (StatusCode::OK, poster.clone()));
+        assert_eq!(
+            std::fs::read(covers.join(format!("{hash}.jpg"))).unwrap(),
+            poster
+        );
+
+        // A cover hit needs no cache (a cleared cache keeps the home screen's covers).
+        let other = "abcdefabcdefabcdefabcdefabcdefab";
+        std::fs::write(covers.join(format!("{other}.jpg")), b"kept").unwrap();
+        assert_eq!(cover(other), (StatusCode::OK, b"kept".to_vec()));
     }
 }

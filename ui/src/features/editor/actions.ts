@@ -34,12 +34,18 @@ export type ActionContext = {
   historyPanelOpen: boolean;
   mediaBinOpen: boolean;
   inspectorOpen: boolean;
+  /** The editor is shown (not the home screen); file and project actions need it. */
+  editorOpen: boolean;
 };
 
 /** The UI-store part of the context. */
-export type UiFlags = Pick<ActionContext, "historyPanelOpen" | "mediaBinOpen" | "inspectorOpen">;
+export type UiFlags = Pick<
+  ActionContext,
+  "historyPanelOpen" | "mediaBinOpen" | "inspectorOpen" | "editorOpen"
+>;
 
 export type ActionId =
+  | "go-home"
   | "new-project"
   | "open-project"
   | "save"
@@ -82,11 +88,18 @@ export type Action = {
   run: () => void;
 };
 
-const loaded = (ctx: ActionContext) => ctx.loaded;
+/** A project is loaded and shown in the editor (the home screen's untitled project is not). */
+const editing = (ctx: ActionContext) => ctx.loaded && ctx.editorOpen;
 const ui = () => useUiStore.getState();
 
 /** The single registry of editor actions. */
 export const ACTIONS: readonly Action[] = [
+  {
+    id: "go-home",
+    label: t.file.home,
+    enabled: editing,
+    run: () => void fileActions.goHome(),
+  },
   {
     id: "new-project",
     label: t.file.new,
@@ -106,7 +119,7 @@ export const ACTIONS: readonly Action[] = [
     label: t.file.save,
     shortcuts: [{ key: "s", ctrl: true }],
     blockDefault: true,
-    enabled: loaded,
+    enabled: editing,
     run: () => void fileActions.save(),
   },
   {
@@ -114,20 +127,20 @@ export const ACTIONS: readonly Action[] = [
     label: t.file.saveAs,
     shortcuts: [{ key: "s", ctrl: true, shift: true }],
     blockDefault: true,
-    enabled: loaded,
+    enabled: editing,
     run: () => void fileActions.saveAs(),
   },
   {
     id: "import-media",
     label: t.file.importMedia,
     shortcuts: [{ key: "i", ctrl: true }],
-    enabled: loaded,
+    enabled: editing,
     run: () => void importFromDialog(),
   },
   {
     id: "project-settings",
     label: t.file.projectSettings,
-    enabled: loaded,
+    enabled: editing,
     run: () => ui().setProjectSettingsOpen(true),
   },
   {
@@ -222,6 +235,8 @@ export const MENUS: readonly Menu[] = [
     id: "file",
     label: t.menu.file,
     items: [
+      "go-home",
+      SEPARATOR,
       "new-project",
       "open-project",
       SEPARATOR,
@@ -266,7 +281,12 @@ export const MENUS: readonly Menu[] = [
   { id: "help", label: t.menu.help, items: ["keyboard-shortcuts"] },
 ];
 
-const NO_UI_FLAGS: UiFlags = { historyPanelOpen: false, mediaBinOpen: false, inspectorOpen: false };
+const NO_UI_FLAGS: UiFlags = {
+  historyPanelOpen: false,
+  mediaBinOpen: false,
+  inspectorOpen: false,
+  editorOpen: false,
+};
 
 export function actionContext(state: ProjectState | null, flags: UiFlags = NO_UI_FLAGS): ActionContext {
   const history = state?.history;
@@ -287,6 +307,7 @@ function uiFlags(s: UiStoreState): UiFlags {
     historyPanelOpen: s.historyPanelOpen,
     mediaBinOpen: !s.collapsedPanels.mediaBin,
     inspectorOpen: !s.collapsedPanels.inspector,
+    editorOpen: s.view === "editor",
   };
 }
 

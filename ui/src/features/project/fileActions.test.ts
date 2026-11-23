@@ -43,6 +43,7 @@ function fake(options: {
     pickSavePath: step("pickSavePath", options.savePath === undefined ? "C:\\b.cutframe" : options.savePath),
     reportError: (error) => calls.push(`error ${String(error)}`),
     clearError: () => undefined,
+    showView: (view) => calls.push(`show ${view}`),
   };
 }
 
@@ -50,7 +51,7 @@ describe("guardUnsaved (through newProject and requestClose)", () => {
   it("runs the action at once when the project is clean", async () => {
     const deps = fake({ dirty: false });
     await createFileActions(deps).newProject();
-    expect(deps.calls).toEqual(["newProject"]);
+    expect(deps.calls).toEqual(["newProject", "show editor"]);
   });
 
   it("Save: saves to the existing file, then runs", async () => {
@@ -123,7 +124,7 @@ describe("openProject", () => {
   it("asks first, then opens the picked file", async () => {
     const deps = fake({ dirty: true, choice: "discard" });
     await createFileActions(deps).openProject();
-    expect(deps.calls).toEqual(["askUnsaved", "pickOpenPath", "openProject C:\\a.cutframe"]);
+    expect(deps.calls).toEqual(["askUnsaved", "pickOpenPath", "openProject C:\\a.cutframe", "show editor"]);
   });
 
   it("does nothing when the open dialog is cancelled", async () => {
@@ -143,7 +144,7 @@ describe("openPath", () => {
   it("opens the path behind the unsaved-changes prompt", async () => {
     const deps = fake({ dirty: true, choice: "discard" });
     await createFileActions(deps).openPath("D:\\v\\a.cutframe");
-    expect(deps.calls).toEqual(["askUnsaved", "openProject D:\\v\\a.cutframe"]);
+    expect(deps.calls).toEqual(["askUnsaved", "openProject D:\\v\\a.cutframe", "show editor"]);
   });
 
   it("does nothing when the prompt is cancelled", async () => {
@@ -167,7 +168,37 @@ describe("openPath", () => {
     await actions.openPath("D:\\a.cutframe");
     answer("discard");
     await first;
-    expect(deps.calls).toEqual(["newProject"]);
+    expect(deps.calls).toEqual(["newProject", "show editor"]);
+  });
+});
+
+describe("goHome", () => {
+  it("replaces the project with a new one, then shows the home screen", async () => {
+    const deps = fake({ dirty: true, choice: "discard" });
+    await createFileActions(deps).goHome();
+    expect(deps.calls).toEqual(["askUnsaved", "newProject", "show home"]);
+  });
+
+  it("Cancel at the unsaved prompt stays in the editor", async () => {
+    const deps = fake({ dirty: true, choice: "cancel" });
+    await createFileActions(deps).goHome();
+    expect(deps.calls).toEqual(["askUnsaved"]);
+  });
+
+  it("a failed new project reports the error and stays in the editor", async () => {
+    const deps = fake({ failing: "newProject" });
+    await createFileActions(deps).goHome();
+    expect(deps.calls).toEqual(["newProject", "error Error: newProject failed"]);
+  });
+});
+
+describe("openPath and openProject failures", () => {
+  it("do not leave the current view", async () => {
+    const deps = fake({ failing: "openProject" });
+    const actions = createFileActions(deps);
+    await actions.openPath("D:\\gone.cutframe");
+    await actions.openProject();
+    expect(deps.calls.some((call) => call.startsWith("show"))).toBe(false);
   });
 });
 
@@ -193,7 +224,7 @@ describe("save and saveAs", () => {
     await expect(actions.save()).resolves.toBe(false);
     answer("discard");
     await first;
-    expect(deps.calls).toEqual(["newProject"]);
+    expect(deps.calls).toEqual(["newProject", "show editor"]);
     expect(deps.askUnsaved).toHaveBeenCalledTimes(1);
   });
 });

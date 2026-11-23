@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "path": "C:\\Users\\me\\Videos\\Holiday.cutframe",
+      "name": "Holiday",
+      "duration": 67032000000,
+      "openedAtMs": 1795000000000,
+      "cover": "0123456789abcdef0123456789abcdef"
+    },
+    {
+      "path": "D:\\Projects\\Short.cutframe",
+      "name": "Short",
+      "duration": 0,
+      "openedAtMs": 1794000000000,
+      "cover": null
+    }
+  ]
+}

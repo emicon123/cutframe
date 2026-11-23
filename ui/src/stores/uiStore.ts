@@ -5,6 +5,9 @@ import type { MediaSortKey, SortDirection } from "@/features/media-bin/browse";
 
 export type MediaLayout = "grid" | "list";
 
+/** What fills the window: the home screen (recent projects) or the editor (design `home-screen.md` §7). */
+export type View = "home" | "editor";
+
 /** The collapsible side panels that menu actions toggle. */
 export type PanelKey = "mediaBin" | "inspector";
 
@@ -32,6 +35,12 @@ function writeSnapping(on: boolean) {
 
 /** Editor layout and dialog toggles opened from the main menu or a shortcut. Not part of the model. */
 type UiStore = {
+  view: View;
+  /**
+   * `false` until startup has fetched the first state and opened the launch path (if any), so a
+   * project double-clicked in Explorer opens without the home screen flashing first.
+   */
+  started: boolean;
   historyPanelOpen: boolean;
   shortcutsOpen: boolean;
   projectSettingsOpen: boolean;
@@ -49,6 +58,8 @@ type UiStore = {
   /** Timeline snapping (F1.45); Alt held during a drag bypasses it. */
   snapping: boolean;
   setSnapping: (on: boolean) => void;
+  setView: (view: View) => void;
+  setStarted: () => void;
   setHistoryPanelOpen: (open: boolean) => void;
   setShortcutsOpen: (open: boolean) => void;
   setProjectSettingsOpen: (open: boolean) => void;
@@ -61,6 +72,8 @@ type UiStore = {
 };
 
 export const useUiStore = create<UiStore>()((set) => ({
+  view: "home",
+  started: false,
   historyPanelOpen: false,
   shortcutsOpen: false,
   projectSettingsOpen: false,
@@ -76,6 +89,8 @@ export const useUiStore = create<UiStore>()((set) => ({
     writeSnapping(snapping);
     set({ snapping });
   },
+  setView: (view) => set({ view }),
+  setStarted: () => set({ started: true }),
   setHistoryPanelOpen: (historyPanelOpen) => set({ historyPanelOpen }),
   setShortcutsOpen: (shortcutsOpen) => set({ shortcutsOpen }),
   setProjectSettingsOpen: (projectSettingsOpen) => set({ projectSettingsOpen }),

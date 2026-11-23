@@ -37,6 +37,7 @@ function setup(entries: RecoveryEntry[]) {
     pickSavePath: () => Promise.resolve(null),
     reportError: () => undefined,
     clearError: () => undefined,
+    showView: () => undefined,
   });
   const calls: string[] = [];
   let failRestore = false;
@@ -59,6 +60,7 @@ function setup(entries: RecoveryEntry[]) {
     discardRecovery: (id) => commands.discardRecovery(id),
     replaceGuarded: (action) => guard.replaceGuarded(action),
     logError: () => undefined,
+    showEditor: () => calls.push("showEditor"),
   });
   render(<RecoveryDialog recovery={recovery} />);
   return { recovery, calls, failNextRestore: () => (failRestore = true) };
@@ -93,7 +95,7 @@ describe("RecoveryDialog", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: t.recovery.restoreItem("Trip") }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(calls).toEqual(["restore a"]);
+    expect(calls).toEqual(["restore a", "showEditor"]);
     expect(useAppStore.getState().previewOccluders).toBe(0);
   });
 

@@ -27,6 +27,7 @@ const ctx = (overrides: Partial<ActionContext> = {}): ActionContext => ({
   historyPanelOpen: false,
   mediaBinOpen: true,
   inspectorOpen: true,
+  editorOpen: true,
   ...overrides,
 });
 
@@ -67,6 +68,7 @@ describe("menuModel", () => {
   it("shows the file actions with their shortcuts and separators", () => {
     const file = menus[0];
     expect(actionItems(file).map((i) => [i.label, i.shortcut])).toEqual([
+      [t.file.home, ""],
       [t.file.new, "Ctrl+N"],
       [t.file.open, "Ctrl+O"],
       [t.file.save, "Ctrl+S"],
@@ -75,7 +77,7 @@ describe("menuModel", () => {
       [t.file.projectSettings, ""],
       [t.file.exit, ""],
     ]);
-    expect(file?.items.filter((i) => i.kind === "separator")).toHaveLength(4);
+    expect(file?.items.filter((i) => i.kind === "separator")).toHaveLength(5);
   });
 
   it("names the undo and redo entries and disables them when there is nothing to do", () => {
@@ -101,7 +103,7 @@ describe("menuModel", () => {
   it("disables project actions before a project is loaded", () => {
     const file = actionItems(menuModel(ctx({ loaded: false }))[0]);
     const disabled = file.filter((i) => i.disabled).map((i) => i.id);
-    expect(disabled).toEqual(["save", "save-as", "import-media", "project-settings"]);
+    expect(disabled).toEqual(["go-home", "save", "save-as", "import-media", "project-settings"]);
   });
 
   it("checks the history panel toggle when the panel is open", () => {
@@ -186,8 +188,28 @@ describe("panel and preferences actions", () => {
 
 describe("actionContext", () => {
   it("is empty before the first project state", () => {
-    expect(actionContext(null, { historyPanelOpen: true, mediaBinOpen: false, inspectorOpen: true })).toEqual(
-      ctx({ loaded: false, historyPanelOpen: true, mediaBinOpen: false }),
-    );
+    expect(
+      actionContext(null, {
+        historyPanelOpen: true,
+        mediaBinOpen: false,
+        inspectorOpen: true,
+        editorOpen: true,
+      }),
+    ).toEqual(ctx({ loaded: false, historyPanelOpen: true, mediaBinOpen: false }));
+  });
+});
+
+describe("home screen", () => {
+  it("File → Home is the first File item, has no shortcut and needs the editor", () => {
+    const file = menuModel(ctx())[0];
+    expect(file?.items[0]).toMatchObject({ kind: "action", id: "go-home", label: t.file.home, shortcut: "" });
+    expect(file?.items[1]).toEqual({ kind: "separator" });
+    const onHome = actionItems(menuModel(ctx({ editorOpen: false }))[0]);
+    const disabled = (id: string) => onHome.find((item) => item.id === id)?.disabled;
+    expect(disabled("go-home")).toBe(true);
+    expect(disabled("save")).toBe(true);
+    expect(disabled("import-media")).toBe(true);
+    expect(disabled("new-project")).toBe(false);
+    expect(disabled("open-project")).toBe(false);
   });
 });

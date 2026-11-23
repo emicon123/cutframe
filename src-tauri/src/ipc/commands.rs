@@ -1,6 +1,6 @@
 //! Commands callable from the UI. Keep handlers thin: validate, delegate, return.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use app_core::command::{
     AddClips, AddTrack, Batch, Command, Edge, HistoryLabel, MoveClips, NewClipSource, Placement,
@@ -17,12 +17,13 @@ use uuid::Uuid;
 
 use super::IpcError;
 use super::types::{
-    AppInfo, CacheInfo, JobId, PreviewMode, PreviewRect, ProjectState, RecoveryEntry,
+    AppInfo, CacheInfo, JobId, PreviewMode, PreviewRect, ProjectState, RecentProject, RecoveryEntry,
 };
 use crate::import;
 use crate::media_paths;
 use crate::preferences::{self, CURRENT_PREFERENCES_VERSION, Preferences, PreferencesError};
 use crate::project_file;
+use crate::recent::{self, RecentEntry, RecentStore};
 use crate::relink;
 use crate::state::{AppState, SaveSnapshot};
 
@@ -327,11 +328,13 @@ pub async fn open_project(
     })
     .await?;
     let loaded = loaded?;
+    let entry = RecentEntry::new(&loaded.project, &path);
     state.replace_project(&app, loaded.project, Some(path), loaded.source_version)?;
     // Missing or changed media files, in the background.
     state.check_media();
     // Previews missing from the cache (another machine, an evicted or cleared cache).
     state.prefetch_previews(None);
+    state.record_recent(entry).await;
     Ok(())
 }
 
@@ -382,7 +385,10 @@ async fn write(
     })
     .await?;
     written.map_err(|err| IpcError::io(&err))?;
-    state.mark_saved(app, &snapshot, path)
+    let entry = RecentEntry::new(&snapshot.project, &path);
+    state.mark_saved(app, &snapshot, path)?;
+    state.record_recent(entry).await;
+    Ok(())
 }
 
 /// Changes canvas size, frame rate and sample rate as one undoable entry. Clip times are kept
@@ -729,4 +735,100 @@ pub async fn clear_cache(state: State<'_, AppState>) -> Result<CacheInfo, IpcErr
     // Forget remembered failures and session state of the deleted previews.
     state.previews.set_cache_root(&root);
     Ok(CacheInfo::new(&root, stats))
+}
+
+/// Recent projects for the home screen, newest first, each with its file's modification time
+/// (`modifiedMs: null` = missing). Never removes an entry; a missing or broken list is empty.
+#[tauri::command]
+#[specta::specta]
+pub async fn list_recent_projects(
+    state: State<'_, AppState>,
+) -> Result<Vec<RecentProject>, IpcError> {
+    let listed = with_recent(&state, |store, _| Ok(store.list())).await?;
+    Ok(listed.into_iter().map(RecentProject::from).collect())
+}
+
+/// Removes `path` from the recent list (the file is not touched). An unknown path is fine.
+#[tauri::command]
+#[specta::specta]
+pub async fn remove_recent_project(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<(), IpcError> {
+    with_recent(&state, move |store, _| {
+        store.remove(&path).map_err(|err| IpcError::io(&err))
+    })
+    .await
+}
+
+/// Renames the recent project's file to `<name>.cutframe` in its folder (characters Windows
+/// forbids become `_`) and sets the project name inside it to `name` (trimmed). Fails with
+/// `invalidEdit` when the name is empty, a different file with that name exists, or `path` is not
+/// a recent project or is the open one; with `fileNotFound` / `malformedProject` /
+/// `projectTooNew` / `invalidProject` when the file cannot be opened; with `io` when the rename or
+/// write fails (then nothing changed). Not an undo step.
+#[tauri::command]
+#[specta::specta]
+pub async fn rename_project_file(
+    state: State<'_, AppState>,
+    path: String,
+    name: String,
+) -> Result<(), IpcError> {
+    with_recent(&state, move |store, open| store.rename(&path, &name, open)).await
+}
+
+/// Copies the recent project to `<name>.cutframe` in its folder (`<name> (2).cutframe`, ... when
+/// taken) as a new project called `name`, and puts the copy first in the recent list. The UI
+/// passes the translated copy name. Errors as for `renameProjectFile`. Not an undo step.
+#[tauri::command]
+#[specta::specta]
+pub async fn duplicate_project_file(
+    state: State<'_, AppState>,
+    path: String,
+    name: String,
+) -> Result<(), IpcError> {
+    with_recent(&state, move |store, open| {
+        store.duplicate(&path, &name, open).map(drop)
+    })
+    .await
+}
+
+/// Moves the recent project's file to the Recycle Bin (its `.v<n>.bak` backups stay) and removes
+/// it from the list. Ask for confirmation first. Fails with `invalidEdit` when `path` is not a
+/// recent project or is the open one, `fileNotFound` when the file is gone, and `io` when the
+/// Recycle Bin refuses it (then the entry stays).
+#[tauri::command]
+#[specta::specta]
+pub async fn trash_project_file(state: State<'_, AppState>, path: String) -> Result<(), IpcError> {
+    with_recent(&state, move |store, open| {
+        store.trash(&path, open, recent::move_to_trash)
+    })
+    .await
+}
+
+/// Opens Explorer at the recent project's folder with its file selected. Fails with
+/// `invalidEdit` when `path` is not a recent project or is the open one, `fileNotFound` when the
+/// file is gone and `unavailable` when the file manager cannot be started.
+#[tauri::command]
+#[specta::specta]
+pub async fn reveal_project_file(state: State<'_, AppState>, path: String) -> Result<(), IpcError> {
+    let file = with_recent(&state, move |store, open| store.existing_file(&path, open)).await?;
+    tauri::async_runtime::spawn_blocking(move || {
+        tauri_plugin_opener::reveal_item_in_dir(&file).map_err(|err| {
+            IpcError::Unavailable(format!("cannot reveal {}: {err}", file.display()))
+        })
+    })
+    .await?
+}
+
+/// Runs `action` on the recent list off the main thread, holding the recent lock, with the open
+/// project's file for the guards.
+async fn with_recent<T: Send + 'static>(
+    state: &AppState,
+    action: impl FnOnce(&RecentStore, Option<&Path>) -> Result<T, IpcError> + Send + 'static,
+) -> Result<T, IpcError> {
+    let _changing = state.recent_lock().lock().await;
+    let store = state.recent().clone();
+    let open = state.open_file();
+    tauri::async_runtime::spawn_blocking(move || action(&store, open.as_deref())).await?
 }

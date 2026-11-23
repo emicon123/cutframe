@@ -222,6 +222,41 @@ export const commands = {
 	 *  Returns the info after clearing.
 	 */
 	clearCache: (options?: InvokeOptions) => __TAURI_INVOKE<CacheInfo>("clear_cache", undefined, options),
+	/**
+	 *  Recent projects for the home screen, newest first, each with its file's modification time
+	 *  (`modifiedMs: null` = missing). Never removes an entry; a missing or broken list is empty.
+	 */
+	listRecentProjects: (options?: InvokeOptions) => __TAURI_INVOKE<RecentProject_Serialize[]>("list_recent_projects", undefined, options),
+	/**  Removes `path` from the recent list (the file is not touched). An unknown path is fine. */
+	removeRecentProject: (path: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("remove_recent_project", { path }, options),
+	/**
+	 *  Renames the recent project's file to `<name>.cutframe` in its folder (characters Windows
+	 *  forbids become `_`) and sets the project name inside it to `name` (trimmed). Fails with
+	 *  `invalidEdit` when the name is empty, a different file with that name exists, or `path` is not
+	 *  a recent project or is the open one; with `fileNotFound` / `malformedProject` /
+	 *  `projectTooNew` / `invalidProject` when the file cannot be opened; with `io` when the rename or
+	 *  write fails (then nothing changed). Not an undo step.
+	 */
+	renameProjectFile: (path: string, name: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("rename_project_file", { path, name }, options),
+	/**
+	 *  Copies the recent project to `<name>.cutframe` in its folder (`<name> (2).cutframe`, ... when
+	 *  taken) as a new project called `name`, and puts the copy first in the recent list. The UI
+	 *  passes the translated copy name. Errors as for `renameProjectFile`. Not an undo step.
+	 */
+	duplicateProjectFile: (path: string, name: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("duplicate_project_file", { path, name }, options),
+	/**
+	 *  Moves the recent project's file to the Recycle Bin (its `.v<n>.bak` backups stay) and removes
+	 *  it from the list. Ask for confirmation first. Fails with `invalidEdit` when `path` is not a
+	 *  recent project or is the open one, `fileNotFound` when the file is gone, and `io` when the
+	 *  Recycle Bin refuses it (then the entry stays).
+	 */
+	trashProjectFile: (path: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("trash_project_file", { path }, options),
+	/**
+	 *  Opens Explorer at the recent project's folder with its file selected. Fails with
+	 *  `invalidEdit` when `path` is not a recent project or is the open one, `fileNotFound` when the
+	 *  file is gone and `unavailable` when the file manager cannot be started.
+	 */
+	revealProjectFile: (path: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("reveal_project_file", { path }, options),
 };
 
 /** Events */
@@ -1072,6 +1107,47 @@ export type RationalRepr = {
 	den: number,
 };
 
+/**  A project on the home screen's recent list, newest first (design `home-screen.md` §5). */
+export type RecentProject = RecentProject_Serialize | RecentProject_Deserialize;
+
+/**  A project on the home screen's recent list, newest first (design `home-screen.md` §5). */
+export type RecentProject_Deserialize = {
+	/**  Absolute path of the project file; pass it back to the recent-project commands. */
+	path: string,
+	/**  The project's name at the last open or save (model data, not translated). */
+	name: string,
+	/**  The project's duration at that time, flicks. */
+	duration: Time,
+	/**  Unix milliseconds of the last open, save or duplicate by this app. */
+	openedAtMs: number,
+	/**
+	 *  The file's modification time in Unix milliseconds; `null` = the file is missing or
+	 *  unreachable (show it as missing, offer only `removeRecentProject`).
+	 */
+	modifiedMs?: number | null,
+	/**  Content hash of the cover: `media://cover/<hash>` (404 = show a placeholder). */
+	cover?: string | null,
+};
+
+/**  A project on the home screen's recent list, newest first (design `home-screen.md` §5). */
+export type RecentProject_Serialize = {
+	/**  Absolute path of the project file; pass it back to the recent-project commands. */
+	path: string,
+	/**  The project's name at the last open or save (model data, not translated). */
+	name: string,
+	/**  The project's duration at that time, flicks. */
+	duration: Time,
+	/**  Unix milliseconds of the last open, save or duplicate by this app. */
+	openedAtMs: number,
+	/**
+	 *  The file's modification time in Unix milliseconds; `null` = the file is missing or
+	 *  unreachable (show it as missing, offer only `removeRecentProject`).
+	 */
+	modifiedMs: number | null,
+	/**  Content hash of the cover: `media://cover/<hash>` (404 = show a placeholder). */
+	cover: string | null,
+};
+
 /**  An autosave left by an instance that did not exit cleanly, offered for restore at startup. */
 export type RecoveryEntry = RecoveryEntry_Serialize | RecoveryEntry_Deserialize;
 
@@ -1267,6 +1343,12 @@ export type MockCommandHandlers = {
     setPreferences: (args: { preferences: Preferences_Deserialize }) => Preferences_Serialize | Promise<Preferences_Serialize>,
     getCacheInfo: () => CacheInfo | Promise<CacheInfo>,
     clearCache: () => CacheInfo | Promise<CacheInfo>,
+    listRecentProjects: () => RecentProject_Serialize[] | Promise<RecentProject_Serialize[]>,
+    removeRecentProject: (args: { path: string }) => null | Promise<null>,
+    renameProjectFile: (args: { path: string; name: string }) => null | Promise<null>,
+    duplicateProjectFile: (args: { path: string; name: string }) => null | Promise<null>,
+    trashProjectFile: (args: { path: string }) => null | Promise<null>,
+    revealProjectFile: (args: { path: string }) => null | Promise<null>,
 };
 
 /**
@@ -1329,6 +1411,12 @@ export function mockCommands(handlers: Partial<MockCommandHandlers> = {}): void 
             case "set_preferences": return mockCommandHandler(mockHandlers.setPreferences, "set_preferences", args);
             case "get_cache_info": return mockCommandHandler(mockHandlers.getCacheInfo, "get_cache_info", args);
             case "clear_cache": return mockCommandHandler(mockHandlers.clearCache, "clear_cache", args);
+            case "list_recent_projects": return mockCommandHandler(mockHandlers.listRecentProjects, "list_recent_projects", args);
+            case "remove_recent_project": return mockCommandHandler(mockHandlers.removeRecentProject, "remove_recent_project", args);
+            case "rename_project_file": return mockCommandHandler(mockHandlers.renameProjectFile, "rename_project_file", args);
+            case "duplicate_project_file": return mockCommandHandler(mockHandlers.duplicateProjectFile, "duplicate_project_file", args);
+            case "trash_project_file": return mockCommandHandler(mockHandlers.trashProjectFile, "trash_project_file", args);
+            case "reveal_project_file": return mockCommandHandler(mockHandlers.revealProjectFile, "reveal_project_file", args);
             default: throw new Error(`No mock handler registered for command '${cmd}'`);
         }
     }, { shouldMockEvents: true });
