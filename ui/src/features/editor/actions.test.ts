@@ -148,6 +148,8 @@ describe("shortcutGroups", () => {
     expect(groups[1]?.rows).toEqual([
       { id: "undo", label: t.edit.undo, keys: ["Ctrl+Z"] },
       { id: "redo", label: t.edit.redo, keys: ["Ctrl+Shift+Z", "Ctrl+Y"] },
+      { id: "select-all", label: t.edit.selectAll, keys: ["Ctrl+A"] },
+      { id: "deselect", label: t.edit.deselect, keys: [t.keys.escape] },
       { id: "preferences", label: t.edit.preferences, keys: ["Ctrl+,"] },
     ]);
     expect(groups[2]?.rows).toEqual([

@@ -1,7 +1,9 @@
 //! Edit commands. Every change to a [`Project`] is a command so it can be undone.
 
+mod arrange;
 mod clips;
 
+pub use arrange::{Edge, MoveClips, TrimClip};
 pub use clips::{AddClips, NewClipSource, Placement, RemoveClipsOfMedia, TrackTarget};
 
 use serde::{Deserialize, Serialize};
@@ -31,6 +33,10 @@ pub enum HistoryLabel {
     RelinkMedia,
     /// Putting media or colour cards on the timeline (one drop, `+` click or insert).
     AddClips,
+    /// Dragging clips in time or to another track (one drag or nudge).
+    MoveClips,
+    /// Dragging a clip edge (one drag or nudge).
+    TrimClip,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -71,6 +77,8 @@ pub enum CommandError {
     /// A history jump to a point that is not in the history ([`crate::Document::jump_to`]).
     #[error("history point {index} is out of range (0..={len})")]
     HistoryOutOfRange { index: usize, len: usize },
+    #[error("clip {0:?} does not exist")]
+    ClipNotFound(crate::model::ClipId),
     /// The main track cannot be removed or moved.
     #[error("the main track cannot be removed or moved")]
     MainTrack,

@@ -1,4 +1,4 @@
-import { AudioLines, Film, Lock, Plus, Trash2, Type } from "lucide-react";
+import { AudioLines, Film, Lock, Magnet, Plus, Trash2, Type } from "lucide-react";
 import { type ComponentType, useEffect, useMemo, useRef } from "react";
 
 import {
@@ -14,12 +14,14 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { t } from "@/i18n";
 import { importPathsForPlacement } from "@/features/media-bin/importActions";
 import { useFileDrop } from "@/features/media-bin/useFileDrop";
-import { frameDuration } from "@/lib/time";
+import { formatClipDuration, frameDuration } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { run } from "@/stores/appStore";
 import { mediaDragStore, registerDropZone } from "@/stores/mediaDragStore";
-import { playheadStore, setPlayhead } from "@/stores/playheadStore";
+import { playheadStore } from "@/stores/playheadStore";
 import { useProjectStore } from "@/stores/projectStore";
+import { selectionStore } from "@/stores/selectionStore";
+import { useUiStore } from "@/stores/uiStore";
 
 import {
   DEFAULT_VIEWPORT,
@@ -28,12 +30,12 @@ import {
   TRACK_HEIGHT,
   scrollBy,
   trackTop,
-  xToTime,
   zoomAt,
   type Viewport,
 } from "./geometry";
 import { addMediaClips } from "./addActions";
 import { dropPayload, dropPlacement, dropPreview, type DropPreview } from "./drop";
+import { attachPointerInteraction, type PointerOverlay } from "./pointer";
 import { drawTimeline, readTheme, type TimelineTheme } from "./renderer";
 
 const EMPTY_TRACKS: TrackView[] = [];
@@ -83,6 +85,8 @@ function TimelineToolbar() {
       <AddTrackButton label={t.timeline.addVideoTrack} icon={Film} onClick={() => addTrack("video")} />
       <AddTrackButton label={t.timeline.addAudioTrack} icon={AudioLines} onClick={() => addTrack("audio")} />
       <AddTrackButton label={t.timeline.addTextTrack} icon={Type} onClick={() => addTrack("text")} />
+      <div className="mx-1 h-5 w-px bg-border" aria-hidden />
+      <SnappingToggle />
       <span className="ml-auto text-xs text-muted-foreground">{t.timeline.zoomHint}</span>
     </div>
   );
@@ -106,6 +110,29 @@ function AddTrackButton({
         </Button>
       </TooltipTrigger>
       <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** F1.45: turns snapping on or off; a UI preference kept across restarts. */
+function SnappingToggle() {
+  const snapping = useUiStore((s) => s.snapping);
+  const setSnapping = useUiStore((s) => s.setSnapping);
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-pressed={snapping}
+          aria-label={t.timeline.snapping}
+          className={cn(snapping && "bg-accent text-primary")}
+          onClick={() => setSnapping(!snapping)}
+        >
+          <Magnet className="size-3.5" aria-hidden />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{snapping ? t.timeline.snappingOn : t.timeline.snappingOff}</TooltipContent>
     </Tooltip>
   );
 }
@@ -174,6 +201,7 @@ function TimelineCanvas({
   const viewportRef = useRef<Viewport>(DEFAULT_VIEWPORT);
   const sceneRef = useRef({ tracks, mainTrack, offline });
   const dropRef = useRef<DropPreview | null>(null);
+  const overlayRef = useRef<PointerOverlay>({ marquee: null, snapLine: null });
   const requestDrawRef = useRef<() => void>(() => undefined);
 
   useEffect(() => {
@@ -215,6 +243,10 @@ function TimelineCanvas({
         theme,
         offlineLabel: t.timeline.offline,
         drop: dropRef.current,
+        selected: new Set(selectionStore.getState().clips),
+        marquee: overlayRef.current.marquee,
+        snapLine: overlayRef.current.snapLine,
+        durationText: formatClipDuration,
       });
     };
     const requestDraw = () => {
@@ -234,6 +266,7 @@ function TimelineCanvas({
     resize.observe(container);
 
     const unsubscribePlayhead = playheadStore.subscribe(requestDraw);
+    const unsubscribeSelection = selectionStore.subscribe(requestDraw);
 
     // Media dragged from the media panel: follow the pointer with a drop preview.
     const unsubscribeDrag = mediaDragStore.subscribe(({ drag }) => {
@@ -267,30 +300,21 @@ function TimelineCanvas({
     };
     canvas.addEventListener("wheel", onWheel, { passive: false });
 
-    const scrubTo = (event: PointerEvent) => {
-      const x = event.clientX - canvas.getBoundingClientRect().left;
-      setPlayhead(xToTime(x, viewportRef.current));
-    };
-    const onPointerDown = (event: PointerEvent) => {
-      if (event.button !== 0) return;
-      canvas.setPointerCapture(event.pointerId);
-      scrubTo(event);
-    };
-    const onPointerMove = (event: PointerEvent) => {
-      if (canvas.hasPointerCapture(event.pointerId)) scrubTo(event);
-    };
-    canvas.addEventListener("pointerdown", onPointerDown);
-    canvas.addEventListener("pointermove", onPointerMove);
+    const detachPointer = attachPointerInteraction(canvas, {
+      viewport: () => viewportRef.current,
+      overlay: overlayRef.current,
+      requestDraw,
+    });
 
     return () => {
       cancelAnimationFrame(frame);
       resize.disconnect();
       unsubscribePlayhead();
+      unsubscribeSelection();
+      detachPointer();
       unsubscribeDrag();
       unregisterDrop();
       canvas.removeEventListener("wheel", onWheel);
-      canvas.removeEventListener("pointerdown", onPointerDown);
-      canvas.removeEventListener("pointermove", onPointerMove);
       requestDrawRef.current = () => undefined;
     };
   }, []);
@@ -343,6 +367,6 @@ function previewAt(
     playhead: playheadStore.getState().time,
     frame: frameDuration(project.settings.frameRate),
     payload: dropPayload(items),
-    snapping: !alt,
+    snapping: useUiStore.getState().snapping && !alt,
   });
 }

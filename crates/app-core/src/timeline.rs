@@ -89,6 +89,50 @@ pub fn normalize_links(project: &mut Project) {
     }
 }
 
+/// `ids` and every clip linked to one of them (design §3.5), each once, in track order then
+/// clip order. Fails with [`CommandError::ClipNotFound`] for an id that is not in the project.
+pub fn expand_links(project: &Project, ids: &[ClipId]) -> Result<Vec<ClipId>, CommandError> {
+    let mut links = std::collections::HashSet::new();
+    for &id in ids {
+        let (_, clip) = project.clip(id).ok_or(CommandError::ClipNotFound(id))?;
+        links.extend(clip.link);
+    }
+    Ok(project
+        .clips()
+        .filter(|c| ids.contains(&c.id) || c.link.is_some_and(|l| links.contains(&l)))
+        .map(|c| c.id)
+        .collect())
+}
+
+/// Keeps a clip's props valid after its duration or content changed: keyframe offsets move by
+/// `-content_shift` (a start trim by `d` shifts the content under the clip start by `d`), those that
+/// end up outside `0..=duration` are dropped, and fades are shortened to fit the new duration.
+/// Tier 1 writes no keyframes, so only the fades ever change; task 0520 adds interpolated boundary
+/// keyframes here.
+pub fn retime_keyframes(clip: &mut Clip, content_shift: Time) {
+    fn retime<T>(animated: &mut crate::props::Animated<T>, shift: Time, duration: Time) {
+        for keyframe in &mut animated.keyframes {
+            keyframe.time = keyframe.time - shift;
+        }
+        animated
+            .keyframes
+            .retain(|k| Time::ZERO <= k.time && k.time <= duration);
+    }
+    let duration = clip.duration;
+    if let Some(visual) = &mut clip.visual {
+        retime(&mut visual.position, content_shift, duration);
+        retime(&mut visual.scale, content_shift, duration);
+        retime(&mut visual.rotation, content_shift, duration);
+        retime(&mut visual.opacity, content_shift, duration);
+        retime(&mut visual.crop, content_shift, duration);
+    }
+    if let Some(audio) = &mut clip.audio {
+        retime(&mut audio.volume, content_shift, duration);
+        audio.fade_in = audio.fade_in.min(duration);
+        audio.fade_out = audio.fade_out.min(duration - audio.fade_in);
+    }
+}
+
 /// Ids handed out in a fixed order, so a redo of a command recreates the same ids as its first
 /// apply. A command keeps one pool and calls [`IdPool::rewind`] at the start of every apply.
 #[derive(Debug, Clone, Default)]

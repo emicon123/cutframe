@@ -165,22 +165,22 @@ inserted between existing ones.
 | F1.27 | Audio tracks below the main track | Backend (0260): audio section below the main track; audio-only media appends to the first unlocked audio track. UI (0260): audio drops go to audio tracks or a new track in the audio section. No audio playback yet | partial |
 | F1.28 | Tracks created automatically when dropping onto empty space; empty tracks removed | Backend (0260): `drop` on a new track, emptied tracks removed on commit. UI (0260): drop below the tracks or near a track edge shows an insertion line and creates the track in the same undo step. Missing: manual check on Windows | partial |
 | F1.29 | Time ruler with adaptive timecode labels | Flicks internally; `renderer.ts` `drawRuler` with adaptive step | done |
-| F1.30 | Playhead; click/drag on ruler and tracks to seek | Click/drag on the timeline canvas seeks; playhead is UI-only (`playheadStore`) | done |
+| F1.30 | Playhead; click/drag on ruler and tracks to seek | Click/drag on the ruler seeks; playhead is UI-only (`playheadStore`). Since 0270 a press on the lanes selects or starts a marquee instead (timeline design §12.2) | done |
 | F1.31 | Auto-scroll timeline to follow the playhead during playback | | missing |
 | F1.32 | Zoom (Ctrl+wheel, slider, zoom-to-fit) | Ctrl+wheel zoom around the cursor; no slider or zoom-to-fit | partial |
 | F1.33 | Horizontal and vertical scroll | Shift/horizontal wheel scrolls time, vertical wheel scrolls tracks | done |
 | F1.34 | Filmstrip thumbnails on video clips | `media://` | missing |
 | F1.35 | Waveforms on audio clips and on video clips with audio | `media://` | missing |
-| F1.36 | Clip label (name, duration, speed badge, effect badges) | Clips are drawn with their name (`drawClips`); no badges; clips cannot be added yet | partial |
-| F1.37 | Select a clip; multi-select with Ctrl/Shift; marquee (rubber-band) selection | | missing |
-| F1.38 | Select all (Ctrl+A); deselect (Esc) | | missing |
-| F1.39 | Move clips by drag within and between tracks | | missing |
-| F1.40 | Trim start/end by dragging clip edges, limited by source length | | missing |
+| F1.36 | Clip label (name, duration, speed badge, effect badges) | UI (0270): `renderer.ts` `drawClips` draws the name and the length (`formatClipDuration`, Vitest), plus the offline note. Missing: speed and effect badges (no speed or effects yet), manual check on Windows | partial |
+| F1.37 | Select a clip; multi-select with Ctrl/Shift; marquee (rubber-band) selection | UI (0270): UI-only `selectionStore` (pruned on `project-changed`); click selects the link group, Shift adds, Ctrl toggles, a drag on empty lane space draws a marquee (Ctrl/Shift add to the selection; locked tracks skipped). Pure rules in `selection.ts`/`hitTest.ts`, wiring in `pointer.ts`, all with Vitest. Missing: manual check on Windows | partial |
+| F1.38 | Select all (Ctrl+A); deselect (Esc) | UI (0270): `select-all` / `deselect` in the action registry (Edit menu, shortcut panel); Ctrl+A selects every clip on unlocked tracks; Escape that cancels a drag does not also deselect. Vitest in `shortcuts.test.ts`. Missing: manual check on Windows | partial |
+| F1.39 | Move clips by drag within and between tracks | Backend (0270): `moveClips` gesture (anchor + absolute start + `TrackTarget`, overlap rejected, magnetic main reorders, followers). UI (0270): drag past 3 px sends `update` per frame and one `commit` (one undo step), Escape/blur/lost capture cancel; vertical moves to a same-kind unlocked track or a new track near a track edge; group start clamped at 0; a rejected spot shows a blocked cursor and pointer-up commits the last accepted position (`editDrag.ts`, `pointer.ts`, Vitest). Missing: auto-scroll at the canvas edges, manual check on Windows | partial |
+| F1.40 | Trim start/end by dragging clip edges, limited by source length | Backend (0270): `trimClip` gesture, clamped to the source range, one frame, neighbours and linked edges. UI (0270): 6 px edge zones (a third of narrow clips) with a resize cursor; the edge time is absolute, on the frame grid and snapped (`editDrag.ts`, `pointer.ts`, Vitest). Missing: manual check on Windows | partial |
 | F1.41 | Split at playhead (Ctrl+B) — selected clip or all tracks | | missing |
 | F1.42 | Delete clip (leaves gap on overlay tracks) | | missing |
 | F1.43 | Ripple delete (closes the gap) | | missing |
 | F1.44 | Magnetic main track (no gaps; clips reorder by drag) with on/off toggle | | missing |
-| F1.45 | Snapping to playhead, clip edges, markers, with on/off toggle | | missing |
+| F1.45 | Snapping to playhead, clip edges, markers, with on/off toggle | UI (0270): `snapping.ts` + `editDrag.ts`: 8 px threshold at any zoom, targets 0, playhead and clip edges (not the dragged clips or their linked members), frame grid, Alt bypasses; dashed snap line; toolbar toggle kept in `localStorage` (also applies to media drops). Missing: markers (task 0630), manual check on Windows | partial |
 | F1.46 | Copy / cut / paste / duplicate clips | | missing |
 | F1.47 | Trim to playhead: delete left / delete right of playhead (Q / W) | | missing |
 | F1.48 | Select and delete a gap | | missing |

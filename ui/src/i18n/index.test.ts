@@ -37,6 +37,8 @@ describe("errorKindText", () => {
     "invalidProject",
     "io",
     "cancelled",
+    "overlap",
+    "trackLocked",
   ])("translates %s", (kind) => {
     expect(errorKindText(kind)).toBe(t.errors.kinds[kind]);
     expect(errorKindText(kind)).not.toBe(kind);

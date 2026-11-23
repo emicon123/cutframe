@@ -3,12 +3,13 @@
 use std::path::{Path, PathBuf};
 
 use app_core::command::{
-    AddClips, AddTrack, Batch, Command, HistoryLabel, NewClipSource, Placement, RemoveClipsOfMedia,
-    RemoveMedia, RemoveTrack, RenameProject, RenameTrack, SetProjectSettings,
+    AddClips, AddTrack, Batch, Command, Edge, HistoryLabel, MoveClips, NewClipSource, Placement,
+    RemoveClipsOfMedia, RemoveMedia, RemoveTrack, RenameProject, RenameTrack, SetProjectSettings,
+    TrackTarget, TrimClip,
 };
 use app_core::serialization::{self, CURRENT_SCHEMA_VERSION};
 use app_core::{
-    ClipId, MAX_IPC_FLICKS, MediaId, Project, ProjectSettings, Time, TrackId, TrackKind,
+    ClipId, EditPhase, MAX_IPC_FLICKS, MediaId, Project, ProjectSettings, Time, TrackId, TrackKind,
 };
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
@@ -62,9 +63,9 @@ pub fn add_track(
 ///   the first clip) from `start`. On the magnetic main track a drop is an insert.
 ///
 /// Video clips take the media's whole length (with its sound when it has audio), images 5 s and
-/// colour cards 5 s. Fails with `invalidEdit` for no sources, unknown media or tracks, a locked
-/// target, a clip that does not fit the track (e.g. audio-only media on a video track), an occupied
-/// range, or a time outside `0..=2^53` flicks.
+/// colour cards 5 s. Fails with `overlap` for an occupied range, `trackLocked` for a locked
+/// target, and `invalidEdit` for no sources, unknown media or tracks, a clip that does not fit the
+/// track (e.g. audio-only media on a video track), or a time outside `0..=2^53` flicks.
 #[tauri::command]
 #[specta::specta]
 pub fn add_clips(
@@ -91,6 +92,80 @@ pub fn add_clips(
     let ids = command.clip_ids().to_vec();
     state.edit(&app, |doc| doc.execute(Box::new(command)).map(Some))?;
     Ok(ids)
+}
+
+/// `time` if it is exact over IPC (within ±2^53 flicks, ADR-0003 §3), else `invalidEdit`.
+fn ipc_time(time: Time) -> Result<Time, IpcError> {
+    if time.flicks().unsigned_abs() > MAX_IPC_FLICKS.unsigned_abs() {
+        return Err(IpcError::InvalidEdit(format!(
+            "time {} is outside ±2^53 flicks",
+            time.flicks()
+        )));
+    }
+    Ok(time)
+}
+
+/// Moves clips by dragging, as an ADR-0006 gesture (`moveClips`): send `update` at most once per
+/// animation frame, `commit` on pointer-up and `cancelGesture` on Escape, blur or lost capture.
+/// The whole drag is one undo step.
+///
+/// `anchor` (the clip under the pointer, counted as listed) goes to the absolute `start`; the other
+/// `clips` keep their offset from it, and clips linked to them come along in time on their own
+/// tracks. `track` is where the anchor's clips go: allowed only when every listed clip is on the
+/// anchor's track (or linked to one there), otherwise the move is time-only and `track` is
+/// ignored. Pass the anchor's own track for a horizontal drag; `new.index` creates a track in the
+/// section of the clip's kind. On the magnetic main track `start` picks the insertion slot (the
+/// other clips whose midpoint lies before it) and the track repacks; the overlays, captions and
+/// audio over moved main clips follow them. Tracks left empty are removed on `commit` only.
+///
+/// Errors: `overlap` (occupied spot, or a start before 0 off the magnetic main track),
+/// `trackLocked`, and `invalidEdit` (unknown clip or track, a track of another kind, a time outside
+/// ±2^53 flicks). A failed `update` keeps the last valid state; after a failed `commit` the
+/// gesture is still open, so cancel it.
+#[tauri::command]
+#[specta::specta]
+pub fn move_clips(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    clips: Vec<ClipId>,
+    anchor: ClipId,
+    start: Time,
+    track: TrackTarget,
+    phase: EditPhase,
+) -> Result<(), IpcError> {
+    let command = MoveClips::new(
+        clips,
+        anchor,
+        ipc_time(start)?,
+        track,
+        phase == EditPhase::Commit,
+    );
+    state.edit(&app, |doc| doc.edit(phase, Box::new(command)).map(Some))?;
+    Ok(())
+}
+
+/// Drags one edge of a clip to the absolute `time`, as an ADR-0006 gesture (`trimClip`, same
+/// lifecycle as `moveClips`). The edge is clamped, never rejected: to the media's source range
+/// (`ClipView.sourceDuration`; none for images and colour cards), to at least one frame, to the
+/// neighbouring clips (not on the magnetic main track) and to the same limits of linked clips whose
+/// edge was at the same time, which trim with it. A start trim keeps the content in place
+/// (`sourceIn` moves with the edge); on the magnetic main track the clip keeps its start instead,
+/// its content shifts and the later clips ripple, with the clips over them following.
+///
+/// Errors: `trackLocked`, and `invalidEdit` (unknown clip, a time outside ±2^53 flicks).
+#[tauri::command]
+#[specta::specta]
+pub fn trim_clip(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    clip: ClipId,
+    edge: Edge,
+    time: Time,
+    phase: EditPhase,
+) -> Result<(), IpcError> {
+    let command = TrimClip::new(clip, edge, ipc_time(time)?, phase == EditPhase::Commit);
+    state.edit(&app, |doc| doc.edit(phase, Box::new(command)).map(Some))?;
+    Ok(())
 }
 
 #[tauri::command]

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { type ProjectState, useProjectStore } from "@/stores/projectStore";
+import { selectionStore } from "@/stores/selectionStore";
 import { useUiStore } from "@/stores/uiStore";
 
 import type { Action } from "./actions";
@@ -115,6 +116,33 @@ describe("handleShortcut", () => {
     expect(second.defaultPrevented).toBe(true);
     expect(plain.run).not.toHaveBeenCalled();
     expect(blocking.run).not.toHaveBeenCalled();
+  });
+
+  it("leaves an event alone that something already handled", () => {
+    const action = fake({ shortcuts: [{ key: "Escape" }] });
+    const event = press("Escape");
+    event.preventDefault();
+    handleShortcut(event, [action]);
+    expect(action.run).not.toHaveBeenCalled();
+  });
+
+  it("selects every clip with Ctrl+A and deselects with Escape", () => {
+    useProjectStore.setState({
+      state: {
+        ...state,
+        project: {
+          tracks: [
+            { id: "t1", locked: false, clips: [{ id: "a" }, { id: "b" }] },
+            { id: "t2", locked: true, clips: [{ id: "c" }] },
+          ],
+        },
+      } as unknown as ProjectState,
+    });
+    useUiStore.setState({ view: "editor" });
+    handleShortcut(press("a", { ctrlKey: true }));
+    expect(selectionStore.getState().clips).toEqual(["a", "b"]);
+    handleShortcut(press("Escape"));
+    expect(selectionStore.getState().clips).toEqual([]);
   });
 
   it("opens the shortcut reference on ? from the registry", () => {
