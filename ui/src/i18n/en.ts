@@ -229,6 +229,8 @@ export const en = {
       removeMedia: "Remove Media",
       relinkMedia: "Relink Media",
       addClips: "Add Clips",
+      moveClips: "Move Clips",
+      trimClip: "Trim Clip",
     } satisfies Record<HistoryLabel, string>,
     /** Shown for a key this UI build does not know. */
     unknown: "Last Action",
@@ -245,6 +247,8 @@ export const en = {
       invalidProject: "This project file contains errors and cannot be opened",
       io: "The file could not be read or written",
       cancelled: "Cancelled",
+      overlap: "There is already a clip there",
+      trackLocked: "That track is locked",
     } satisfies Record<IpcError["kind"], string>,
     /** Shown for an unknown kind or a failure that is not an `IpcError`. */
     unknown: "Something went wrong",

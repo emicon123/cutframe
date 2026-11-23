@@ -40,6 +40,13 @@ pub enum IpcError {
     /// The job was cancelled with `cancel_job`; only used as a `job-finished` result.
     #[error("{0}")]
     Cancelled(String),
+    /// The edit would put a clip over another clip (a move or drop into an occupied spot). The
+    /// project is unchanged; during a drag the last valid state stays visible.
+    #[error("{0}")]
+    Overlap(String),
+    /// The edit would change a clip on a locked track. The project is unchanged.
+    #[error("{0}")]
+    TrackLocked(String),
 }
 
 impl IpcError {
@@ -74,7 +81,12 @@ impl From<ReadError> for IpcError {
 
 impl From<CommandError> for IpcError {
     fn from(err: CommandError) -> Self {
-        IpcError::InvalidEdit(err.to_string())
+        let message = err.to_string();
+        match err {
+            CommandError::Overlap => IpcError::Overlap(message),
+            CommandError::TrackLocked(_) => IpcError::TrackLocked(message),
+            _ => IpcError::InvalidEdit(message),
+        }
     }
 }
 
@@ -101,6 +113,8 @@ mod tests {
             (IpcError::InvalidProject("x".into()), "invalidProject"),
             (IpcError::Io("x".into()), "io"),
             (IpcError::Cancelled("x".into()), "cancelled"),
+            (IpcError::Overlap("x".into()), "overlap"),
+            (IpcError::TrackLocked("x".into()), "trackLocked"),
         ];
         for (error, kind) in cases {
             assert_eq!(
@@ -115,6 +129,21 @@ mod tests {
             .as_str()
             .unwrap()
             .to_owned()
+    }
+
+    #[test]
+    fn command_errors_the_ui_branches_on_have_their_own_kinds() {
+        let cases = [
+            (CommandError::Overlap, "overlap"),
+            (
+                CommandError::TrackLocked(app_core::TrackId::new()),
+                "trackLocked",
+            ),
+            (CommandError::NothingToEdit, "invalidEdit"),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(kind(error.into()), expected);
+        }
     }
 
     #[test]

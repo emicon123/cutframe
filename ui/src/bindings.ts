@@ -23,11 +23,43 @@ export const commands = {
 	 *    the first clip) from `start`. On the magnetic main track a drop is an insert.
 	 * 
 	 *  Video clips take the media's whole length (with its sound when it has audio), images 5 s and
-	 *  colour cards 5 s. Fails with `invalidEdit` for no sources, unknown media or tracks, a locked
-	 *  target, a clip that does not fit the track (e.g. audio-only media on a video track), an occupied
-	 *  range, or a time outside `0..=2^53` flicks.
+	 *  colour cards 5 s. Fails with `overlap` for an occupied range, `trackLocked` for a locked
+	 *  target, and `invalidEdit` for no sources, unknown media or tracks, a clip that does not fit the
+	 *  track (e.g. audio-only media on a video track), or a time outside `0..=2^53` flicks.
 	 */
 	addClips: (sources: NewClipSource[], placement: Placement, options?: InvokeOptions) => __TAURI_INVOKE<ClipId[]>("add_clips", { sources, placement }, options),
+	/**
+	 *  Moves clips by dragging, as an ADR-0006 gesture (`moveClips`): send `update` at most once per
+	 *  animation frame, `commit` on pointer-up and `cancelGesture` on Escape, blur or lost capture.
+	 *  The whole drag is one undo step.
+	 * 
+	 *  `anchor` (the clip under the pointer, counted as listed) goes to the absolute `start`; the other
+	 *  `clips` keep their offset from it, and clips linked to them come along in time on their own
+	 *  tracks. `track` is where the anchor's clips go: allowed only when every listed clip is on the
+	 *  anchor's track (or linked to one there), otherwise the move is time-only and `track` is
+	 *  ignored. Pass the anchor's own track for a horizontal drag; `new.index` creates a track in the
+	 *  section of the clip's kind. On the magnetic main track `start` picks the insertion slot (the
+	 *  other clips whose midpoint lies before it) and the track repacks; the overlays, captions and
+	 *  audio over moved main clips follow them. Tracks left empty are removed on `commit` only.
+	 * 
+	 *  Errors: `overlap` (occupied spot, or a start before 0 off the magnetic main track),
+	 *  `trackLocked`, and `invalidEdit` (unknown clip or track, a track of another kind, a time outside
+	 *  ±2^53 flicks). A failed `update` keeps the last valid state; after a failed `commit` the
+	 *  gesture is still open, so cancel it.
+	 */
+	moveClips: (clips: ClipId[], anchor: ClipId, start: Time, track: TrackTarget, phase: EditPhase, options?: InvokeOptions) => __TAURI_INVOKE<null>("move_clips", { clips, anchor, start, track, phase }, options),
+	/**
+	 *  Drags one edge of a clip to the absolute `time`, as an ADR-0006 gesture (`trimClip`, same
+	 *  lifecycle as `moveClips`). The edge is clamped, never rejected: to the media's source range
+	 *  (`ClipView.sourceDuration`; none for images and colour cards), to at least one frame, to the
+	 *  neighbouring clips (not on the magnetic main track) and to the same limits of linked clips whose
+	 *  edge was at the same time, which trim with it. A start trim keeps the content in place
+	 *  (`sourceIn` moves with the edge); on the magnetic main track the clip keeps its start instead,
+	 *  its content shifts and the later clips ripple, with the clips over them following.
+	 * 
+	 *  Errors: `trackLocked`, and `invalidEdit` (unknown clip, a time outside ±2^53 flicks).
+	 */
+	trimClip: (clip: ClipId, edge: Edge, time: Time, phase: EditPhase, options?: InvokeOptions) => __TAURI_INVOKE<null>("trim_clip", { clip, edge, time, phase }, options),
 	removeTrack: (id: TrackId, options?: InvokeOptions) => __TAURI_INVOKE<null>("remove_track", { id }, options),
 	renameTrack: (id: TrackId, name: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("rename_track", { id, name }, options),
 	renameProject: (name: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("rename_project", { name }, options),
@@ -387,6 +419,9 @@ export type CropInsets = {
 
 export type Easing = "linear" | "easeIn" | "easeOut" | "easeInOut" | "hold";
 
+/**  Which edge of a clip a trim moves. */
+export type Edge = "start" | "end";
+
 /**  Which step of a continuous edit (drag, trim, slider) a command is (ADR-0006 §4). */
 export type EditPhase = 
 /**  Show this value live; opens a gesture if none is open. Records nothing. */
@@ -513,7 +548,11 @@ export type HistoryLabel = "addTrack" | "removeTrack" | "renameTrack" | "renameP
 /**  Pointing media at another file: one relinked item, or every item a folder relink found. */
 "relinkMedia" | 
 /**  Putting media or colour cards on the timeline (one drop, `+` click or insert). */
-"addClips";
+"addClips" | 
+/**  Dragging clips in time or to another track (one drag or nudge). */
+"moveClips" | 
+/**  Dragging a clip edge (one drag or nudge). */
+"trimClip";
 
 export type HistoryState = HistoryState_Serialize | HistoryState_Deserialize;
 
@@ -582,7 +621,14 @@ export type IpcError =
 /**  Any other file-system failure: permission denied, disk full, file locked. */
 { kind: "io"; message: string } | 
 /**  The job was cancelled with `cancel_job`; only used as a `job-finished` result. */
-{ kind: "cancelled"; message: string };
+{ kind: "cancelled"; message: string } | 
+/**
+ *  The edit would put a clip over another clip (a move or drop into an occupied spot). The
+ *  project is unchanged; during a drag the last valid state stays visible.
+ */
+{ kind: "overlap"; message: string } | 
+/**  The edit would change a clip on a locked track. The project is unchanged. */
+{ kind: "trackLocked"; message: string };
 
 /**  The end of a job. After `cancel_job` the result is `{ Err: { kind: "cancelled" } }`. */
 export type JobFinished = {
@@ -1188,6 +1234,8 @@ export type MockCommandHandlers = {
     getProject: () => ProjectState_Serialize | Promise<ProjectState_Serialize>,
     addTrack: (args: { kind: TrackKind; index: number | null }) => TrackId | Promise<TrackId>,
     addClips: (args: { sources: NewClipSource[]; placement: Placement }) => ClipId[] | Promise<ClipId[]>,
+    moveClips: (args: { clips: ClipId[]; anchor: ClipId; start: Time; track: TrackTarget; phase: EditPhase }) => null | Promise<null>,
+    trimClip: (args: { clip: ClipId; edge: Edge; time: Time; phase: EditPhase }) => null | Promise<null>,
     removeTrack: (args: { id: TrackId }) => null | Promise<null>,
     renameTrack: (args: { id: TrackId; name: string }) => null | Promise<null>,
     renameProject: (args: { name: string }) => null | Promise<null>,
@@ -1248,6 +1296,8 @@ export function mockCommands(handlers: Partial<MockCommandHandlers> = {}): void 
             case "get_project": return mockCommandHandler(mockHandlers.getProject, "get_project", args);
             case "add_track": return mockCommandHandler(mockHandlers.addTrack, "add_track", args);
             case "add_clips": return mockCommandHandler(mockHandlers.addClips, "add_clips", args);
+            case "move_clips": return mockCommandHandler(mockHandlers.moveClips, "move_clips", args);
+            case "trim_clip": return mockCommandHandler(mockHandlers.trimClip, "trim_clip", args);
             case "remove_track": return mockCommandHandler(mockHandlers.removeTrack, "remove_track", args);
             case "rename_track": return mockCommandHandler(mockHandlers.renameTrack, "rename_track", args);
             case "rename_project": return mockCommandHandler(mockHandlers.renameProject, "rename_project", args);
