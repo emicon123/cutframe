@@ -45,7 +45,7 @@ fn pool_with(media: &[MediaAsset], options: ReaderOptions) -> (ReaderPool, Arc<A
     });
     let mut project = Project::new("test");
     project.media = media.to_vec();
-    pool.set_project(Arc::new(project));
+    pool.set_project(&project);
     (pool, ready)
 }
 
@@ -111,6 +111,7 @@ fn readers_are_limited_shared_and_reassigned() {
     let options = ReaderOptions {
         max_readers: 2,
         max_hw_readers: 0,
+        ..ReaderOptions::default()
     };
     let (mut pool, _) = pool_with(&media, options);
 
@@ -176,7 +177,7 @@ fn relinked_media_get_a_new_reader_and_new_frame_ids() {
     clip.path = MediaPath::absolute(fixture("mpeg4.m4v").to_string_lossy());
     let mut project = Project::new("relinked");
     project.media = vec![clip.clone()];
-    pool.set_project(Arc::new(project));
+    pool.set_project(&project);
     assert_eq!(pool.reader_count(), 0, "the old file's reader closed");
     pool.begin_frame();
     let after = exact(&mut pool, clip.id, ms(100)).id();

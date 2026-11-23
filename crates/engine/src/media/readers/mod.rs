@@ -7,7 +7,7 @@
 //! device, zero-copy when the device samples NV12/P010). Readers that the frames of the last
 //! 5 s did not use are closed. Images are decoded once on a worker thread.
 //!
-//! Readers never take the document lock: the owner hands the pool `Arc<Project>` snapshots
+//! Readers never take the document lock: the owner hands the pool project snapshots
 //! ([`ReaderPool::set_project`]), from which it only reads media paths and streams.
 //!
 //! The owner gets [`ReaderEvent`]s through the callback given to [`ReaderPool::new`], from
@@ -75,6 +75,9 @@ pub enum ReaderEvent {
 pub struct ReaderOptions {
     pub max_readers: usize,
     pub max_hw_readers: usize,
+    /// Reader and image threads run below normal priority, so an export does not starve the
+    /// preview (Windows; FFmpeg's own decode threads keep their priority).
+    pub below_normal_priority: bool,
 }
 
 impl Default for ReaderOptions {
@@ -82,6 +85,23 @@ impl Default for ReaderOptions {
         Self {
             max_readers: 8,
             max_hw_readers: 4,
+            below_normal_priority: false,
+        }
+    }
+}
+
+/// Lowers the calling thread to below-normal priority (Windows); logs a failure.
+pub(crate) fn lower_thread_priority() {
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::Threading::{
+            GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL,
+        };
+        // SAFETY: `GetCurrentThread` returns a pseudo handle that is always valid for the
+        // calling thread and needs no closing.
+        let result = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL) };
+        if let Err(err) = result {
+            tracing::debug!(%err, "cannot lower the thread priority");
         }
     }
 }
@@ -264,7 +284,7 @@ impl ReaderPool {
             hw_slots: HwSlots::new(options.max_hw_readers),
             software_threads: software_threads_here(),
             memory: Arc::new(PathMemory::default()),
-            images: ImageCache::new(Arc::clone(&notifier)),
+            images: ImageCache::new(Arc::clone(&notifier), options.below_normal_priority),
             notifier,
             bindings: HashMap::new(),
             canvas_long_side: 0,
@@ -274,9 +294,10 @@ impl ReaderPool {
         }
     }
 
-    /// Takes a new project snapshot. Readers of media that are gone or whose file or stream
-    /// changed (relink) close; images are decoded again when their size cap changes.
-    pub fn set_project(&mut self, project: Arc<Project>) {
+    /// Takes a new project snapshot (only its media and canvas size are read). Readers of media
+    /// that are gone or whose file or stream changed (relink) close; images are decoded again
+    /// when their size cap changes.
+    pub fn set_project(&mut self, project: &Project) {
         self.canvas_long_side = project.settings.width.max(project.settings.height);
         self.bindings = project
             .media
@@ -368,6 +389,7 @@ impl ReaderPool {
             byte_cap: CPU_QUEUE_BYTES,
             memory: Arc::clone(&self.memory),
             notifier: Arc::clone(&self.notifier),
+            below_normal_priority: self.options.below_normal_priority,
         };
         Reader::spawn(config)
             .inspect_err(|err| tracing::error!(%err, "cannot start a video reader thread"))

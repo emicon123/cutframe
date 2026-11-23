@@ -71,6 +71,7 @@ pub(crate) struct ReaderConfig {
     pub byte_cap: usize,
     pub memory: Arc<PathMemory>,
     pub notifier: Arc<Notifier>,
+    pub below_normal_priority: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -599,6 +600,9 @@ fn monotonic(pts: Option<Time>, last: Option<Time>) -> Time {
 
 fn run(shared: &Shared, mut config: ReaderConfig) {
     let _guard = ExitGuard(shared);
+    if config.below_normal_priority {
+        super::lower_thread_priority();
+    }
     let source = config.source.clone();
     let memory = Arc::clone(&config.memory);
     let opened = shared.open_uninterrupted(|| Decoder::open(&mut config, &shared.abandon));

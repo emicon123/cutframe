@@ -4,11 +4,20 @@
 //!
 //! All communication goes through a channel, so callers never block on rendering.
 //!
+//! **What it draws** (render-graph.md §4, §7, §8): the timeline frame at the playhead.
+//! [`build_plan`] at the [`TransportShared`] playhead and a render size fitted into the window
+//! (full quality; quality and zoom are task 0340), then the shared [`Compositor`] with
+//! `FetchPolicy::BestAvailable` on the thread's own [`ReaderPool`], then a present pass that
+//! scales the canvas into the `Bgra8Unorm` surface with a black letterbox. A layer whose frame is
+//! missing (not stale) keeps the previous canvas for up to [`MISSING_HOLD`], then is left out.
+//! Readers report offline media through the `on_media_unavailable` callback.
+//!
 //! **Render on change** (render-graph.md §7, ADR-0005 amendment): while paused the thread blocks
-//! on its channel and draws and presents once per wake message ([`PreviewHandle::snapshot_changed`],
+//! on its channel and draws once per wake message ([`PreviewHandle::snapshot_changed`],
 //! [`PreviewHandle::seek`], resize, becoming visible, [`FrameReadyNotifier::notify`],
-//! [`PreviewHandle::request_redraw`] and device recreation). Nothing changes, nothing is presented.
-//! Vsync-paced playback comes with task 0330.
+//! [`PreviewHandle::request_redraw`] and device recreation). A draw whose plan and frames equal
+//! the last composite presents nothing, unless the surface needs a new frame (resize, shown,
+//! redraw request). Vsync-paced playback comes with task 0330.
 //!
 //! **Inputs:** the project snapshot (`Arc<ArcSwap<Project>>`, published by the shell after every
 //! change) and the [`TransportShared`] playhead are read lock-free when drawing. The engine never
@@ -27,20 +36,32 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use app_core::{Project, ProjectSettings};
+use app_core::media::MediaId;
+use app_core::{Project, Time};
 use arc_swap::{ArcSwap, ArcSwapOption};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, bounded, unbounded};
 use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
 
+use crate::media::readers::{ReaderEvent, ReaderOptions, ReaderPool};
+use crate::render::present::PresentPass;
 use crate::render::{
-    AdapterMode, FallbackReason, GpuContext, GpuError, GpuInfo, OFFSCREEN_FORMAT, OffscreenFrame,
-    PatternParams, TestPattern, render_offscreen,
+    AdapterMode, Compositor, FallbackReason, GpuContext, GpuError, GpuInfo, MissingLayers,
+    OUTPUT_FORMAT, OffscreenFrame, Readback, build_plan, create_canvas, render_size,
 };
 use crate::transport::{SeekMode, TransportShared, clamp_to_timeline};
 
 /// Called on the preview thread after the GPU changed at runtime: the new report, and whether the
 /// preview still renders (`false` = it gave up after repeated device losses).
 pub type GpuChanged = Box<dyn Fn(GpuInfo, bool) + Send>;
+
+/// Called from reader threads, once per media, when a media file the preview needs is missing
+/// or unreadable (render-graph.md §10). The shell marks the media offline (media-import.md
+/// §6.6).
+pub type MediaUnavailable = Arc<dyn Fn(MediaId) + Send + Sync>;
+
+/// How long a layer whose frame is missing keeps the previous canvas on screen (render-graph.md
+/// §7), so cut points and scrubs do not flash black.
+pub const MISSING_HOLD: Duration = Duration::from_millis(250);
 
 /// What to recreate after the `losses`-th device loss of this preview: the first gives the
 /// (possibly reset) hardware another chance, the second uses the software rasterizer, and after
@@ -167,19 +188,21 @@ impl PreviewHandle {
     /// Starts the preview thread for offscreen rendering and initializes the GPU on it.
     /// `snapshot` is the project to show (the shell stores new snapshots into it and calls
     /// [`Self::snapshot_changed`]). `on_gpu_changed` is called after a runtime device loss (see
-    /// [`GpuChanged`]).
+    /// [`GpuChanged`]); `on_media_unavailable` when a reader finds a media file missing (see
+    /// [`MediaUnavailable`]).
     pub fn spawn(
         snapshot: Arc<ArcSwap<Project>>,
         on_gpu_changed: GpuChanged,
+        on_media_unavailable: MediaUnavailable,
     ) -> Result<Self, GpuError> {
-        Self::spawn_inner(snapshot, None, on_gpu_changed)
+        Self::spawn_inner(snapshot, None, on_gpu_changed, on_media_unavailable)
     }
 
     /// Starts the preview thread rendering into a native window. The GPU adapter is chosen so
     /// that it can present to this window (see [`GpuContext::with_window`]). Nothing is drawn and
     /// the window is 1 x 1 pixels until [`Self::resize`] and [`Self::set_visible`] are called.
-    /// [`Self::has_window`] reports whether the window could be attached. `snapshot` and
-    /// `on_gpu_changed` as in [`Self::spawn`].
+    /// [`Self::has_window`] reports whether the window could be attached. `snapshot`,
+    /// `on_gpu_changed` and `on_media_unavailable` as in [`Self::spawn`].
     ///
     /// # Safety
     /// `window` (and `display`, if given) must be valid handles, and the window must stay alive
@@ -189,11 +212,13 @@ impl PreviewHandle {
         window: RawWindowHandle,
         display: Option<RawDisplayHandle>,
         on_gpu_changed: GpuChanged,
+        on_media_unavailable: MediaUnavailable,
     ) -> Result<Self, GpuError> {
         Self::spawn_inner(
             snapshot,
             Some(NativeWindow { window, display }),
             on_gpu_changed,
+            on_media_unavailable,
         )
     }
 
@@ -201,6 +226,7 @@ impl PreviewHandle {
         snapshot: Arc<ArcSwap<Project>>,
         window: Option<NativeWindow>,
         on_gpu_changed: GpuChanged,
+        on_media_unavailable: MediaUnavailable,
     ) -> Result<Self, GpuError> {
         let (tx, rx) = unbounded();
         let (ready_tx, ready_rx) = bounded(1);
@@ -213,6 +239,7 @@ impl PreviewHandle {
             frame_ready: FrameReadyNotifier::new(tx.clone()),
             tx: tx.clone(),
             on_gpu_changed,
+            on_media_unavailable,
         };
         let mut handle = Self {
             tx,
@@ -316,7 +343,9 @@ impl PreviewHandle {
         self.send(Message::Redraw);
     }
 
-    /// Renders one offscreen frame. Returns `None` if the thread does not answer within `timeout`.
+    /// Renders one offscreen frame of the timeline at the playhead (the compositor's canvas fitted
+    /// into `width` x `height`, letterboxed). Returns `None` if the thread does not answer within
+    /// `timeout`.
     pub fn render_frame(
         &self,
         width: u32,
@@ -486,11 +515,12 @@ struct Shared {
     gpu: Arc<ArcSwapOption<GpuContext>>,
     snapshot: Arc<ArcSwap<Project>>,
     transport: Arc<TransportShared>,
-    /// Cleared before every draw. The compositor step hands clones to the readers.
+    /// Cleared before every draw; the readers notify it.
     frame_ready: FrameReadyNotifier,
     /// The loop's own channel, for device-lost callbacks.
     tx: Sender<Message>,
     on_gpu_changed: GpuChanged,
+    on_media_unavailable: MediaUnavailable,
 }
 
 /// Surface formats the preview prefers, best first: 8-bit and **not** `*Srgb`. The working values
@@ -519,7 +549,7 @@ fn preview_surface_format(supported: &[wgpu::TextureFormat]) -> Option<wgpu::Tex
 struct WindowTarget {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
-    pattern: TestPattern,
+    present: PresentPass,
 }
 
 impl WindowTarget {
@@ -549,11 +579,11 @@ impl WindowTarget {
         surface.configure(&gpu.device, &config);
         tracing::info!(width, height, format = ?config.format, "preview window attached");
 
-        let pattern = TestPattern::new(gpu, config.format);
+        let present = PresentPass::new(&gpu.device, config.format);
         Some(Self {
             surface,
             config,
-            pattern,
+            present,
         })
     }
 }
@@ -672,6 +702,151 @@ enum Handled {
     Shutdown,
 }
 
+/// An `Rgba16Float` canvas of one size.
+struct Canvas {
+    size: (u32, u32),
+    _texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    /// Holds a composited frame (false until the first composite into it).
+    drawn: bool,
+}
+
+impl Canvas {
+    /// `slot`'s canvas, recreated at `size` if it has another size.
+    fn ensure<'a>(
+        slot: &'a mut Option<Canvas>,
+        gpu: &GpuContext,
+        size: (u32, u32),
+    ) -> &'a mut Canvas {
+        if slot.as_ref().is_none_or(|canvas| canvas.size != size) {
+            let (texture, view) = create_canvas(&gpu.device, size);
+            *slot = Some(Canvas {
+                size,
+                _texture: texture,
+                view,
+                drawn: false,
+            });
+        }
+        slot.as_mut().expect("the canvas was just created")
+    }
+}
+
+/// The render graph's state on the render thread: compositor, readers and the snapshot the
+/// readers know. Everything is made on one device and dropped with it.
+struct Scene {
+    compositor: Compositor,
+    readers: ReaderPool,
+    project: Option<Arc<Project>>,
+    /// The project frame whose missing layer keeps the previous canvas, and since when.
+    missing: Option<(i64, Instant)>,
+}
+
+/// What [`Scene::compose`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Composed {
+    /// Something was recorded into the encoder: the canvas changes.
+    drawn: bool,
+    /// Compose again after this long (a missing layer's hold ends).
+    retry: Option<Duration>,
+}
+
+impl Scene {
+    fn new(gpu: &Arc<GpuContext>, shared: &Shared) -> Self {
+        let notifier = shared.frame_ready.clone();
+        let unavailable = Arc::clone(&shared.on_media_unavailable);
+        let readers = ReaderPool::new(
+            Some(Arc::clone(gpu)),
+            ReaderOptions::default(),
+            move |event| match event {
+                ReaderEvent::FrameReady => notifier.notify(),
+                ReaderEvent::MediaUnavailable(media) => unavailable(media),
+            },
+        );
+        Self {
+            compositor: Compositor::new(gpu),
+            readers,
+            project: None,
+            missing: None,
+        }
+    }
+
+    /// Composites the frame at `time` of `project` into `slot`'s canvas, sized to fit `bounds`
+    /// (render-graph.md §8, full quality). `hold` applies the missing-layer rule of §7: a layer
+    /// whose frame is missing keeps the previous canvas for [`MISSING_HOLD`].
+    #[allow(clippy::too_many_arguments)]
+    fn compose(
+        &mut self,
+        gpu: &GpuContext,
+        encoder: &mut wgpu::CommandEncoder,
+        slot: &mut Option<Canvas>,
+        project: &Arc<Project>,
+        time: Time,
+        bounds: (u32, u32),
+        hold: bool,
+    ) -> Composed {
+        if self
+            .project
+            .as_ref()
+            .is_none_or(|known| !Arc::ptr_eq(known, project))
+        {
+            self.readers.set_project(project);
+            self.project = Some(Arc::clone(project));
+        }
+        let size = render_size((project.settings.width, project.settings.height), bounds, 1);
+        let canvas = Canvas::ensure(slot, gpu, size);
+        let plan = build_plan(project, time, size);
+        let now = Instant::now();
+        let since = match self.missing {
+            Some((frame, since)) if frame == plan.frame => since,
+            _ => now,
+        };
+        let keep = hold && canvas.drawn && now.duration_since(since) < MISSING_HOLD;
+        let missing = if keep {
+            MissingLayers::KeepCanvas
+        } else {
+            MissingLayers::LeaveOut
+        };
+        let outcome = self.compositor.render_with(
+            gpu,
+            encoder,
+            &plan,
+            &mut self.readers,
+            &canvas.view,
+            missing,
+        );
+        canvas.drawn |= outcome.drawn;
+        if outcome.missing_layers == 0 {
+            self.missing = None;
+            return Composed {
+                drawn: outcome.drawn,
+                retry: None,
+            };
+        }
+        self.missing = Some((plan.frame, since));
+        tracing::trace!(
+            frame = plan.frame,
+            missing = outcome.missing_layers,
+            kept = !outcome.drawn,
+            "preview frame with missing layers"
+        );
+        Composed {
+            drawn: outcome.drawn,
+            // Kept: draw again without the layer when the hold ends (a `FrameReady` may come
+            // first). Left out: the reader wakes the thread when the frame arrives.
+            retry: (!outcome.drawn && keep)
+                .then(|| MISSING_HOLD.saturating_sub(now.duration_since(since))),
+        }
+    }
+}
+
+/// The offscreen frames of [`PreviewHandle::render_frame`]: their own canvas and read-back
+/// target, so they do not disturb the window's canvas.
+struct Offscreen {
+    canvas: Option<Canvas>,
+    output: PresentPass,
+    readback: Option<Readback>,
+}
+
 struct RenderLoop {
     gpu: Arc<GpuContext>,
     /// Adapter of `gpu`, cached for the present-rate log.
@@ -686,9 +861,16 @@ struct RenderLoop {
     native: Option<NativeWindow>,
     /// Last size from [`Message::Resize`], in physical pixels.
     size: (u32, u32),
-    offscreen_pattern: Option<TestPattern>,
     window: Option<WindowTarget>,
     visible: bool,
+    /// Created on the first draw, dropped with the device.
+    scene: Option<Scene>,
+    /// The canvas presented into the window.
+    canvas: Option<Canvas>,
+    offscreen: Option<Offscreen>,
+    /// The surface needs a present even if the canvas does not change (resized, shown, redraw
+    /// requested, recreated).
+    force_present: bool,
     shared: Shared,
     present_stats: PresentStats,
 }
@@ -712,10 +894,13 @@ impl RenderLoop {
             info,
             native,
             size: (1, 1),
-            offscreen_pattern: None,
             window,
             // Hidden until the shell shows the window.
             visible: false,
+            scene: None,
+            canvas: None,
+            offscreen: None,
+            force_present: true,
             shared,
             present_stats: PresentStats::new(),
         }
@@ -724,11 +909,14 @@ impl RenderLoop {
     /// Recreates the context after a device loss, following [`after_device_loss`], and reports
     /// the result through `on_gpu_changed`. Gives up (stops drawing) when the policy says so.
     fn recover(&mut self) {
-        // Everything made on the lost device goes. A window takes one swap chain at a time: drop
-        // the old surface before creating a new one. (The compositor step drops its readers and
-        // source cache here as well, render-graph.md §10.)
+        // Everything made on the lost device goes (render-graph.md §10): readers, compositor
+        // with its source cache, canvases. A window takes one swap chain at a time: drop the old
+        // surface before creating a new one.
         self.window = None;
-        self.offscreen_pattern = None;
+        self.scene = None;
+        self.canvas = None;
+        self.offscreen = None;
+        self.force_present = true;
         self.present_stats.reset();
         loop {
             self.losses += 1;
@@ -778,8 +966,8 @@ impl RenderLoop {
     }
 
     /// Render on change: block until a message arrives, handle every queued message, then draw
-    /// and present once if any of them changed the picture. A draw that could not present is
-    /// retried after a short delay (or with the next message).
+    /// once if any of them changed the picture. A draw that could not present, or that keeps the
+    /// canvas for a missing layer, is retried after a short delay (or with the next message).
     fn run(mut self, rx: &Receiver<Message>) {
         // A frame was asked for and is not on screen yet.
         let mut dirty = false;
@@ -838,6 +1026,7 @@ impl RenderLoop {
                     target.config.height = height.max(1);
                     target.surface.configure(&self.gpu.device, &target.config);
                 }
+                self.force_present = true;
                 self.present_stats.reset();
                 Handled::Redraw
             }
@@ -845,12 +1034,17 @@ impl RenderLoop {
                 self.visible = visible;
                 self.present_stats.reset();
                 if visible {
+                    self.force_present = true;
                     Handled::Redraw
                 } else {
                     Handled::Done
                 }
             }
-            Message::SnapshotChanged | Message::Redraw => Handled::Redraw,
+            Message::SnapshotChanged => Handled::Redraw,
+            Message::Redraw => {
+                self.force_present = true;
+                Handled::Redraw
+            }
             Message::Seek { generation, mode } => {
                 tracing::trace!(generation, ?mode, "seek");
                 Handled::Redraw
@@ -876,75 +1070,175 @@ impl RenderLoop {
                     // Dropping `reply` answers "no frame" right away.
                     return Handled::Done;
                 }
-                let params = self.pattern_inputs();
-                let pattern = self
-                    .offscreen_pattern
-                    .get_or_insert_with(|| TestPattern::new(&self.gpu, OFFSCREEN_FORMAT));
-                let frame = render_offscreen(&self.gpu, pattern, width, height, params.0, params.1);
-                let _ = reply.send(frame);
+                if let Some(frame) = self.render_offscreen(width.max(1), height.max(1)) {
+                    let _ = reply.send(frame);
+                }
                 Handled::Done
             }
             Message::Shutdown => Handled::Shutdown,
         }
     }
 
-    /// The test pattern's inputs from the shared state: the playhead in seconds and the canvas
-    /// aspect of the current snapshot. (The compositor replaces this with `build_plan`.)
-    fn pattern_inputs(&self) -> (f32, f32) {
-        let time = self.shared.transport.playhead().as_seconds_f64() as f32;
-        (time, canvas_aspect(&self.shared.snapshot.load().settings))
+    /// The scene, created on first use.
+    fn scene(&mut self) -> &mut Scene {
+        let (gpu, shared) = (&self.gpu, &self.shared);
+        self.scene.get_or_insert_with(|| Scene::new(gpu, shared))
     }
 
-    /// Draws and presents one frame. Returns the delay after which to retry when nothing could be
-    /// presented (surface busy, outdated, occluded or invalid).
-    fn draw_window(&mut self) -> Option<Duration> {
-        let (time, canvas_aspect) = self.pattern_inputs();
-        let target = self.window.as_mut()?;
+    /// The frame at the playhead, letterboxed into `width` x `height` and read back.
+    fn render_offscreen(&mut self, width: u32, height: u32) -> Option<OffscreenFrame> {
+        let project = self.shared.snapshot.load_full();
+        let time = self.shared.transport.playhead();
+        let gpu = Arc::clone(&self.gpu);
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("preview.offscreen"),
+            });
+        let offscreen = self.offscreen.get_or_insert_with(|| Offscreen {
+            canvas: None,
+            output: PresentPass::new(&gpu.device, OUTPUT_FORMAT),
+            readback: None,
+        });
+        let mut canvas = offscreen.canvas.take();
+        let scene = {
+            let (gpu, shared) = (&self.gpu, &self.shared);
+            self.scene.get_or_insert_with(|| Scene::new(gpu, shared))
+        };
+        scene.compose(
+            &gpu,
+            &mut encoder,
+            &mut canvas,
+            &project,
+            time,
+            (width, height),
+            false,
+        );
+        let offscreen = self.offscreen.as_mut()?;
+        offscreen.canvas = canvas;
+        let canvas = offscreen.canvas.as_ref()?;
+        if offscreen
+            .readback
+            .as_ref()
+            .is_none_or(|r| r.size != (width, height))
+        {
+            offscreen.readback = Some(Readback::new(&gpu.device, (width, height)));
+        }
+        let readback = offscreen.readback.as_mut()?;
+        offscreen.output.encode(
+            &gpu.device,
+            &gpu.queue,
+            &mut encoder,
+            &canvas.view,
+            canvas.size,
+            &readback.view,
+            (width, height),
+        );
+        readback.encode_copy(&mut encoder);
+        let submission = gpu.queue.submit([encoder.finish()]);
+        if let Some(scene) = &mut self.scene {
+            scene.compositor.submitted(&gpu);
+        }
+        let rgba = match readback.read(&gpu, submission) {
+            Ok(rgba) => rgba.to_vec(),
+            Err(err) => {
+                tracing::error!(%err, "offscreen preview frame failed");
+                return None;
+            }
+        };
+        if let Some(scene) = &mut self.scene {
+            scene.compositor.release_completed();
+        }
+        Some(OffscreenFrame {
+            width,
+            height,
+            rgba,
+        })
+    }
 
-        let (frame, suboptimal) = match target.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(frame) => (frame, false),
-            wgpu::CurrentSurfaceTexture::Suboptimal(frame) => (frame, true),
-            wgpu::CurrentSurfaceTexture::Timeout => {
-                self.present_stats.reset();
-                return Some(RETRY_SOON);
-            }
-            wgpu::CurrentSurfaceTexture::Occluded => {
-                self.present_stats.reset();
-                return Some(RETRY_LATER);
-            }
+    /// Composites the frame at the playhead and presents it. Returns the delay after which to
+    /// draw again: nothing could be presented (surface busy, outdated, occluded or invalid), or a
+    /// missing layer keeps the previous canvas.
+    fn draw_window(&mut self) -> Option<Duration> {
+        let surface_size = {
+            let target = self.window.as_ref()?;
+            (target.config.width, target.config.height)
+        };
+        let project = self.shared.snapshot.load_full();
+        let time = self.shared.transport.playhead();
+        let gpu = Arc::clone(&self.gpu);
+        let mut encoder = gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("preview"),
+            });
+        let mut canvas = self.canvas.take();
+        let composed = self.scene().compose(
+            &gpu,
+            &mut encoder,
+            &mut canvas,
+            &project,
+            time,
+            surface_size,
+            true,
+        );
+        self.canvas = canvas;
+        if !composed.drawn && !self.force_present {
+            // Same plan, same frames, same surface: nothing to present (render on change).
+            return composed.retry;
+        }
+
+        let target = self.window.as_mut()?;
+        let acquired = match target.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(frame) => Ok((frame, false)),
+            wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Ok((frame, true)),
+            wgpu::CurrentSurfaceTexture::Timeout => Err(RETRY_SOON),
+            wgpu::CurrentSurfaceTexture::Occluded => Err(RETRY_LATER),
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
-                self.present_stats.reset();
-                target.surface.configure(&self.gpu.device, &target.config);
-                return Some(RETRY_SOON);
+                target.surface.configure(&gpu.device, &target.config);
+                Err(RETRY_SOON)
             }
             wgpu::CurrentSurfaceTexture::Validation => {
-                self.present_stats.reset();
                 tracing::error!("validation error while acquiring the preview frame");
-                return Some(RETRY_LATER);
+                Err(RETRY_LATER)
+            }
+        };
+        let (frame, suboptimal) = match acquired {
+            Ok(acquired) => acquired,
+            Err(delay) => {
+                self.present_stats.reset();
+                // The composite still lands on the canvas; the retry only presents it.
+                if composed.drawn {
+                    gpu.queue.submit([encoder.finish()]);
+                    if let Some(scene) = &mut self.scene {
+                        scene.compositor.submitted(&gpu);
+                    }
+                }
+                self.force_present = true;
+                return Some(delay);
             }
         };
 
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .gpu
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("preview"),
-            });
-        target.pattern.encode(
-            &self.gpu,
-            &mut encoder,
-            &view,
-            PatternParams {
-                time_seconds: time,
-                viewport_aspect: target.config.width as f32 / target.config.height as f32,
-                canvas_aspect,
-            },
-        );
-        self.gpu.queue.submit([encoder.finish()]);
-        self.gpu.queue.present(frame);
+        if let Some(canvas) = &self.canvas {
+            target.present.encode(
+                &gpu.device,
+                &gpu.queue,
+                &mut encoder,
+                &canvas.view,
+                canvas.size,
+                &view,
+                surface_size,
+            );
+        }
+        gpu.queue.submit([encoder.finish()]);
+        if let Some(scene) = &mut self.scene {
+            scene.compositor.submitted(&gpu);
+        }
+        gpu.queue.present(frame);
+        self.force_present = false;
         self.shared.presented.fetch_add(1, Ordering::Relaxed);
         if let Some(report) = self.present_stats.record(Instant::now()) {
             tracing::debug!(
@@ -964,16 +1258,11 @@ impl RenderLoop {
         }
 
         if suboptimal {
-            target.surface.configure(&self.gpu.device, &target.config);
+            target.surface.configure(&gpu.device, &target.config);
             self.present_stats.reset();
         }
-        None
+        composed.retry
     }
-}
-
-/// Width / height of the project canvas.
-fn canvas_aspect(settings: &ProjectSettings) -> f32 {
-    settings.width.max(1) as f32 / settings.height.max(1) as f32
 }
 
 /// The report for `gpu`; `presents` = it renders into the native window.
@@ -992,6 +1281,10 @@ mod tests {
 
     fn ignore_gpu_changes() -> GpuChanged {
         Box::new(|_, _| {})
+    }
+
+    fn ignore_missing_media() -> MediaUnavailable {
+        Arc::new(|_| {})
     }
 
     fn snapshot(project: Project) -> Arc<ArcSwap<Project>> {
@@ -1100,7 +1393,11 @@ mod tests {
     /// responsive, presents nothing and shares its context.
     #[test]
     fn an_offscreen_preview_wakes_but_never_presents() {
-        let preview = match PreviewHandle::spawn(empty_project(), ignore_gpu_changes()) {
+        let preview = match PreviewHandle::spawn(
+            empty_project(),
+            ignore_gpu_changes(),
+            ignore_missing_media(),
+        ) {
             Ok(preview) => preview,
             Err(err) => {
                 eprintln!("skipping GPU test: {err}");
@@ -1139,13 +1436,14 @@ mod tests {
         let on_changed: GpuChanged = Box::new(move |info, available| {
             let _ = changed_tx.send((info, available));
         });
-        let preview = match PreviewHandle::spawn(empty_project(), on_changed) {
-            Ok(preview) => preview,
-            Err(err) => {
-                eprintln!("skipping GPU test: {err}");
-                return;
-            }
-        };
+        let preview =
+            match PreviewHandle::spawn(empty_project(), on_changed, ignore_missing_media()) {
+                Ok(preview) => preview,
+                Err(err) => {
+                    eprintln!("skipping GPU test: {err}");
+                    return;
+                }
+            };
         assert_ne!(
             preview.gpu_info().fallback,
             Some(FallbackReason::DeviceLost)
@@ -1203,9 +1501,57 @@ mod tests {
         );
     }
 
+    /// The offscreen frame is the compositor's output at the playhead, letterboxed: a 16:9
+    /// colour clip in a square frame, black bars above and below.
+    #[test]
+    fn offscreen_frames_show_the_timeline_at_the_playhead() {
+        let mut project = project_of(2);
+        project.tracks[0].clips[0].source = app_core::ClipSource::Color {
+            color: app_core::Rgba8::rgb(200, 40, 10),
+        };
+        project.background = app_core::CanvasBackground::Color {
+            color: app_core::Rgba8::rgb(0, 0, 255),
+        };
+        let preview = match PreviewHandle::spawn(
+            snapshot(project),
+            ignore_gpu_changes(),
+            ignore_missing_media(),
+        ) {
+            Ok(preview) => preview,
+            Err(err) => {
+                eprintln!("skipping GPU test: {err}");
+                return;
+            }
+        };
+        let pixel = |frame: &OffscreenFrame, x: u32, y: u32| {
+            let i = ((y * frame.width + x) * 4) as usize;
+            [
+                frame.rgba[i],
+                frame.rgba[i + 1],
+                frame.rgba[i + 2],
+                frame.rgba[i + 3],
+            ]
+        };
+        let frame = preview
+            .render_frame(64, 64, Duration::from_secs(30))
+            .expect("frame");
+        assert_eq!(pixel(&frame, 32, 32), [200, 40, 10, 255], "the clip");
+        assert_eq!(pixel(&frame, 32, 2), [0, 0, 0, 255], "letterbox");
+        // After the clip: the background.
+        preview.seek(Time::from_seconds(2), SeekMode::Exact);
+        let frame = preview
+            .render_frame(64, 64, Duration::from_secs(30))
+            .expect("frame");
+        assert_eq!(pixel(&frame, 32, 32), [0, 0, 255, 255], "the background");
+    }
+
     #[test]
     fn renders_frames_on_request() {
-        let preview = match PreviewHandle::spawn(empty_project(), ignore_gpu_changes()) {
+        let preview = match PreviewHandle::spawn(
+            empty_project(),
+            ignore_gpu_changes(),
+            ignore_missing_media(),
+        ) {
             Ok(preview) => preview,
             Err(err) => {
                 eprintln!("skipping GPU test: {err}");

@@ -40,7 +40,7 @@ fn pool(gpu: Option<Arc<GpuContext>>, media: Vec<MediaAsset>) -> (ReaderPool, Ev
     });
     let mut project = Project::new("readers");
     project.media = media;
-    pool.set_project(Arc::new(project));
+    pool.set_project(&project);
     (pool, events)
 }
 
@@ -166,7 +166,7 @@ fn a_missing_file_is_offline_and_reported_once() {
     image.path = MediaPath::absolute(fixture("gone.png").to_string_lossy());
     let mut project = Project::new("readers");
     project.media = vec![asset.clone(), image.clone()];
-    pool.set_project(Arc::new(project));
+    pool.set_project(&project);
     for _ in 0..2 {
         pool.begin_frame();
         assert!(matches!(
@@ -280,7 +280,7 @@ fn images_are_capped_at_twice_the_canvas_long_side() {
     project.settings.width = 32;
     project.settings.height = 18;
     project.media = vec![heic.clone()];
-    pool.set_project(Arc::new(project));
+    pool.set_project(&project);
     let frame = exact_image(&mut pool, heic.id);
     assert_eq!(rgba(&frame).visible, (64, 32), "long side 2 x 32");
 }

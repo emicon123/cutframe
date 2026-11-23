@@ -1,4 +1,12 @@
-use super::{GpuContext, OFFSCREEN_FORMAT, PatternParams, TestPattern};
+//! 8-bit output targets read back to the CPU: the offline renderer's `Rgba8` output (golden
+//! tests, stills) and the preview's offscreen frames (legacy Linux `frames` mode, the smoke
+//! test's offscreen step).
+
+use super::GpuContext;
+
+/// Format of 8-bit output read back to the CPU: R'G'B'A written as they are (render-graph.md
+/// §5.1: display-referred working values, so never an `*Srgb` format).
+pub const OUTPUT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// A rendered frame read back to the CPU: tightly packed RGBA8 rows, top to bottom.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -8,156 +16,114 @@ pub struct OffscreenFrame {
     pub rgba: Vec<u8>,
 }
 
-/// Renders one frame into a texture and reads it back.
-///
-/// Used by the development preview on Linux, golden-frame tests and the smoke test. Export will
-/// use the same render path with an encoder instead of a CPU read-back.
-pub fn render_offscreen(
-    gpu: &GpuContext,
-    pattern: &TestPattern,
-    width: u32,
-    height: u32,
-    time_seconds: f32,
-    canvas_aspect: f32,
-) -> OffscreenFrame {
-    let width = width.max(1);
-    let height = height.max(1);
-    let device = &gpu.device;
-
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("offscreen.target"),
-        size: wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: OFFSCREEN_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-    // Rows in a texture-to-buffer copy must be aligned to 256 bytes.
-    let unpadded_row = width * 4;
-    let padded_row = unpadded_row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
-        * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
-    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("offscreen.readback"),
-        size: u64::from(padded_row) * u64::from(height),
-        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-        mapped_at_creation: false,
-    });
-
-    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-        label: Some("offscreen"),
-    });
-    pattern.encode(
-        gpu,
-        &mut encoder,
-        &view,
-        PatternParams {
-            time_seconds,
-            viewport_aspect: width as f32 / height as f32,
-            canvas_aspect,
-        },
-    );
-    encoder.copy_texture_to_buffer(
-        texture.as_image_copy(),
-        wgpu::TexelCopyBufferInfo {
-            buffer: &buffer,
-            layout: wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(padded_row),
-                rows_per_image: Some(height),
-            },
-        },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-    );
-    let submission = gpu.queue.submit([encoder.finish()]);
-
-    let slice = buffer.slice(..);
-    slice.map_async(wgpu::MapMode::Read, |result| {
-        if let Err(err) = result {
-            tracing::error!(%err, "offscreen read-back failed");
-        }
-    });
-    if let Err(err) = device.poll(wgpu::PollType::Wait {
-        submission_index: Some(submission),
-        timeout: None,
-    }) {
-        tracing::error!(%err, "GPU poll failed during read-back");
-    }
-
-    let mapped = slice
-        .get_mapped_range()
-        .expect("read-back buffer is mapped after a successful poll");
-    let mut rgba = Vec::with_capacity((unpadded_row * height) as usize);
-    for row in mapped.chunks_exact(padded_row as usize) {
-        rgba.extend_from_slice(&row[..unpadded_row as usize]);
-    }
-    drop(mapped);
-    buffer.unmap();
-
-    OffscreenFrame {
-        width,
-        height,
-        rgba,
-    }
+/// Why a read-back failed.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ReadbackError {
+    #[error("waiting for the GPU failed: {0}")]
+    Poll(#[from] wgpu::PollError),
+    #[error("mapping the read-back buffer failed: {0}")]
+    Map(#[from] wgpu::BufferAsyncError),
+    #[error("the read-back buffer was not mapped")]
+    NotMapped,
+    #[error("reading the mapped buffer failed: {0}")]
+    Range(#[from] wgpu::MapRangeError),
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// An [`OUTPUT_FORMAT`] render target of one size, its read-back buffer and the tight CPU copy.
+/// Reused for every frame of that size (review F48).
+#[derive(Debug)]
+pub(crate) struct Readback {
+    pub size: (u32, u32),
+    pub texture: wgpu::Texture,
+    pub view: wgpu::TextureView,
+    buffer: wgpu::Buffer,
+    padded_row: u32,
+    rgba: Vec<u8>,
+}
 
-    fn gpu() -> Option<GpuContext> {
-        match GpuContext::new() {
-            Ok(gpu) => Some(gpu),
-            Err(err) => {
-                // CI images always ship a software adapter; locally this only skips.
-                eprintln!("skipping GPU test: {err}");
-                None
-            }
+impl Readback {
+    pub fn new(device: &wgpu::Device, size: (u32, u32)) -> Self {
+        let (width, height) = (size.0.max(1), size.1.max(1));
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("readback.target"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: OUTPUT_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // Rows in a texture-to-buffer copy must be aligned to 256 bytes.
+        let padded_row = (width * 4).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("readback.buffer"),
+            size: u64::from(padded_row) * u64::from(height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        Self {
+            size: (width, height),
+            texture,
+            view,
+            buffer,
+            padded_row,
+            rgba: Vec::with_capacity(width as usize * height as usize * 4),
         }
     }
 
-    #[test]
-    fn renders_letterboxed_test_pattern() {
-        let Some(gpu) = gpu() else { return };
-        let pattern = TestPattern::new(&gpu, OFFSCREEN_FORMAT);
-        // A square viewport with a 16:9 canvas: top and bottom rows are letterbox bars.
-        let frame = render_offscreen(&gpu, &pattern, 64, 64, 0.0, 16.0 / 9.0);
-        assert_eq!(frame.rgba.len(), 64 * 64 * 4);
-
-        let pixel = |x: usize, y: usize| &frame.rgba[(y * 64 + x) * 4..(y * 64 + x) * 4 + 4];
-        let bar = pixel(10, 0);
-        // Linear 0.035 is ~53 after sRGB encoding.
-        assert!(
-            bar.iter().take(3).all(|&c| c < 64),
-            "letterbox should be near-black, got {bar:?}"
+    /// Records the copy of the target into the read-back buffer (after the output pass).
+    pub fn encode_copy(&self, encoder: &mut wgpu::CommandEncoder) {
+        encoder.copy_texture_to_buffer(
+            self.texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &self.buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(self.padded_row),
+                    rows_per_image: Some(self.size.1),
+                },
+            },
+            wgpu::Extent3d {
+                width: self.size.0,
+                height: self.size.1,
+                depth_or_array_layers: 1,
+            },
         );
-        let content = pixel(10, 32);
-        assert!(
-            content.iter().take(3).any(|&c| c > 100),
-            "canvas should be coloured, got {content:?}"
-        );
-        assert_eq!(content[3], 255);
     }
 
-    #[test]
-    fn handles_widths_that_need_row_padding() {
-        let Some(gpu) = gpu() else { return };
-        let pattern = TestPattern::new(&gpu, OFFSCREEN_FORMAT);
-        let frame = render_offscreen(&gpu, &pattern, 33, 7, 1.5, 16.0 / 9.0);
-        assert_eq!(
-            (frame.width, frame.height, frame.rgba.len()),
-            (33, 7, 33 * 7 * 4)
-        );
+    /// Waits for `submission` (which contains [`Self::encode_copy`]) and returns the tight
+    /// RGBA8 rows, `size.0 * 4` bytes each.
+    pub fn read(
+        &mut self,
+        gpu: &GpuContext,
+        submission: wgpu::SubmissionIndex,
+    ) -> Result<&[u8], ReadbackError> {
+        let slice = self.buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        gpu.device.poll(wgpu::PollType::Wait {
+            submission_index: Some(submission),
+            timeout: None,
+        })?;
+        rx.try_recv().map_err(|_| ReadbackError::NotMapped)??;
+        {
+            let mapped = slice.get_mapped_range()?;
+            let row = self.size.0 as usize * 4;
+            self.rgba.clear();
+            for padded in mapped.chunks_exact(self.padded_row as usize) {
+                self.rgba.extend_from_slice(&padded[..row]);
+            }
+        }
+        self.buffer.unmap();
+        Ok(&self.rgba)
     }
 }

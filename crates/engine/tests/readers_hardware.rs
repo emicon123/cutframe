@@ -35,7 +35,7 @@ fn pool(gpu: Option<Arc<GpuContext>>, asset: &MediaAsset) -> ReaderPool {
     let mut pool = ReaderPool::new(gpu, ReaderOptions::default(), |_| {});
     let mut project = Project::new("hardware");
     project.media = vec![asset.clone()];
-    pool.set_project(Arc::new(project));
+    pool.set_project(&project);
     pool
 }
 

@@ -6,11 +6,6 @@
 //! zero-copy hardware frames, created as `Plane0` / `Plane1` views of an NV12 or P010 texture;
 //! [`ConvertPass`] draws it. The per-pixel maths is `engine::color::convert_pixel`.
 
-#![allow(
-    dead_code,
-    reason = "used by the compositor and the readers, tasks 0320 steps 4 and 5"
-)]
-
 use app_core::media::{Rotation, VideoStreamInfo};
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
@@ -217,13 +212,7 @@ impl SourceTextures {
                 frame.layout.plane_size(index, frame.visible),
             )
         };
-        let reusable = reuse.filter(|old| {
-            old.owned.len() == count
-                && old.owned.iter().enumerate().all(|(index, texture)| {
-                    let (format, (w, h)) = shape(index);
-                    texture.format() == format && texture.width() == w && texture.height() == h
-                })
-        });
+        let reusable = reuse.filter(|old| old.fits(frame));
         let textures = match reusable {
             Some(old) => old.owned,
             None => (0..count)
@@ -278,6 +267,23 @@ impl SourceTextures {
             planes,
             owned: textures,
         })
+    }
+
+    /// Whether [`Self::upload`] can reuse these textures for `frame` (same plane formats and
+    /// sizes).
+    pub fn fits(&self, frame: &CpuFrame) -> bool {
+        self.owned.len() == frame.layout.planes()
+            && self.owned.iter().enumerate().all(|(index, texture)| {
+                let format = plane_format(frame.layout, frame.depth, index);
+                let (w, h) = frame.layout.plane_size(index, frame.visible);
+                texture.format() == format && texture.width() == w && texture.height() == h
+            })
+    }
+
+    /// Whether the textures were created by [`Self::upload`] (and can be reused by it), not views
+    /// of a decoder surface.
+    pub fn is_owned(&self) -> bool {
+        !self.owned.is_empty()
     }
 
     fn plane_size(&self, index: usize) -> (u32, u32) {
@@ -396,7 +402,6 @@ impl Uniforms {
 pub(crate) struct ConvertPass {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
-    sampler: wgpu::Sampler,
     /// Bound to the plane slots a layout does not use.
     unused: wgpu::TextureView,
 }
@@ -411,7 +416,7 @@ impl ConvertPass {
             binding,
             visibility: wgpu::ShaderStages::FRAGMENT,
             ty: wgpu::BindingType::Texture {
-                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
                 view_dimension: wgpu::TextureViewDimension::D2,
                 multisampled: false,
             },
@@ -430,12 +435,6 @@ impl ConvertPass {
                             std::mem::size_of::<Uniforms>() as u64
                         ),
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
                 texture(2),
@@ -473,14 +472,6 @@ impl ConvertPass {
             multiview_mask: None,
             cache: None,
         });
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("convert.sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
         let unused = device
             .create_texture(&wgpu::TextureDescriptor {
                 label: Some("convert.unused_plane"),
@@ -500,7 +491,6 @@ impl ConvertPass {
         Self {
             pipeline,
             layout,
-            sampler,
             unused,
         }
     }
@@ -536,10 +526,6 @@ impl ConvertPass {
                 wgpu::BindGroupEntry {
                     binding: 0,
                     resource: buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,

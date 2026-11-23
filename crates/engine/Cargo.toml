@@ -39,6 +39,8 @@ windows = { workspace = true, features = [
 [dev-dependencies]
 # Debug snapshots of render plans (render-graph.md §12).
 insta.workspace = true
+# Reads and writes the golden-frame PNGs (`tests/golden.rs`).
+png.workspace = true
 # Logs (and counts D3D12 debug-layer messages) in the ignored hardware-decode spike tests.
 tracing-subscriber.workspace = true
 uuid.workspace = true

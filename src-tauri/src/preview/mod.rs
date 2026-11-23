@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use app_core::{Project, Time};
 use arc_swap::ArcSwap;
-use engine::preview::{GpuChanged, PreviewHandle};
+use engine::preview::{GpuChanged, MediaUnavailable, PreviewHandle};
 use engine::render::{GpuError, GpuInfo, OffscreenFrame};
 use engine::transport::SeekMode;
 use tauri::{AppHandle, Manager, WebviewWindow};
@@ -42,6 +42,7 @@ impl Preview {
     pub fn create(main: &WebviewWindow, snapshot: Arc<ArcSwap<Project>>) -> Option<Self> {
         let visibility = Mutex::new(Visibility::INITIAL);
         let on_gpu_changed = report_gpu_changes(main.app_handle().clone());
+        let on_media_unavailable = report_missing_media(main.app_handle().clone());
 
         #[cfg(windows)]
         {
@@ -62,6 +63,7 @@ impl Preview {
                     child.raw_window_handle(),
                     Some(windows::raw_display_handle()),
                     on_gpu_changed,
+                    on_media_unavailable,
                 )
             };
             // If the engine fails, the hidden child window is left behind; it is harmless.
@@ -76,7 +78,11 @@ impl Preview {
         #[cfg(not(windows))]
         {
             let _ = main;
-            let engine = start(PreviewHandle::spawn(snapshot, on_gpu_changed))?;
+            let engine = start(PreviewHandle::spawn(
+                snapshot,
+                on_gpu_changed,
+                on_media_unavailable,
+            ))?;
             Some(Self { engine, visibility })
         }
     }
@@ -264,6 +270,21 @@ fn report_gpu_changes(app: AppHandle) -> GpuChanged {
         });
         if let Err(err) = event.emit(&app) {
             tracing::error!(%err, "cannot report the GPU change to the UI");
+        }
+    })
+}
+
+/// The engine's missing-media callback (called from reader threads): marks the media offline
+/// (media-import.md §6.6, render-graph.md §10), like a preview generator that finds the file gone.
+fn report_missing_media(app: AppHandle) -> MediaUnavailable {
+    Arc::new(move |media| {
+        let Some(state) = app.try_state::<crate::state::AppState>() else {
+            return;
+        };
+        let snapshot = state.snapshot();
+        match snapshot.media_asset(media) {
+            Some(asset) => state.report_missing(&app, asset),
+            None => tracing::debug!(%media, "missing media is no longer in the project"),
         }
     })
 }

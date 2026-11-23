@@ -306,7 +306,7 @@ impl GpuContext {
 /// Windows uses D3D12 only (ADR-0001). With every backend enabled wgpu prefers Vulkan, and on
 /// hybrid-GPU laptops (Optimus) the Vulkan dGPU adapter cannot present to the preview window.
 /// `WGPU_BACKEND` still overrides the choice for debugging.
-fn create_instance() -> wgpu::Instance {
+pub(crate) fn create_instance() -> wgpu::Instance {
     let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
     if cfg!(windows) {
         descriptor.backends = wgpu::Backends::DX12;
@@ -317,7 +317,7 @@ fn create_instance() -> wgpu::Instance {
 /// Video texture formats requested when the adapter has them, never required (render-graph.md
 /// §5.1): `NV12` and `P010` sample hardware-decoded frames in place (zero-copy, D3D12), and
 /// `16BIT_NORM` holds 10-bit CPU planes (every D3D12 adapter, WARP included).
-const OPTIONAL_FEATURES: wgpu::Features = wgpu::Features::TEXTURE_FORMAT_NV12
+pub(crate) const OPTIONAL_FEATURES: wgpu::Features = wgpu::Features::TEXTURE_FORMAT_NV12
     .union(wgpu::Features::TEXTURE_FORMAT_P010)
     .union(wgpu::Features::TEXTURE_FORMAT_16BIT_NORM);
 

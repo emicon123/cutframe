@@ -121,10 +121,11 @@ pub(crate) struct ImageCache {
     shared: Arc<Shared>,
     jobs: Option<crossbeam_channel::Sender<ImageJob>>,
     worker: Option<JoinHandle<()>>,
+    below_normal_priority: bool,
 }
 
 impl ImageCache {
-    pub fn new(notifier: Arc<Notifier>) -> Self {
+    pub fn new(notifier: Arc<Notifier>, below_normal_priority: bool) -> Self {
         Self {
             shared: Arc::new(Shared {
                 entries: Mutex::new(HashMap::new()),
@@ -134,6 +135,7 @@ impl ImageCache {
             }),
             jobs: None,
             worker: None,
+            below_normal_priority,
         }
     }
 
@@ -211,9 +213,13 @@ impl ImageCache {
         if self.jobs.is_none() {
             let (sender, receiver) = crossbeam_channel::unbounded::<ImageJob>();
             let shared = Arc::clone(&self.shared);
+            let below_normal = self.below_normal_priority;
             match std::thread::Builder::new()
                 .name("image-decode".into())
                 .spawn(move || {
+                    if below_normal {
+                        super::lower_thread_priority();
+                    }
                     for job in receiver {
                         decode_job(&shared, job);
                     }

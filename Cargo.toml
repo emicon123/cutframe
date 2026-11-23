@@ -46,6 +46,8 @@ wgpu = "30"
 windows = "0.62"
 
 insta = "1"
+# Golden-frame references (render-graph.md §12; MIT OR Apache-2.0).
+png = "0.18"
 proptest = "1"
 tempfile = "3"
 

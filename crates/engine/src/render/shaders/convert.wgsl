@@ -30,7 +30,6 @@ struct Params {
 };
 
 @group(0) @binding(0) var<uniform> params: Params;
-@group(0) @binding(1) var source_sampler: sampler;
 // Y' (or packed RGBA); planar: Cb, semi-planar: CbCr; planar: Cr.
 @group(0) @binding(2) var plane0: texture_2d<f32>;
 @group(0) @binding(3) var plane1: texture_2d<f32>;
@@ -193,6 +192,25 @@ fn source_uv(p: vec2<f32>) -> vec2<f32> {
     }
 }
 
+// Bilinear filtering in f32 at `uv` (clamped to the texture's edge), done here instead of by
+// the sampler: GPUs filter with a few bits of weight precision, which depends on the plane
+// layout (P010 and LSB-aligned 10-bit planes differ in the last bits) and which the HDR gamut
+// conversion amplifies near the gamut boundary. This way every GPU and every layout of the same
+// frame give the same values.
+fn bilinear(plane: texture_2d<f32>, uv: vec2<f32>) -> vec4<f32> {
+    let size = vec2<i32>(textureDimensions(plane));
+    let t = max(uv * vec2<f32>(size) - 0.5, vec2<f32>(0.0));
+    let last = size - vec2<i32>(1);
+    let i0 = min(vec2<i32>(floor(t)), last);
+    let i1 = min(i0 + vec2<i32>(1), last);
+    let f = t - floor(t);
+    let a = textureLoad(plane, i0, 0);
+    let b = textureLoad(plane, vec2<i32>(i1.x, i0.y), 0);
+    let c = textureLoad(plane, vec2<i32>(i0.x, i1.y), 0);
+    let d = textureLoad(plane, i1, 0);
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
 // Raw samples (unorm) at `uv` of the visible picture: Y', Cb, Cr, 1 or R, G, B, A.
 fn fetch(uv: vec2<f32>) -> vec4<f32> {
     let luma_uv = min(uv * params.plane_scale.xy, params.plane_max.xy);
@@ -200,18 +218,18 @@ fn fetch(uv: vec2<f32>) -> vec4<f32> {
     switch params.modes.x {
         case 0u: {
             return vec4<f32>(
-                textureSampleLevel(plane0, source_sampler, luma_uv, 0.0).r,
-                textureSampleLevel(plane1, source_sampler, chroma_uv, 0.0).r,
-                textureSampleLevel(plane2, source_sampler, chroma_uv, 0.0).r,
+                bilinear(plane0, luma_uv).r,
+                bilinear(plane1, chroma_uv).r,
+                bilinear(plane2, chroma_uv).r,
                 1.0,
             );
         }
         case 1u: {
-            let cbcr = textureSampleLevel(plane1, source_sampler, chroma_uv, 0.0).rg;
-            return vec4<f32>(textureSampleLevel(plane0, source_sampler, luma_uv, 0.0).r, cbcr, 1.0);
+            let cbcr = bilinear(plane1, chroma_uv).rg;
+            return vec4<f32>(bilinear(plane0, luma_uv).r, cbcr, 1.0);
         }
         default: {
-            return textureSampleLevel(plane0, source_sampler, luma_uv, 0.0);
+            return bilinear(plane0, luma_uv);
         }
     }
 }

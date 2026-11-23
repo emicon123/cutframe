@@ -1232,6 +1232,7 @@ dependencies = [
  "bytemuck",
  "crossbeam-channel",
  "insta",
+ "png",
  "pollster",
  "raw-window-handle",
  "rsmpeg",
