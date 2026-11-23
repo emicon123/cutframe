@@ -133,6 +133,66 @@ pub fn retime_keyframes(clip: &mut Clip, content_shift: Time) {
     }
 }
 
+/// Whether the main track's clips differ in position or content range between `before` and
+/// `after`: the test for "followers must follow" (§3.7).
+pub fn main_changed(before: &Project, after: &Project) -> bool {
+    let key = |c: &Clip| (c.id, c.start, c.duration, c.source_in());
+    match (before.main(), after.main()) {
+        (Some(a), Some(b)) => !a.clips.iter().map(key).eq(b.clips.iter().map(key)),
+        _ => false,
+    }
+}
+
+/// The clip boundary of `clips` (a start or an end, or 0) nearest `at`; ties go to the earlier
+/// one. Where an insert into the magnetic main track lands.
+pub fn nearest_boundary(clips: &[Clip], at: Time) -> Time {
+    clips
+        .iter()
+        .flat_map(|c| [c.start, c.end()])
+        .chain([Time::ZERO])
+        .min_by_key(|b| ((*b - at).flicks().unsigned_abs(), *b))
+        .unwrap_or(Time::ZERO)
+}
+
+/// The ids of the clips in `after` that are not in `before`, in track order then clip order: the
+/// clips an edit created (e.g. the right halves of a split).
+pub fn added_clips(before: &Project, after: &Project) -> Vec<ClipId> {
+    let old: std::collections::HashSet<ClipId> = before.clips().map(|c| c.id).collect();
+    after
+        .clips()
+        .filter(|c| !old.contains(&c.id))
+        .map(|c| c.id)
+        .collect()
+}
+
+/// Moves each clip in `deltas` by its delta and puts it back on its own track. Fails with
+/// [`CommandError::Overlap`] (leaving `project` partly changed, so callers work on a copy) when a
+/// clip would start before 0 or overlap a clip that stays or was placed before it.
+pub fn shift_clips(
+    project: &mut Project,
+    deltas: &HashMap<ClipId, Time>,
+) -> Result<(), CommandError> {
+    let mut moving: Vec<(TrackId, Clip)> = Vec::new();
+    for track in &mut project.tracks {
+        let (out, kept): (Vec<Clip>, Vec<Clip>) = std::mem::take(&mut track.clips)
+            .into_iter()
+            .partition(|c| deltas.contains_key(&c.id));
+        track.clips = kept;
+        moving.extend(out.into_iter().map(|mut c| {
+            c.start = c.start + deltas[&c.id];
+            (track.id, c)
+        }));
+    }
+    moving.sort_by_key(|(_, c)| (c.start, c.id));
+    for (track, clip) in moving {
+        if clip.start < Time::ZERO {
+            return Err(CommandError::Overlap);
+        }
+        place_clip(track_mut(project, track), clip)?;
+    }
+    Ok(())
+}
+
 /// Ids handed out in a fixed order, so a redo of a command recreates the same ids as its first
 /// apply. A command keeps one pool and calls [`IdPool::rewind`] at the start of every apply.
 #[derive(Debug, Clone, Default)]

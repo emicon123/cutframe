@@ -3,9 +3,10 @@
 use std::path::{Path, PathBuf};
 
 use app_core::command::{
-    AddClips, AddTrack, Batch, Command, Edge, HistoryLabel, MoveClips, NewClipSource, Placement,
-    RemoveClipsOfMedia, RemoveMedia, RemoveTrack, RenameProject, RenameTrack, SetProjectSettings,
-    TrackTarget, TrimClip,
+    AddClips, AddTrack, Batch, Command, DeleteClips, DeleteGap, Edge, HistoryLabel, MoveClips,
+    NewClipSource, PasteClips, Placement, RemoveClipsOfMedia, RemoveMedia, RemoveTrack,
+    RenameProject, RenameTrack, SetMagnetic, SetProjectSettings, Side, SplitClips, TrackTarget,
+    TrimClip, TrimToPlayhead,
 };
 use app_core::serialization::{self, CURRENT_SCHEMA_VERSION};
 use app_core::{
@@ -166,6 +167,189 @@ pub fn trim_clip(
     let command = TrimClip::new(clip, edge, ipc_time(time)?, phase == EditPhase::Commit);
     state.edit(&app, |doc| doc.edit(phase, Box::new(command)).map(Some))?;
     Ok(())
+}
+
+/// `time` if it is a timeline position that crosses IPC exactly (`0..=2^53` flicks), else
+/// `invalidEdit`.
+fn ipc_position(time: Time) -> Result<Time, IpcError> {
+    if !(0..=MAX_IPC_FLICKS).contains(&time.flicks()) {
+        return Err(IpcError::InvalidEdit(format!(
+            "time {} is outside 0..=2^53 flicks",
+            time.flicks()
+        )));
+    }
+    Ok(time)
+}
+
+/// Splits clips at `at` (Ctrl+B, `splitClips`) and returns the ids of the right halves (select
+/// them), in track order. With `clips` empty, every clip under `at` on an unlocked track splits;
+/// otherwise the listed clips and their linked members do. A clip splits only when both halves
+/// are at least one project frame long; the right halves of a link group share a new link.
+///
+/// Errors: `trackLocked` (a listed clip or linked member on a locked track), `invalidEdit` (no clip
+/// to split, unknown clip, a time outside `0..=2^53` flicks).
+#[tauri::command]
+#[specta::specta]
+pub fn split_clips(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    clips: Vec<ClipId>,
+    at: Time,
+) -> Result<Vec<ClipId>, IpcError> {
+    let command = SplitClips::new(clips, ipc_position(at)?);
+    let added = state.edit(&app, |doc| {
+        let before = doc.snapshot();
+        doc.execute(Box::new(command))?;
+        Ok(Some(app_core::timeline::added_clips(
+            &before,
+            doc.project(),
+        )))
+    })?;
+    Ok(added.unwrap_or_default())
+}
+
+/// Deletes clips and their linked members (Delete: `ripple: false`, `deleteClips`; Shift+Delete:
+/// `ripple: true`, `rippleDeleteClips`). On the magnetic main track Delete always closes the gap.
+/// When main-track clips close up, the overlays, captions and audio over later clips follow, and
+/// the ones entirely inside a deleted main clip are deleted with it. With `ripple` and no
+/// main-track clip selected, each track that lost clips closes its gaps (linked members move too).
+/// A plain Delete elsewhere leaves a gap. Tracks the delete emptied are removed.
+///
+/// Errors: `trackLocked`, `overlap` (a ripple would move a linked clip into another), and
+/// `invalidEdit` (no clips, unknown clip).
+#[tauri::command]
+#[specta::specta]
+pub fn delete_clips(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    clips: Vec<ClipId>,
+    ripple: bool,
+) -> Result<(), IpcError> {
+    let command = DeleteClips::new(clips, ripple);
+    state.edit(&app, |doc| doc.execute(Box::new(command)).map(Some))?;
+    Ok(())
+}
+
+/// Closes the gap that contains `at` on `track` (`deleteGap`): the later clips on that track and
+/// their linked members move left by its length; on the main track the clips over them follow.
+/// A gap is the free span before the first clip or between two clips, never after the last.
+///
+/// Errors: `trackLocked`, `overlap` (a linked clip would collide), `invalidEdit` (no gap at `at`,
+/// unknown track, a time outside `0..=2^53` flicks).
+#[tauri::command]
+#[specta::specta]
+pub fn delete_gap(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    track: TrackId,
+    at: Time,
+) -> Result<(), IpcError> {
+    let command = DeleteGap::new(track, ipc_position(at)?);
+    state.edit(&app, |doc| doc.execute(Box::new(command)).map(Some))?;
+    Ok(())
+}
+
+/// Deletes the part of clips left (Q, `side: left`) or right (W, `side: right`) of `at`
+/// (`trimToPlayhead`). With `clips` empty, the main-track clip under `at` is trimmed. Clips that
+/// `at` does not lie inside are skipped. Same clamping, linked members, ripple and following as
+/// `trimClip`: on the magnetic main track a left trim keeps the clip's start, so the content that
+/// was at `at` is now at the clip's start (move the playhead there).
+///
+/// Errors: `trackLocked`, `invalidEdit` (nothing to trim, unknown clip, a time outside
+/// `0..=2^53` flicks).
+#[tauri::command]
+#[specta::specta]
+pub fn trim_to_playhead(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    clips: Vec<ClipId>,
+    at: Time,
+    side: Side,
+) -> Result<(), IpcError> {
+    let command = TrimToPlayhead::new(clips, ipc_position(at)?, side);
+    state.edit(&app, |doc| doc.execute(Box::new(command)).map(Some))?;
+    Ok(())
+}
+
+/// Turns the magnetic main track on or off (`setMagnetic`). Turning it on closes every gap on the
+/// main track, and the clips over moved main clips follow, in one undo step. Setting the value it
+/// already has does nothing (no history entry, no event).
+///
+/// Errors: `trackLocked` (the main track is locked and would move, or a clip linked to a moved
+/// main clip is on a locked track).
+#[tauri::command]
+#[specta::specta]
+pub fn set_magnetic(app: AppHandle, state: State<'_, AppState>, on: bool) -> Result<(), IpcError> {
+    state.edit(&app, |doc| {
+        if doc.project().magnetic == on {
+            return Ok(None);
+        }
+        doc.execute(Box::new(SetMagnetic::new(on))).map(Some)
+    })?;
+    Ok(())
+}
+
+/// Copies clips and their linked members to the app's clip clipboard (Ctrl+C). Not the system
+/// clipboard; cleared when a project is created, opened or restored. No undo step, no event.
+///
+/// Errors: `invalidEdit` (no clips, unknown clip).
+#[tauri::command]
+#[specta::specta]
+pub fn copy_clips(state: State<'_, AppState>, clips: Vec<ClipId>) -> Result<(), IpcError> {
+    state.copy_clips(&clips)
+}
+
+/// Copies clips to the clip clipboard and deletes them, as one undo step (Ctrl+X, `cutClips`).
+/// The delete is a plain Delete (it closes the gap on the magnetic main track). The clipboard
+/// changes only if the delete succeeds. Errors as `deleteClips`.
+#[tauri::command]
+#[specta::specta]
+pub fn cut_clips(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    clips: Vec<ClipId>,
+) -> Result<(), IpcError> {
+    state.cut_clips(&app, clips)
+}
+
+/// Pastes the clip clipboard at `at` (Ctrl+V, `pasteClips`) and returns the new clips' ids
+/// (select them), in clipboard order: track order, then time. Main-track clips go into the main
+/// track (on the magnetic one at the clip boundary nearest `at`, with a ripple; the other pasted
+/// clips keep their offsets to them). Other clips go to their original track at `at` plus their
+/// offset when it is free and unlocked, else onto a new track above (video, text) or below
+/// (audio) the main track. Pasted link groups get new links.
+///
+/// Errors: `invalidEdit` (the clipboard is empty, copied media was removed since, a time outside
+/// `0..=2^53` flicks), `trackLocked`.
+#[tauri::command]
+#[specta::specta]
+pub fn paste_clips(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    at: Time,
+) -> Result<Vec<ClipId>, IpcError> {
+    state.paste_clips(&app, ipc_position(at)?)
+}
+
+/// Duplicates clips and their linked members right after the latest end among them (Ctrl+D,
+/// `duplicateClips`), like a paste there, without touching the clipboard. Returns the new clips'
+/// ids (select them).
+///
+/// Errors: `invalidEdit` (no clips, unknown clip), `trackLocked`.
+#[tauri::command]
+#[specta::specta]
+pub fn duplicate_clips(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    clips: Vec<ClipId>,
+) -> Result<Vec<ClipId>, IpcError> {
+    let ids = state.edit(&app, |doc| {
+        let command = PasteClips::duplicate(doc.project(), &clips)?;
+        let ids = command.clip_ids().to_vec();
+        doc.execute(Box::new(command))?;
+        Ok(Some(ids))
+    })?;
+    Ok(ids.unwrap_or_default())
 }
 
 #[tauri::command]

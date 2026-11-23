@@ -1,10 +1,18 @@
 //! Edit commands. Every change to a [`Project`] is a command so it can be undone.
 
 mod arrange;
+mod clipboard;
 mod clips;
+mod cut;
+#[cfg(test)]
+mod sequence_tests;
+#[cfg(test)]
+mod test_support;
 
 pub use arrange::{Edge, MoveClips, TrimClip};
+pub use clipboard::{ClipboardContent, ClipboardItem, PasteClips};
 pub use clips::{AddClips, NewClipSource, Placement, RemoveClipsOfMedia, TrackTarget};
+pub use cut::{DeleteClips, DeleteGap, SetMagnetic, Side, SplitClips, TrimToPlayhead};
 
 use serde::{Deserialize, Serialize};
 
@@ -37,6 +45,24 @@ pub enum HistoryLabel {
     MoveClips,
     /// Dragging a clip edge (one drag or nudge).
     TrimClip,
+    /// Splitting clips at the playhead (Ctrl+B).
+    SplitClips,
+    /// Deleting clips (Delete); closes the gap on the magnetic main track.
+    DeleteClips,
+    /// Deleting clips and closing the gaps they leave (Shift+Delete).
+    RippleDeleteClips,
+    /// Cutting clips to the clipboard (Ctrl+X).
+    CutClips,
+    /// Closing a gap on one track.
+    DeleteGap,
+    /// Deleting the part of clips left or right of the playhead (Q / W).
+    TrimToPlayhead,
+    /// Turning the magnetic main track on or off.
+    SetMagnetic,
+    /// Pasting the clipboard (Ctrl+V).
+    PasteClips,
+    /// Duplicating clips (Ctrl+D).
+    DuplicateClips,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -94,6 +120,13 @@ pub enum CommandError {
     /// An edit was given nothing to work on (e.g. no sources to add).
     #[error("nothing to edit")]
     NothingToEdit,
+    /// A split found no clip whose interior contains the split time (with both halves at least
+    /// one frame long).
+    #[error("no clip to split there")]
+    NothingToSplit,
+    /// A delete-gap found no gap at that time on the track.
+    #[error("no gap there")]
+    NoGap,
     /// The edit would leave an invalid project (e.g. past the largest supported time). Commands
     /// that build clips check their result, so this never leaves the project broken.
     #[error("the edit would make the project invalid: {0}")]

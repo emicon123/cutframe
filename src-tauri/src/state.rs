@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock};
 use std::time::Duration;
 
-use app_core::command::CommandError;
+use app_core::command::{ClipboardContent, CommandError, DeleteClips, PasteClips};
 use app_core::serialization::CURRENT_SCHEMA_VERSION;
-use app_core::{Document, HistoryPosition, Project};
+use app_core::{ClipId, Document, HistoryPosition, Project, Time};
 use arc_swap::ArcSwap;
 use tauri::AppHandle;
 use tauri_specta::Event;
@@ -387,9 +387,37 @@ impl AppState {
         app: &AppHandle,
         edit: impl FnOnce(&mut Document) -> Result<Option<T>, CommandError>,
     ) -> Result<Option<T>, IpcError> {
+        self.edit_session(app, |session| session.edit(edit).map_err(IpcError::from))
+    }
+
+    /// Copies `clips` and their linked members to the clip clipboard (design §6.3). Not an edit:
+    /// no history entry, no event.
+    pub fn copy_clips(&self, clips: &[ClipId]) -> Result<(), IpcError> {
+        self.lock().copy(clips)
+    }
+
+    /// Copies `clips` to the clipboard and deletes them, as one history entry (`cutClips`).
+    pub fn cut_clips(&self, app: &AppHandle, clips: Vec<ClipId>) -> Result<(), IpcError> {
+        self.edit_session(app, |session| session.cut(clips))?;
+        Ok(())
+    }
+
+    /// Pastes the clipboard at `at` (`pasteClips`) and returns the new clips' ids.
+    pub fn paste_clips(&self, app: &AppHandle, at: Time) -> Result<Vec<ClipId>, IpcError> {
+        Ok(self
+            .edit_session(app, |session| session.paste(at))?
+            .unwrap_or_default())
+    }
+
+    /// Runs `edit` on the session; publishes and notifies like [`AppState::edit`].
+    fn edit_session<T>(
+        &self,
+        app: &AppHandle,
+        edit: impl FnOnce(&mut Session) -> Result<Option<T>, IpcError>,
+    ) -> Result<Option<T>, IpcError> {
         let (result, state) = {
             let mut session = self.lock();
-            let Some(result) = session.edit(edit)? else {
+            let Some(result) = edit(&mut session)? else {
                 return Ok(None);
             };
             self.publish(&session.document);
@@ -510,6 +538,9 @@ struct Session {
     generation: u64,
     /// Whether each media file is reachable (design §6.6). Not part of the document.
     media_status: MediaStatuses,
+    /// Copied clips (design §6.3). Media ids belong to a project, so replacing the document
+    /// clears it.
+    clipboard: Option<ClipboardContent>,
 }
 
 impl Session {
@@ -523,6 +554,7 @@ impl Session {
             source_version: CURRENT_SCHEMA_VERSION,
             generation: 0,
             media_status: MediaStatuses::default(),
+            clipboard: None,
         }
     }
 
@@ -586,6 +618,30 @@ impl Session {
         Ok(result)
     }
 
+    fn copy(&mut self, clips: &[ClipId]) -> Result<(), IpcError> {
+        self.clipboard = Some(ClipboardContent::copy(self.document.project(), clips)?);
+        Ok(())
+    }
+
+    /// Copy, then a delete labelled `cutClips`; the clipboard changes only if the delete works.
+    fn cut(&mut self, clips: Vec<ClipId>) -> Result<Option<()>, IpcError> {
+        let content = ClipboardContent::copy(self.document.project(), &clips)?;
+        self.edit(|doc| doc.execute(Box::new(DeleteClips::cut(clips))).map(Some))?;
+        self.clipboard = Some(content);
+        Ok(Some(()))
+    }
+
+    fn paste(&mut self, at: Time) -> Result<Option<Vec<ClipId>>, IpcError> {
+        let content = self
+            .clipboard
+            .clone()
+            .ok_or_else(|| IpcError::InvalidEdit("the clipboard is empty".into()))?;
+        let command = PasteClips::new(content, at);
+        let ids = command.clip_ids().to_vec();
+        self.edit(|doc| doc.execute(Box::new(command)).map(Some))?;
+        Ok(Some(ids))
+    }
+
     fn replace(&mut self, project: Project, file_path: Option<PathBuf>, source_version: u32) {
         self.document = Document::new(project);
         self.saved_at = Some(self.document.position());
@@ -595,6 +651,7 @@ impl Session {
         self.revision += 1;
         // Until the check of the new project says otherwise, its media counts as online.
         self.media_status.clear();
+        self.clipboard = None;
     }
 
     /// [`Session::replace`] for a restored autosave: dirty until the first explicit save.
@@ -993,5 +1050,87 @@ mod tests {
             CURRENT_SCHEMA_VERSION,
         );
         assert_eq!(session.save_snapshot().backup_of_version(&opened), None);
+    }
+
+    /// A project with two colour cards on the main track.
+    fn with_clips() -> (Session, [ClipId; 2]) {
+        use app_core::command::{AddClips, NewClipSource, Placement};
+        let mut session = Session::new(Project::new("Clips"));
+        let color = NewClipSource::Color {
+            color: app_core::Rgba8::BLACK,
+        };
+        let add = AddClips::new(vec![color, color], Placement::Append);
+        let ids = [add.clip_ids()[0], add.clip_ids()[1]];
+        session
+            .edit(|doc| doc.execute(Box::new(add)).map(Some))
+            .unwrap();
+        (session, ids)
+    }
+
+    fn main_ids(session: &Session) -> Vec<ClipId> {
+        let project = session.document.project();
+        project.main().unwrap().clips.iter().map(|c| c.id).collect()
+    }
+
+    #[test]
+    fn copy_then_paste_adds_new_clips_and_keeps_the_clipboard() {
+        let (mut session, [a, b]) = with_clips();
+        let revision = session.revision;
+        session.copy(&[a]).unwrap();
+        assert_eq!(session.revision, revision, "copy is not an edit");
+        assert_eq!(session.document.history_len(), 1);
+
+        let pasted = session.paste(Time::ZERO).unwrap().unwrap();
+        assert_eq!(pasted.len(), 1);
+        assert_eq!(main_ids(&session), vec![pasted[0], a, b]);
+        assert_eq!(
+            session.document.undo_label(),
+            Some(HistoryLabel::PasteClips)
+        );
+        let again = session.paste(Time::ZERO).unwrap().unwrap();
+        assert_ne!(again, pasted, "every paste makes new clips");
+    }
+
+    #[test]
+    fn cut_deletes_in_one_entry_and_fills_the_clipboard() {
+        let (mut session, [a, b]) = with_clips();
+        session.cut(vec![a]).unwrap();
+        assert_eq!(main_ids(&session), vec![b]);
+        assert_eq!(session.document.undo_label(), Some(HistoryLabel::CutClips));
+        assert_eq!(session.document.history_len(), 2);
+        let pasted = session.paste(Time::ZERO).unwrap().unwrap();
+        assert_eq!(main_ids(&session), vec![pasted[0], b]);
+    }
+
+    #[test]
+    fn a_failed_cut_leaves_the_clipboard_alone() {
+        let (mut session, [a, _]) = with_clips();
+        session.copy(&[a]).unwrap();
+        let copied = session.clipboard.clone();
+        assert!(session.cut(vec![ClipId::new()]).is_err());
+        assert_eq!(session.clipboard, copied);
+    }
+
+    #[test]
+    fn paste_with_an_empty_clipboard_is_an_invalid_edit() {
+        let (mut session, _) = with_clips();
+        assert!(matches!(
+            session.paste(Time::ZERO),
+            Err(IpcError::InvalidEdit(_))
+        ));
+    }
+
+    #[test]
+    fn new_open_and_restore_clear_the_clipboard() {
+        let (mut session, [a, _]) = with_clips();
+        session.copy(&[a]).unwrap();
+        session.replace(Project::new("New"), None, CURRENT_SCHEMA_VERSION);
+        assert!(session.clipboard.is_none());
+        assert!(session.paste(Time::ZERO).is_err());
+
+        let (mut session, [a, _]) = with_clips();
+        session.copy(&[a]).unwrap();
+        session.replace_restored(Project::new("Restored"), None, CURRENT_SCHEMA_VERSION);
+        assert!(session.clipboard.is_none());
     }
 }

@@ -14,8 +14,8 @@ use crate::media::MediaKind;
 use crate::model::{Clip, ClipId, ClipSource, LinkId, Project, Track, TrackId};
 use crate::time::{MAX_IPC_FLICKS, Time};
 use crate::timeline::{
-    Follow, IdPool, expand_links, follow_main, place_clip, remove_emptied_tracks, repack_main,
-    retime_keyframes, section_index,
+    Follow, IdPool, expand_links, follow_main, main_changed, place_clip, remove_emptied_tracks,
+    repack_main, retime_keyframes, section_index,
 };
 
 /// Which edge of a clip a trim moves.
@@ -279,15 +279,6 @@ impl MoveClips {
                 Ok(id)
             }
         }
-    }
-}
-
-/// Whether the main track's clips differ in position or content range.
-fn main_changed(before: &Project, after: &Project) -> bool {
-    let key = |c: &Clip| (c.id, c.start, c.duration, c.source_in());
-    match (before.main(), after.main()) {
-        (Some(a), Some(b)) => !a.clips.iter().map(key).eq(b.clips.iter().map(key)),
-        _ => false,
     }
 }
 

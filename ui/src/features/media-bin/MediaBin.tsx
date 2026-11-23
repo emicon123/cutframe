@@ -47,6 +47,8 @@ export function MediaBin() {
       ref={panel}
       className={cn("relative flex h-full flex-col bg-panel", hovering && "ring-2 ring-primary ring-inset")}
       aria-label={t.mediaBin.title}
+      // Timeline shortcuts (Delete, Ctrl+C/X/V/D, Ctrl+A) do not act while focus is in here.
+      data-shortcut-scope="media-bin"
       onKeyDown={onKeyDown}
     >
       <header className="flex h-9 shrink-0 items-center justify-between border-b px-3">
