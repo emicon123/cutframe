@@ -13,7 +13,8 @@ import { containsPoint, isLikelyImportable, type Point, toCssPoint } from "./dro
  */
 export function useFileDrop(
   target: RefObject<HTMLElement | null>,
-  onDrop: (paths: string[]) => void,
+  /** `point` is the drop position in CSS client pixels. */
+  onDrop: (paths: string[], point: Point) => void,
 ): boolean {
   const [hovering, setHovering] = useState(false);
   const drop = useEffectEvent(onDrop);
@@ -44,7 +45,9 @@ export function useFileDrop(
             case "drop":
               setHovering(false);
               dragged = [];
-              if (isOver(payload.position)) drop(payload.paths);
+              if (isOver(payload.position)) {
+                drop(payload.paths, toCssPoint(payload.position, window.devicePixelRatio));
+              }
               break;
             case "leave":
               setHovering(false);

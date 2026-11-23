@@ -11,6 +11,23 @@ export const commands = {
 	getProject: (options?: InvokeOptions) => __TAURI_INVOKE<ProjectState_Serialize>("get_project", undefined, options),
 	/**  Adds an empty track at `index` (top = 0) or at the bottom. Returns the new track's id. */
 	addTrack: (kind: TrackKind, index: number | null, options?: InvokeOptions) => __TAURI_INVOKE<TrackId>("add_track", { kind, index }, options),
+	/**
+	 *  Puts media items or colour cards on the timeline as one undo step (`addClips`) and returns the
+	 *  new clips' ids, one per source in order (select them). Several sources go one after another.
+	 * 
+	 *  - `append`: end of the main track; audio-only media at the end of the first unlocked audio
+	 *    track (created at the top of the audio section when there is none).
+	 *  - `insert`: into the main track at the clip boundary nearest `at`; later main clips ripple and
+	 *    the overlays, captions and audio over them follow (bumped to another track on collision).
+	 *  - `drop`: on an existing track or a new one (`new.index` is clamped into the section that fits
+	 *    the first clip) from `start`. On the magnetic main track a drop is an insert.
+	 * 
+	 *  Video clips take the media's whole length (with its sound when it has audio), images 5 s and
+	 *  colour cards 5 s. Fails with `invalidEdit` for no sources, unknown media or tracks, a locked
+	 *  target, a clip that does not fit the track (e.g. audio-only media on a video track), an occupied
+	 *  range, or a time outside `0..=2^53` flicks.
+	 */
+	addClips: (sources: NewClipSource[], placement: Placement, options?: InvokeOptions) => __TAURI_INVOKE<ClipId[]>("add_clips", { sources, placement }, options),
 	removeTrack: (id: TrackId, options?: InvokeOptions) => __TAURI_INVOKE<null>("remove_track", { id }, options),
 	renameTrack: (id: TrackId, name: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("rename_track", { id, name }, options),
 	renameProject: (name: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("rename_project", { name }, options),
@@ -117,10 +134,11 @@ export const commands = {
 	 */
 	cancelJob: (id: JobId, options?: InvokeOptions) => __TAURI_INVOKE<null>("cancel_job", { id }, options),
 	/**
-	 *  Removes media items from the project as one undo step (`removeMedia`). Fails with
-	 *  `invalidEdit` for an empty list, an id that is not in the project, or media that clips or the
-	 *  canvas background still use (`MediaInUse`; `MediaView.usedBy` counts the clips). Removing the
-	 *  clips in the same step, after a warning, comes with `add_clips` in task 0260. Cached previews stay on disk, so undo shows them again at once.
+	 *  Removes media items from the project as one undo step (`removeMedia`), together with every
+	 *  clip that uses them (the UI warns first when `MediaView.usedBy` is not 0). Main-track gaps
+	 *  close and the clips over them follow; a canvas background showing a removed image goes back to
+	 *  black. Fails with `invalidEdit` for an empty list, an id that is not in the project, or a clip
+	 *  of the media on a locked track. Cached previews stay on disk, so undo shows them again at once.
 	 */
 	removeMedia: (ids: MediaId[], options?: InvokeOptions) => __TAURI_INVOKE<null>("remove_media", { ids }, options),
 	/**
@@ -528,7 +546,9 @@ export type HistoryLabel = "addTrack" | "removeTrack" | "renameTrack" | "renameP
 /**  Removing media items from the project (one or several at once). */
 "removeMedia" | 
 /**  Pointing media at another file: one relinked item, or every item a folder relink found. */
-"relinkMedia";
+"relinkMedia" | 
+/**  Putting media or colour cards on the timeline (one drop, `+` click or insert). */
+"addClips";
 
 export type HistoryState = HistoryState_Serialize | HistoryState_Deserialize;
 
@@ -829,6 +849,16 @@ export type MediaView_Serialize = {
 	filmstrip: FilmstripLayout | null,
 };
 
+/**  What a new clip shows. */
+export type NewClipSource = 
+/**
+ *  A media item: the whole source range of a video or audio file, or an image for
+ *  [`DEFAULT_IMAGE_DURATION`].
+ */
+{ kind: "media"; media: MediaId } | 
+/**  A colour card for [`DEFAULT_COLOR_DURATION`]. */
+{ kind: "color"; color: Rgba8 };
+
 /**
  *  A second launch of the app passed a project path (e.g. a double-click in Explorer). The window
  *  was already brought to the front. Open it like File → Open, after the unsaved-changes prompt;
@@ -838,6 +868,24 @@ export type OpenFileRequested = {
 	/**  Absolute path as given on the command line; not checked (opening reports errors). */
 	path: string,
 };
+
+/**  Where [`AddClips`] puts its clips. Several clips go one after another. */
+export type Placement = 
+/**
+ *  At the end of the main track; audio-only media at the end of the first unlocked audio
+ *  track (a new one at the top of the audio section if there is none).
+ */
+{ kind: "append" } | 
+/**
+ *  Into the main track at the clip boundary nearest `at`. Later main clips ripple and the
+ *  clips on other tracks follow them.
+ */
+{ kind: "insert"; at: Time } | 
+/**
+ *  On `track` from `start`. On the magnetic main track this is [`Placement::Insert`].
+ *  Elsewhere a clip that would overlap fails with [`CommandError::Overlap`].
+ */
+{ kind: "drop"; track: TrackTarget; start: Time };
 
 export type Preferences = Preferences_Serialize | Preferences_Deserialize;
 
@@ -1098,6 +1146,14 @@ export type TrackId = string;
 
 export type TrackKind = "video" | "audio" | "text";
 
+/**  The track a drop lands on. */
+export type TrackTarget = { kind: "existing"; track: TrackId } | 
+/**
+ *  A new track created at `index` (top = 0), clamped into the section that fits the first
+ *  clip: video tracks above the main track, audio tracks below it.
+ */
+{ kind: "new"; index: number };
+
 export type TrackView = TrackView_Serialize | TrackView_Deserialize;
 
 export type TrackView_Deserialize = {
@@ -1207,6 +1263,7 @@ function makeEvent<TListen, TEmit = TListen>(name: string, serialize?: (payload:
 export type MockCommandHandlers = {
     getProject: () => ProjectState_Serialize | Promise<ProjectState_Serialize>,
     addTrack: (args: { kind: TrackKind; index: number | null }) => TrackId | Promise<TrackId>,
+    addClips: (args: { sources: NewClipSource[]; placement: Placement }) => ClipId[] | Promise<ClipId[]>,
     removeTrack: (args: { id: TrackId }) => null | Promise<null>,
     renameTrack: (args: { id: TrackId; name: string }) => null | Promise<null>,
     renameProject: (args: { name: string }) => null | Promise<null>,
@@ -1272,6 +1329,7 @@ export function mockCommands(handlers: Partial<MockCommandHandlers> = {}): void 
         switch (cmd) {
             case "get_project": return mockCommandHandler(mockHandlers.getProject, "get_project", args);
             case "add_track": return mockCommandHandler(mockHandlers.addTrack, "add_track", args);
+            case "add_clips": return mockCommandHandler(mockHandlers.addClips, "add_clips", args);
             case "remove_track": return mockCommandHandler(mockHandlers.removeTrack, "remove_track", args);
             case "rename_track": return mockCommandHandler(mockHandlers.renameTrack, "rename_track", args);
             case "rename_project": return mockCommandHandler(mockHandlers.renameProject, "rename_project", args);

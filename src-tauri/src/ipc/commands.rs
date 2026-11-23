@@ -3,10 +3,13 @@
 use std::path::{Path, PathBuf};
 
 use app_core::command::{
-    AddTrack, RemoveMedia, RemoveTrack, RenameProject, RenameTrack, SetProjectSettings,
+    AddClips, AddTrack, Batch, Command, HistoryLabel, NewClipSource, Placement, RemoveClipsOfMedia,
+    RemoveMedia, RemoveTrack, RenameProject, RenameTrack, SetProjectSettings,
 };
 use app_core::serialization::{self, CURRENT_SCHEMA_VERSION};
-use app_core::{MediaId, Project, ProjectSettings, TrackId, TrackKind};
+use app_core::{
+    ClipId, MAX_IPC_FLICKS, MediaId, Project, ProjectSettings, Time, TrackId, TrackKind,
+};
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
@@ -46,6 +49,48 @@ pub fn add_track(
     let id = command.track_id();
     state.edit(&app, |doc| doc.execute(Box::new(command)).map(Some))?;
     Ok(id)
+}
+
+/// Puts media items or colour cards on the timeline as one undo step (`addClips`) and returns the
+/// new clips' ids, one per source in order (select them). Several sources go one after another.
+///
+/// - `append`: end of the main track; audio-only media at the end of the first unlocked audio
+///   track (created at the top of the audio section when there is none).
+/// - `insert`: into the main track at the clip boundary nearest `at`; later main clips ripple and
+///   the overlays, captions and audio over them follow (bumped to another track on collision).
+/// - `drop`: on an existing track or a new one (`new.index` is clamped into the section that fits
+///   the first clip) from `start`. On the magnetic main track a drop is an insert.
+///
+/// Video clips take the media's whole length (with its sound when it has audio), images 5 s and
+/// colour cards 5 s. Fails with `invalidEdit` for no sources, unknown media or tracks, a locked
+/// target, a clip that does not fit the track (e.g. audio-only media on a video track), an occupied
+/// range, or a time outside `0..=2^53` flicks.
+#[tauri::command]
+#[specta::specta]
+pub fn add_clips(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    sources: Vec<NewClipSource>,
+    placement: Placement,
+) -> Result<Vec<ClipId>, IpcError> {
+    if sources.is_empty() {
+        return Err(IpcError::InvalidEdit("no clips to add".into()));
+    }
+    let time = match placement {
+        Placement::Append => Time::ZERO,
+        Placement::Insert { at } => at,
+        Placement::Drop { start, .. } => start,
+    };
+    if !(0..=MAX_IPC_FLICKS).contains(&time.flicks()) {
+        return Err(IpcError::InvalidEdit(format!(
+            "time {} is outside 0..=2^53 flicks",
+            time.flicks()
+        )));
+    }
+    let command = AddClips::new(sources, placement);
+    let ids = command.clip_ids().to_vec();
+    state.edit(&app, |doc| doc.execute(Box::new(command)).map(Some))?;
+    Ok(ids)
 }
 
 #[tauri::command]
@@ -416,10 +461,11 @@ pub fn cancel_job(state: State<'_, AppState>, id: JobId) -> Result<(), IpcError>
     Ok(())
 }
 
-/// Removes media items from the project as one undo step (`removeMedia`). Fails with
-/// `invalidEdit` for an empty list, an id that is not in the project, or media that clips or the
-/// canvas background still use (`MediaInUse`; `MediaView.usedBy` counts the clips). Removing the
-/// clips in the same step, after a warning, comes with `add_clips` in task 0260. Cached previews stay on disk, so undo shows them again at once.
+/// Removes media items from the project as one undo step (`removeMedia`), together with every
+/// clip that uses them (the UI warns first when `MediaView.usedBy` is not 0). Main-track gaps
+/// close and the clips over them follow; a canvas background showing a removed image goes back to
+/// black. Fails with `invalidEdit` for an empty list, an id that is not in the project, or a clip
+/// of the media on a locked track. Cached previews stay on disk, so undo shows them again at once.
 #[tauri::command]
 #[specta::specta]
 pub fn remove_media(
@@ -430,9 +476,13 @@ pub fn remove_media(
     if ids.is_empty() {
         return Err(IpcError::InvalidEdit("no media to remove".into()));
     }
-    state.edit(&app, |doc| {
-        doc.execute(Box::new(RemoveMedia::new(ids))).map(Some)
-    })?;
+    let mut commands: Vec<Box<dyn Command>> = ids
+        .iter()
+        .map(|&id| Box::new(RemoveClipsOfMedia::new(id)) as Box<dyn Command>)
+        .collect();
+    commands.push(Box::new(RemoveMedia::new(ids)));
+    let batch = Batch::new(HistoryLabel::RemoveMedia, commands);
+    state.edit(&app, |doc| doc.execute(Box::new(batch)).map(Some))?;
     Ok(())
 }
 

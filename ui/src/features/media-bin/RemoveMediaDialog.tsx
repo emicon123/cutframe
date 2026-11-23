@@ -1,3 +1,4 @@
+import { CircleAlert } from "lucide-react";
 import { useState } from "react";
 
 import type { MediaView_Serialize } from "@/bindings";
@@ -20,8 +21,8 @@ const LISTED = 8;
 
 /**
  * Confirms removing `items` (open while not `null`), then sends one `removeMedia` (one undo step).
- * `onClose(true)` after a successful removal. Clips do not reference media before task 0260, which
- * adds the "used in the timeline" warning here.
+ * `onClose(true)` after a successful removal. Media that clips use gets a warning: its clips are
+ * removed in the same step.
  */
 export function RemoveMediaDialog({
   items,
@@ -43,6 +44,8 @@ export function RemoveMediaDialog({
   };
 
   const first = items?.[0];
+  // Removing media also removes its clips, in the same undo step (timeline design §4.9).
+  const usedBy = items?.reduce((sum, item) => sum + item.usedBy, 0) ?? 0;
   return (
     <Dialog
       open={open}
@@ -55,6 +58,12 @@ export function RemoveMediaDialog({
           <DialogTitle>{t.mediaBin.remove.title(items?.length ?? 0, first?.fileName ?? "")}</DialogTitle>
           <DialogDescription>{t.mediaBin.remove.description}</DialogDescription>
         </DialogHeader>
+        {usedBy > 0 && (
+          <p role="alert" className="flex gap-2 text-sm text-warning">
+            <CircleAlert className="size-4 shrink-0" aria-hidden />
+            {t.mediaBin.remove.used(usedBy)}
+          </p>
+        )}
         {items && items.length > 1 && (
           <ul className="max-h-40 overflow-y-auto text-sm text-muted-foreground">
             {items.slice(0, LISTED).map((item) => (

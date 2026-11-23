@@ -1,5 +1,6 @@
 import { commands, type JobId, type MediaId } from "@/bindings";
 import { t } from "@/i18n";
+import { waitForJob } from "@/ipc/jobResults";
 import { run } from "@/stores/appStore";
 import { isImportJob, useImportStore } from "@/stores/importStore";
 
@@ -16,6 +17,22 @@ export async function importFromDialog(): Promise<void> {
 export async function importPaths(paths: string[]): Promise<void> {
   if (paths.length === 0) return;
   track(await run(commands.importMedia(paths)));
+}
+
+/**
+ * Imports dropped paths like `importPaths` and resolves the ids of the media they stand for, in
+ * order: added files and files that were already imported. Empty when nothing was importable.
+ */
+export async function importPathsForPlacement(paths: string[]): Promise<MediaId[]> {
+  if (paths.length === 0) return [];
+  const id = await run(commands.importMedia(paths));
+  if (!id) return [];
+  track(id);
+  const { files, error } = await waitForJob(id);
+  if (error) return [];
+  return files.flatMap(({ outcome }) =>
+    outcome.kind === "added" || outcome.kind === "alreadyImported" ? [outcome.media] : [],
+  );
 }
 
 export function cancelImport(id: JobId): void {
