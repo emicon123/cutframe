@@ -21,9 +21,6 @@
 //! mirrored below for FFmpeg 7.1 and checked by a layout test and by runtime checks after
 //! `av_hwdevice_ctx_init`.
 
-// The readers (task 0320 step 4) are the callers; until then only the spike uses this module.
-#![allow(dead_code)]
-
 use std::ffi::{CStr, c_void};
 use std::ptr::{self, NonNull};
 
@@ -56,7 +53,7 @@ const EXTRA_HW_FRAMES: i32 = READER_QUEUE_DEPTH as i32 + 2;
 /// Ti, driver 32.0.16.1742) removes the whole device with `DXGI_ERROR_DRIVER_INTERNAL_ERROR`,
 /// which would take the preview down with it (0320 spike). Such small pictures decode in
 /// software in no time.
-const MIN_HW_EXTENT: i32 = 256;
+pub(crate) const MIN_HW_EXTENT: i32 = 256;
 
 /// How long the decode thread waits for one frame's decode fence before giving up on the frame.
 const FENCE_TIMEOUT_MS: u32 = 2_000;
@@ -100,7 +97,7 @@ struct AVD3D12VAFramesContext {
     flags: D3D12_RESOURCE_FLAGS,
 }
 
-// ---- Errors and paths -----------------------------------------------------------------------
+// ---- Errors ---------------------------------------------------------------------------------
 
 /// Why hardware decode or zero-copy is not available for a device, a stream or a frame.
 #[derive(Debug, thiserror::Error)]
@@ -123,17 +120,6 @@ pub(crate) enum HwError {
     DeviceRemoved,
     #[error("unusable decoder frame: {0}")]
     Frame(String),
-}
-
-/// How a stream's frames reach the renderer (render-graph.md §5.4).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DecodePath {
-    /// D3D12VA surfaces sampled in place.
-    ZeroCopy,
-    /// D3D12VA decode with `av_hwframe_transfer_data` to CPU planes.
-    Download,
-    /// Software decode.
-    Software,
 }
 
 // ---- Device ---------------------------------------------------------------------------------
@@ -217,6 +203,10 @@ impl HwDevice {
 
 /// Severity and text of one D3D12 debug-layer message.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(
+    dead_code,
+    reason = "diagnostics used by the hardware-decode spike test"
+)]
 pub(crate) struct DebugMessage {
     /// `D3D12_MESSAGE_SEVERITY`: 0 corruption, 1 error, 2 warning, 3 info, 4 message.
     pub severity: i32,
@@ -226,6 +216,10 @@ pub(crate) struct DebugMessage {
 /// Takes the messages the D3D12 debug layer stored for `gpu`'s device since the last call (also
 /// those from FFmpeg's decode queue, which uses the same device). `None` when the debug layer is
 /// off (`WGPU_VALIDATION` unset). Diagnostics and tests only.
+#[allow(
+    dead_code,
+    reason = "diagnostics used by the hardware-decode spike test"
+)]
 pub(crate) fn take_debug_messages(gpu: &GpuContext) -> Option<Vec<DebugMessage>> {
     // SAFETY: the guard only lives for this function.
     let hal = unsafe { gpu.device.as_hal::<wgpu::hal::api::Dx12>() }?;
@@ -265,6 +259,10 @@ pub(crate) fn take_debug_messages(gpu: &GpuContext) -> Option<Vec<DebugMessage>>
 }
 
 /// Why the D3D12 device of `gpu` was removed (driver reset, hang), if it was. For logs.
+#[allow(
+    dead_code,
+    reason = "diagnostics used by the hardware-decode spike test"
+)]
 pub(crate) fn device_removed_reason(gpu: &GpuContext) -> Option<String> {
     // SAFETY: the guard only lives for the call.
     let hal = unsafe { gpu.device.as_hal::<wgpu::hal::api::Dx12>() }?;
@@ -525,6 +523,10 @@ fn hw_parts(frame: &AVFrame) -> Result<&AVD3D12VAFrame, HwError> {
 
 /// A stable identity of the decoder surface behind `frame` (diagnostics: counting pool
 /// surfaces).
+#[allow(
+    dead_code,
+    reason = "diagnostics used by the hardware-decode spike test"
+)]
 pub(crate) fn surface_id(frame: &AVFrame) -> Option<usize> {
     hw_parts(frame).ok().map(|hw| hw.texture as usize)
 }
@@ -551,6 +553,12 @@ pub(crate) fn download(frame: &AVFrame) -> Result<AVFrame, MediaError> {
 
 /// Keeps an `AVFrame` reference, so FFmpeg does not reuse its surface.
 struct HwFrameRef(AVFrame);
+
+// SAFETY: the frame is never mutated after the wrap; shared access is limited to reading its
+// fields (`GpuFrame::av_frame`), and FFmpeg's buffer references are atomically counted, so the
+// one drop (by the last owner of the `GpuFrame`) may run on any thread. This lets readers share
+// decoded frames with the render thread through an `Arc`.
+unsafe impl Sync for HwFrameRef {}
 
 /// A hardware-decoded frame on the shared device (render-graph.md §5.3). `Send`: moved from the
 /// decode thread to the render thread.
@@ -605,6 +613,10 @@ impl GpuFrame {
     }
 
     /// The `AVFrame` behind the texture (pts, colour properties).
+    #[allow(
+        dead_code,
+        reason = "diagnostics used by the hardware-decode spike test"
+    )]
     pub(crate) fn av_frame(&self) -> &AVFrame {
         &self.hold.0
     }

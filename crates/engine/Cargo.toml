@@ -6,6 +6,11 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+# `PreviewHandle::detached` and `WakeProbe`: a preview without a render thread or GPU, for tests of
+# the shell (`src-tauri` enables it for its tests only).
+test-support = []
+
 [dependencies]
 app-core.workspace = true
 blake3.workspace = true
@@ -32,8 +37,11 @@ windows = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
+# Debug snapshots of render plans (render-graph.md §12).
+insta.workspace = true
 # Logs (and counts D3D12 debug-layer messages) in the ignored hardware-decode spike tests.
 tracing-subscriber.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true

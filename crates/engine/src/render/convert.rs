@@ -69,9 +69,15 @@ impl ConvertParams {
         Self::new(info, AlphaMode::Opaque)
     }
 
-    /// The parameters of a still image (straight alpha, premultiplied in the pass).
+    /// The parameters of a still image (straight alpha, premultiplied in the pass). The readers
+    /// deliver every image as packed RGBA8 (`media::readers`, render-graph.md §5.3), whatever
+    /// its file stores, so there is no matrix and the range is full.
     pub fn for_image(info: &VideoStreamInfo) -> Self {
-        Self::new(info, AlphaMode::Straight)
+        Self {
+            matrix: None,
+            range: ColorRange::Full,
+            ..Self::new(info, AlphaMode::Straight)
+        }
     }
 
     fn new(info: &VideoStreamInfo, alpha: AlphaMode) -> Self {
@@ -637,7 +643,11 @@ mod tests {
             (TransferPath::Sdr, AlphaMode::Straight)
         );
         let p = ConvertParams::for_image(&info("yuvj420p", ColorInfo::default(), None));
-        assert_eq!(p.range, ColorRange::Full);
+        assert_eq!(
+            (p.matrix, p.range),
+            (None, ColorRange::Full),
+            "images arrive as RGBA"
+        );
     }
 
     #[test]

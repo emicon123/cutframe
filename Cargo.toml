@@ -45,6 +45,7 @@ uuid = { version = "1.29", features = ["v7", "serde"] }
 wgpu = "30"
 windows = "0.62"
 
+insta = "1"
 proptest = "1"
 tempfile = "3"
 

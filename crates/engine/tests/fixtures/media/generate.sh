@@ -76,6 +76,9 @@ I="testsrc2=size=64x48:rate=1"
 ff -f lavfi -i "$I" -frames:v 1 -c:v mjpeg -q:v 5 -pix_fmt yuvj420p "${EXACT[@]}" "$tmp/plain.jpg"
 tools exif-orientation "$tmp/plain.jpg" exif-orientation-6.jpg 6
 ff -f lavfi -i "$I" -frames:v 1 "${EXACT[@]}" image.png
+# Straight alpha: a horizontal ramp from transparent (left) to opaque (right).
+ff -f lavfi -i "$I" -frames:v 1 -vf "format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='255*X/63'" \
+  -pix_fmt rgba "${EXACT[@]}" image-alpha.png
 ff -f lavfi -i "$I" -frames:v 1 -c:v libwebp -quality 50 "${EXACT[@]}" image.webp
 ff -f lavfi -i "$I" -frames:v 1 -pix_fmt bgr24 "${EXACT[@]}" image.bmp
 ff -f lavfi -i "$I" -frames:v 1 -pix_fmt rgb24 -compression_algo deflate "${EXACT[@]}" image.tiff

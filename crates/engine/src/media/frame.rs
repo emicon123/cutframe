@@ -6,11 +6,6 @@
 //! per sample). Every other pixel format goes through `sws_scale` first, on the decode thread
 //! ([`CpuFrameConverter`]).
 
-#![allow(
-    dead_code,
-    reason = "used by the compositor and the readers, tasks 0320 steps 4 and 5"
-)]
-
 use std::ffi::{CStr, CString, c_int};
 use std::ptr;
 
@@ -20,26 +15,49 @@ use rsmpeg::ffi;
 
 use super::error::{MediaError, MediaErrorKind};
 
-/// One decoded video frame and its media time.
+/// One decoded video frame (or a still image) and its media time (`Time::ZERO` for images).
 #[derive(Debug)]
-pub(crate) struct DecodedVideoFrame {
+pub struct DecodedVideoFrame {
     pub pts: Time,
     pub data: FrameData,
 }
 
 /// Where the pixels of a decoded frame live.
 #[derive(Debug)]
-pub(crate) enum FrameData {
-    /// Software decode, or hardware decode with download (the per-stream fallback, §5.4).
+pub enum FrameData {
+    /// Software decode, hardware decode with download (the per-stream fallback, §5.4), and
+    /// images (packed RGBA, straight alpha).
     Cpu(CpuFrame),
-    // `Gpu(GpuFrame)`: a hardware-decoded NV12/P010 surface on the shared device, added by the
-    // D3D12VA zero-copy module (`media::d3d12`, render-graph.md §5.3 and §5.4). The convert pass
-    // samples it through `TextureAspect::Plane0` / `Plane1` views (`render::convert`).
+    /// A hardware-decoded NV12/P010 surface on the shared device (render-graph.md §5.3, §5.4).
+    /// The convert pass samples it through [`GpuFrame::plane_views`]; see [`GpuFrame`] for the
+    /// release rule.
+    #[cfg(windows)]
+    Gpu(super::d3d12::GpuFrame),
+}
+
+impl FrameData {
+    /// The picture size inside the planes or the surface.
+    pub fn visible(&self) -> (u32, u32) {
+        match self {
+            Self::Cpu(frame) => frame.visible,
+            #[cfg(windows)]
+            Self::Gpu(frame) => frame.visible,
+        }
+    }
+
+    /// CPU memory held by the pixels (0 for GPU surfaces), for the reader queue's byte cap.
+    pub fn cpu_bytes(&self) -> usize {
+        match self {
+            Self::Cpu(frame) => frame.planes.iter().flatten().map(|p| p.bytes.len()).sum(),
+            #[cfg(windows)]
+            Self::Gpu(_) => 0,
+        }
+    }
 }
 
 /// How the planes of a [`CpuFrame`] are arranged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum PlaneLayout {
+pub enum PlaneLayout {
     /// Y', Cb and Cr in three planes; chroma planes are `chroma_w x chroma_h` samples.
     Planar3 { chroma_w: u32, chroma_h: u32 },
     /// Y' in plane 0, interleaved CbCr in plane 1, 4:2:0 (NV12, P010).
@@ -50,7 +68,7 @@ pub(crate) enum PlaneLayout {
 
 /// Storage of one sample.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum SampleDepth {
+pub enum SampleDepth {
     U8,
     /// A 16-bit little-endian container holding `bits` significant bits, either in the high bits
     /// (`msb_aligned`, P010) or in the low bits (`yuv420p10le`).
@@ -94,7 +112,7 @@ impl SampleDepth {
 
 /// One plane: `stride` bytes per row, rows top to bottom.
 #[derive(Clone, PartialEq, Eq)]
-pub(crate) struct PlaneBuf {
+pub struct PlaneBuf {
     pub stride: usize,
     pub bytes: Vec<u8>,
 }
@@ -110,7 +128,7 @@ impl std::fmt::Debug for PlaneBuf {
 
 /// A decoded picture in CPU memory, in a layout the convert shader reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CpuFrame {
+pub struct CpuFrame {
     pub layout: PlaneLayout,
     pub depth: SampleDepth,
     /// The picture size (FFmpeg has already cropped the coded padding).
@@ -196,7 +214,7 @@ impl CpuFrame {
     }
 
     /// Checks that every plane the layout needs is present and large enough.
-    pub fn validate(&self) -> Result<(), FrameError> {
+    pub(crate) fn validate(&self) -> Result<(), FrameError> {
         if self.visible.0 == 0 || self.visible.1 == 0 {
             return Err(FrameError::Empty);
         }

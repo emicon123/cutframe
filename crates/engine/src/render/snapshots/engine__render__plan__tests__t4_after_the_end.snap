@@ -1,0 +1,27 @@
+---
+source: crates/engine/src/render/plan.rs
+expression: "build_plan(&project, t, (960, 540))"
+---
+RenderPlan {
+    frame: 180,
+    time: Time(
+        4233600000,
+    ),
+    canvas: (
+        1920,
+        1080,
+    ),
+    render_size: (
+        960,
+        540,
+    ),
+    background: Color(
+        Rgba8 {
+            r: 16,
+            g: 16,
+            b: 16,
+            a: 255,
+        },
+    ),
+    layers: [],
+}

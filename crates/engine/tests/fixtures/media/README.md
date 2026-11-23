@@ -31,6 +31,7 @@ HEIF tile-grid container, and the broken files.
 | `stereo-44k.mp3`, `mono-48k.wav`, `stereo-96k.flac`, `opus.ogg`, `aac.m4a` | 0.5 s sine | `kind = audio`, sample rate, channels |
 | `exif-orientation-6.jpg` | 64x48 JPEG + APP1 Exif with Orientation = 6 | `rotation = cw90`, display 48x64 |
 | `image.png`, `image.webp`, `image.bmp`, `image.tiff` | 64x48 still | `kind = image`, no duration |
+| `image-alpha.png` | 64x48 RGBA PNG, alpha ramp from 0 (left column) to 255 (right column) | image layers keep straight alpha (`tests/readers.rs`) |
 | `animated.gif` | 3 frames at 5 fps | `kind = video` |
 | `image-grid.heic` | HEIF: a 2x1 `grid` of 64x64 HEVC tiles (128x64) with `irot` = 90° counter-clockwise | `kind = image`, grid size, `rotation = cw270` |
 | `truncated.mp4` | the first 40 % of `h264-aac.mp4` | `damaged` |

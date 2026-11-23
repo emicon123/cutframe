@@ -99,7 +99,6 @@ impl<'c> VideoReader<'c> {
     }
 
     /// The decoder (e.g. to ask `media::d3d12::hw_active` after an error).
-    #[allow(dead_code)] // Called by the d3d12 spike; the hardware readers (0320 step 4) next.
     pub(crate) fn decoder(&self) -> &AVCodecContext {
         &self.decoder
     }

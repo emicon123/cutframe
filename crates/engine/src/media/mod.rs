@@ -9,6 +9,7 @@
 //!   [`picture`] (RGB pictures, JPEG), [`still`] (HEIF tile grids) and [`waveform`].
 //! - [`cache`]: the content-keyed preview cache on disk.
 //! - `d3d12` (Windows): D3D12VA hardware decode on the render device and zero-copy frames.
+//! - [`readers`]: the video reader threads and the frame provider of the render graph.
 //!
 //! FFmpeg 4+ registers its codecs and formats on its own, so there is no global init step.
 //! Opening or probing files is I/O: call it from a worker job, never from an IPC handler (ADR-0004).
@@ -28,14 +29,18 @@ pub mod picture;
 pub mod previews;
 pub mod probe;
 mod reader;
+pub mod readers;
 pub mod still;
 mod tonemap;
 pub mod waveform;
 
+#[cfg(windows)]
+pub use d3d12::GpuFrame;
 pub use encoders::{EncoderBackend, EncoderCandidate, EncoderTarget};
 pub use error::{MediaError, MediaErrorKind};
 pub use ffmpeg::{FfmpegInfo, FfmpegProblem, LibraryInfo};
 pub use fingerprint::{fingerprint, modified_millis};
+pub use frame::{CpuFrame, DecodedVideoFrame, FrameData, PlaneBuf, PlaneLayout, SampleDepth};
 pub use probe::{Probed, probe, probe_cancellable};
 
 /// File extensions (lowercase, without the dot) that import takes from a folder and the file

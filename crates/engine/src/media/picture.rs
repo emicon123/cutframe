@@ -160,20 +160,25 @@ impl RgbImage {
 
     /// Reads plane 0 of a packed frame with `bytes_per_pixel` 3 (RGB24).
     fn from_packed(frame: &AVFrame, bytes_per_pixel: usize) -> Self {
-        let (width, height) = (frame.width as u32, frame.height as u32);
-        let row = width as usize * bytes_per_pixel;
+        Self {
+            width: frame.width as u32,
+            height: frame.height as u32,
+            data: Self::packed_rows(frame, bytes_per_pixel),
+        }
+    }
+
+    /// Plane 0 of a packed frame with `bytes_per_pixel`, as tight rows.
+    fn packed_rows(frame: &AVFrame, bytes_per_pixel: usize) -> Vec<u8> {
+        let (width, height) = (frame.width as usize, frame.height as usize);
+        let row = width * bytes_per_pixel;
         let stride = frame.linesize[0] as usize;
-        let mut data = Vec::with_capacity(row * height as usize);
-        for y in 0..height as usize {
+        let mut data = Vec::with_capacity(row * height);
+        for y in 0..height {
             // SAFETY: a frame of this size and format has `height` rows of `linesize[0]` bytes.
             let src = unsafe { std::slice::from_raw_parts(frame.data[0].add(y * stride), row) };
             data.extend_from_slice(src);
         }
-        Self {
-            width,
-            height,
-            data,
-        }
+        data
     }
 }
 
@@ -353,6 +358,36 @@ pub(crate) fn frame_to_rgb_sdr(
         Colorimetry::of(frame),
     )?;
     Ok(RgbImage::from_packed(&rgb, 3))
+}
+
+/// Converts a decoded picture to tightly packed RGBA8 rows at `width x height`, with the frame's
+/// own matrix and range. Alpha is straight, and 255 for sources without alpha. Image clips use it
+/// (render-graph.md §5.3); the convert pass applies the transfer curve and the rotation.
+pub(crate) fn frame_to_rgba(
+    frame: &AVFrame,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u8>, MediaError> {
+    let rgba = convert(
+        frame,
+        width,
+        height,
+        ffi::AV_PIX_FMT_RGBA,
+        Colorimetry::of(frame),
+    )?;
+    Ok(RgbImage::packed_rows(&rgba, 4))
+}
+
+impl RgbImage {
+    /// The picture as tightly packed RGBA8 rows, opaque.
+    pub(crate) fn to_rgba(&self) -> Vec<u8> {
+        self.data
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|&[r, g, b]| [r, g, b, 255])
+            .collect()
+    }
 }
 
 /// The 16-bit samples of plane 0 of an RGB48LE frame, row by row.

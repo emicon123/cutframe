@@ -1,0 +1,164 @@
+---
+source: crates/engine/src/render/plan.rs
+expression: "build_plan(&project, t, (960, 540))"
+---
+RenderPlan {
+    frame: 45,
+    time: Time(
+        1058400000,
+    ),
+    canvas: (
+        1920,
+        1080,
+    ),
+    render_size: (
+        960,
+        540,
+    ),
+    background: Color(
+        Rgba8 {
+            r: 16,
+            g: 16,
+            b: 16,
+            a: 255,
+        },
+    ),
+    layers: [
+        LayerPlan {
+            clip: ClipId(
+                00000000-0000-0000-0000-000000000104,
+            ),
+            content: Video {
+                media: MediaId(
+                    00000000-0000-0000-0000-000000000050,
+                ),
+                sample_time: Time(
+                    1952160000,
+                ),
+                convert: ConvertParams {
+                    matrix: Some(
+                        Bt709,
+                    ),
+                    range: Limited,
+                    transfer: Sdr,
+                    rotation: None,
+                    alpha: Opaque,
+                    display_size: (
+                        1920,
+                        1080,
+                    ),
+                },
+            },
+            transform: Affine2 {
+                rows: [
+                    [
+                        1920.0,
+                        0.0,
+                        0.0,
+                    ],
+                    [
+                        0.0,
+                        1080.0,
+                        0.0,
+                    ],
+                ],
+            },
+            crop: CropInsets {
+                left: 0.0,
+                top: 0.0,
+                right: 0.0,
+                bottom: 0.0,
+            },
+            opacity: 1.0,
+        },
+        LayerPlan {
+            clip: ClipId(
+                00000000-0000-0000-0000-000000000103,
+            ),
+            content: Image {
+                media: MediaId(
+                    00000000-0000-0000-0000-000000000052,
+                ),
+                convert: ConvertParams {
+                    matrix: None,
+                    range: Full,
+                    transfer: Sdr,
+                    rotation: None,
+                    alpha: Straight,
+                    display_size: (
+                        4032,
+                        3024,
+                    ),
+                },
+            },
+            transform: Affine2 {
+                rows: [
+                    [
+                        1440.0,
+                        0.0,
+                        240.0,
+                    ],
+                    [
+                        0.0,
+                        1080.0,
+                        0.0,
+                    ],
+                ],
+            },
+            crop: CropInsets {
+                left: 0.0,
+                top: 0.0,
+                right: 0.0,
+                bottom: 0.0,
+            },
+            opacity: 0.5,
+        },
+        LayerPlan {
+            clip: ClipId(
+                00000000-0000-0000-0000-000000000102,
+            ),
+            content: Video {
+                media: MediaId(
+                    00000000-0000-0000-0000-000000000051,
+                ),
+                sample_time: Time(
+                    717360000,
+                ),
+                convert: ConvertParams {
+                    matrix: Some(
+                        Bt709,
+                    ),
+                    range: Limited,
+                    transfer: Sdr,
+                    rotation: Cw90,
+                    alpha: Opaque,
+                    display_size: (
+                        1080,
+                        1920,
+                    ),
+                },
+            },
+            transform: Affine2 {
+                rows: [
+                    [
+                        1920.0,
+                        0.0,
+                        0.0,
+                    ],
+                    [
+                        0.0,
+                        3413.3333,
+                        -1166.6666,
+                    ],
+                ],
+            },
+            crop: CropInsets {
+                left: 0.0,
+                top: 0.0,
+                right: 0.0,
+                bottom: 0.0,
+            },
+            opacity: 1.0,
+        },
+    ],
+}
