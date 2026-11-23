@@ -75,7 +75,7 @@ beforeEach(() => {
   useProjectStore.setState({ state: project });
   useUiStore.setState({ snapping: true });
   playheadStore.setState({ time: 0 });
-  selectionStore.setState({ clips: [] });
+  selectionStore.setState({ clips: [], gap: null });
 
   canvas = document.createElement("canvas");
   let captured = false;
@@ -113,6 +113,43 @@ describe("timeline pointer", () => {
     pointer("pointerdown", 100, mid(0), { ctrlKey: true });
     pointer("pointerup", 100, mid(0), { ctrlKey: true });
     expect(selectionStore.getState().clips).toEqual(["m2"]);
+  });
+
+  it("selects the gap under a click between clips, except on a locked track", () => {
+    useProjectStore.setState({
+      state: {
+        ...project,
+        project: {
+          ...project.project,
+          tracks: [
+            {
+              id: "main",
+              kind: "video",
+              locked: false,
+              clips: [
+                { id: "m1", start: 0, duration: 2 * S, link: null },
+                { id: "m2", start: 3 * S, duration: S, link: null },
+              ],
+            },
+            {
+              id: "locked",
+              kind: "audio",
+              locked: true,
+              clips: [{ id: "a1", start: S, duration: S, link: null }],
+            },
+          ],
+        },
+      } as unknown as ProjectState,
+    });
+    selectionStore.setState({ clips: ["m1"] });
+    pointer("pointerdown", 250, mid(0));
+    pointer("pointerup", 250, mid(0));
+    expect(selectionStore.getState()).toEqual({ clips: [], gap: { track: "main", at: 2.5 * S } });
+
+    pointer("pointerdown", 50, mid(1));
+    pointer("pointerup", 50, mid(1));
+    expect(selectionStore.getState()).toEqual({ clips: [], gap: null });
+    expect(log).toEqual([]);
   });
 
   it("clears the selection on a click on empty space", () => {

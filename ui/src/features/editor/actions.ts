@@ -1,12 +1,23 @@
+import { useStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 
 import { commands } from "@/bindings";
 import { importFromDialog } from "@/features/media-bin/importActions";
 import { fileActions } from "@/features/project/fileActions";
+import {
+  copySelection,
+  cutSelection,
+  deleteSelection,
+  duplicateSelection,
+  pasteAtPlayhead,
+  splitAtPlayhead,
+  toggleMagnetic,
+  trimToPlayhead,
+} from "@/features/timeline/editActions";
 import { historyLabelText, t } from "@/i18n";
 import { run } from "@/stores/appStore";
 import { type ProjectState, useProjectStore } from "@/stores/projectStore";
-import { clearSelection, selectAll } from "@/stores/selectionStore";
+import { clearSelection, selectAll, selectionStore } from "@/stores/selectionStore";
 import { useUiStore } from "@/stores/uiStore";
 
 import { resetPanelLayout, togglePanel } from "./layout";
@@ -36,7 +47,16 @@ export type ActionContext = {
   inspectorOpen: boolean;
   /** The editor is shown (not the home screen); file and project actions need it. */
   editorOpen: boolean;
+  /** The project's main track is magnetic (`ProjectView.magnetic`). */
+  magnetic: boolean;
+  /** At least one timeline clip is selected. */
+  clipsSelected: boolean;
+  /** A gap on the timeline is selected. */
+  gapSelected: boolean;
 };
+
+/** The selection-store part of the context. */
+export type SelectionFlags = Pick<ActionContext, "clipsSelected" | "gapSelected">;
 
 /** The UI-store part of the context. */
 export type UiFlags = Pick<
@@ -57,6 +77,16 @@ export type ActionId =
   | "redo"
   | "select-all"
   | "deselect"
+  | "split"
+  | "delete"
+  | "ripple-delete"
+  | "trim-left"
+  | "trim-right"
+  | "cut"
+  | "copy"
+  | "paste"
+  | "duplicate"
+  | "magnetic"
   | "preferences"
   | "history-panel"
   | "toggle-media-bin"
@@ -83,6 +113,12 @@ export type Action = {
   blockDefault?: boolean;
   /** Absent: always enabled. A disabled action is greyed in menus and its shortcut does nothing. */
   enabled?: (ctx: ActionContext) => boolean;
+  /**
+   * `"timeline"`: the shortcut acts on the timeline, so it is ignored while focus is inside a
+   * panel with its own keyboard handling (`data-shortcut-scope`, e.g. the media bin, where Delete
+   * removes media and Ctrl+C must not copy timeline clips).
+   */
+  scope?: "timeline";
   /** Present for toggles: the menu shows a check mark. */
   checked?: (ctx: ActionContext) => boolean;
   run: () => void;
@@ -90,6 +126,7 @@ export type Action = {
 
 /** A project is loaded and shown in the editor (the home screen's untitled project is not). */
 const editing = (ctx: ActionContext) => ctx.loaded && ctx.editorOpen;
+const clipsSelected = (ctx: ActionContext) => editing(ctx) && ctx.clipsSelected;
 const ui = () => useUiStore.getState();
 
 /** The single registry of editor actions. */
@@ -172,6 +209,7 @@ export const ACTIONS: readonly Action[] = [
     id: "select-all",
     label: t.edit.selectAll,
     shortcuts: [{ key: "a", ctrl: true }],
+    scope: "timeline",
     enabled: editing,
     run: selectAll,
   },
@@ -180,6 +218,88 @@ export const ACTIONS: readonly Action[] = [
     label: t.edit.deselect,
     shortcuts: [{ key: "Escape" }],
     run: clearSelection,
+  },
+  {
+    id: "split",
+    label: t.edit.split,
+    // With no selection, every clip under the playhead on an unlocked track splits.
+    shortcuts: [{ key: "b", ctrl: true }],
+    scope: "timeline",
+    enabled: editing,
+    run: () => void splitAtPlayhead(),
+  },
+  {
+    id: "delete",
+    label: t.edit.delete,
+    shortcuts: [{ key: "Delete" }],
+    scope: "timeline",
+    enabled: (ctx) => editing(ctx) && (ctx.clipsSelected || ctx.gapSelected),
+    run: () => void deleteSelection(false),
+  },
+  {
+    id: "ripple-delete",
+    label: t.edit.rippleDelete,
+    shortcuts: [{ key: "Delete", shift: true }],
+    scope: "timeline",
+    enabled: (ctx) => editing(ctx) && (ctx.clipsSelected || ctx.gapSelected),
+    run: () => void deleteSelection(true),
+  },
+  {
+    id: "trim-left",
+    label: t.edit.trimLeft,
+    // With no selection, the main-track clip under the playhead.
+    shortcuts: [{ key: "q" }],
+    scope: "timeline",
+    enabled: editing,
+    run: () => void trimToPlayhead("left"),
+  },
+  {
+    id: "trim-right",
+    label: t.edit.trimRight,
+    shortcuts: [{ key: "w" }],
+    scope: "timeline",
+    enabled: editing,
+    run: () => void trimToPlayhead("right"),
+  },
+  {
+    id: "cut",
+    label: t.edit.cut,
+    shortcuts: [{ key: "x", ctrl: true }],
+    scope: "timeline",
+    enabled: clipsSelected,
+    run: () => void cutSelection(),
+  },
+  {
+    id: "copy",
+    label: t.edit.copy,
+    shortcuts: [{ key: "c", ctrl: true }],
+    scope: "timeline",
+    enabled: clipsSelected,
+    run: () => void copySelection(),
+  },
+  {
+    id: "paste",
+    label: t.edit.paste,
+    // Rust reports an empty clipboard as an error toast.
+    shortcuts: [{ key: "v", ctrl: true }],
+    scope: "timeline",
+    enabled: editing,
+    run: () => void pasteAtPlayhead(),
+  },
+  {
+    id: "duplicate",
+    label: t.edit.duplicate,
+    shortcuts: [{ key: "d", ctrl: true }],
+    scope: "timeline",
+    enabled: clipsSelected,
+    run: () => void duplicateSelection(),
+  },
+  {
+    id: "magnetic",
+    label: t.edit.magnetic,
+    enabled: editing,
+    checked: (ctx) => ctx.magnetic,
+    run: () => void toggleMagnetic(),
   },
   {
     id: "preferences",
@@ -257,6 +377,19 @@ export const MENUS: readonly Menu[] = [
       "undo",
       "redo",
       SEPARATOR,
+      "cut",
+      "copy",
+      "paste",
+      "duplicate",
+      SEPARATOR,
+      "split",
+      "delete",
+      "ripple-delete",
+      "trim-left",
+      "trim-right",
+      SEPARATOR,
+      "magnetic",
+      SEPARATOR,
       "select-all",
       "deselect",
       SEPARATOR,
@@ -288,7 +421,13 @@ const NO_UI_FLAGS: UiFlags = {
   editorOpen: false,
 };
 
-export function actionContext(state: ProjectState | null, flags: UiFlags = NO_UI_FLAGS): ActionContext {
+const NO_SELECTION: SelectionFlags = { clipsSelected: false, gapSelected: false };
+
+export function actionContext(
+  state: ProjectState | null,
+  flags: UiFlags = NO_UI_FLAGS,
+  selection: SelectionFlags = NO_SELECTION,
+): ActionContext {
   const history = state?.history;
   return {
     loaded: state !== null,
@@ -296,7 +435,9 @@ export function actionContext(state: ProjectState | null, flags: UiFlags = NO_UI
     canRedo: history?.canRedo ?? false,
     undoLabel: history?.undoLabel ?? null,
     redoLabel: history?.redoLabel ?? null,
+    magnetic: state?.project.magnetic ?? false,
     ...flags,
+    ...selection,
   };
 }
 
@@ -311,16 +452,27 @@ function uiFlags(s: UiStoreState): UiFlags {
   };
 }
 
+type SelectionStoreState = ReturnType<typeof selectionStore.getState>;
+
+function selectionFlags(s: SelectionStoreState): SelectionFlags {
+  return { clipsSelected: s.clips.length > 0, gapSelected: s.gap !== null };
+}
+
 /** The current context, for the keyboard handler (outside React). */
 export function currentActionContext(): ActionContext {
-  return actionContext(useProjectStore.getState().state, uiFlags(useUiStore.getState()));
+  return actionContext(
+    useProjectStore.getState().state,
+    uiFlags(useUiStore.getState()),
+    selectionFlags(selectionStore.getState()),
+  );
 }
 
 /** The context for components; re-renders only when one of its fields changes. */
 export function useActionContext(): ActionContext {
   const flags = useUiStore(useShallow(uiFlags));
+  const selection = useStore(selectionStore, useShallow(selectionFlags));
   const project = useProjectStore(useShallow((s) => actionContext(s.state)));
-  return { ...project, ...flags };
+  return { ...project, ...flags, ...selection };
 }
 
 export function getAction(id: ActionId, actions: readonly Action[] = ACTIONS): Action {
@@ -339,9 +491,9 @@ export function actionLabel(action: Action, ctx: ActionContext): string {
 
 /** Display text of a key combination, e.g. `"Ctrl+Shift+S"`. */
 export function bindingLabel(binding: KeyBinding): string {
-  const { ctrl, shift, separator, escape } = t.keys;
-  const key =
-    binding.key === "Escape" ? escape : binding.key.length === 1 ? binding.key.toUpperCase() : binding.key;
+  const { ctrl, shift, separator, escape, delete: del } = t.keys;
+  const named: Record<string, string> = { Escape: escape, Delete: del };
+  const key = named[binding.key] ?? (binding.key.length === 1 ? binding.key.toUpperCase() : binding.key);
   const parts = [binding.ctrl && ctrl, binding.shift === true && shift, key];
   return parts.filter((part) => typeof part === "string").join(separator);
 }

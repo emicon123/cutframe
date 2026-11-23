@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import { type ProjectState, useProjectStore } from "./projectStore";
-import { clearSelection, selectAll, selectionStore, setSelection } from "./selectionStore";
+import { clearSelection, selectAll, selectionStore, setGapSelection, setSelection } from "./selectionStore";
 
 const withClips = (revision: number, ids: string[]) =>
   ({
@@ -28,5 +28,32 @@ describe("selectionStore", () => {
     const before = selectionStore.getState();
     setSelection(["a"]);
     expect(selectionStore.getState()).toBe(before);
+  });
+});
+
+describe("gap selection", () => {
+  const withGap = (revision: number, start: number) =>
+    ({
+      revision,
+      project: {
+        tracks: [{ id: "t", kind: "video", locked: false, clips: [{ id: "a", start, duration: 10 }] }],
+      },
+    }) as unknown as ProjectState;
+
+  it("replaces the clip selection and is replaced by it", () => {
+    setSelection(["a"]);
+    setGapSelection({ track: "t", at: 5 });
+    expect(selectionStore.getState()).toEqual({ clips: [], gap: { track: "t", at: 5 } });
+    setSelection(["a"]);
+    expect(selectionStore.getState().gap).toBeNull();
+  });
+
+  it("is kept while the gap exists and dropped once it is closed", () => {
+    useProjectStore.getState().apply(withGap(1, 100));
+    setGapSelection({ track: "t", at: 50 });
+    useProjectStore.getState().apply(withGap(2, 60));
+    expect(selectionStore.getState().gap).toEqual({ track: "t", at: 50 });
+    useProjectStore.getState().apply(withGap(3, 0));
+    expect(selectionStore.getState().gap).toBeNull();
   });
 });

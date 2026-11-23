@@ -69,6 +69,8 @@ export type Scene = {
   /** Where dragged media would land, while a drag is over the timeline. */
   drop: DropPreview | null;
   selected: ReadonlySet<ClipId>;
+  /** The selected gap: its track index and span. */
+  gap: { index: number; start: number; end: number } | null;
   /** The rubber band of a marquee selection, in canvas CSS px. */
   marquee: Rect | null;
   /** Time of the snap indicator while a move or trim snapped. */
@@ -91,6 +93,7 @@ export function drawTimeline(ctx: CanvasRenderingContext2D, scene: Scene) {
       ctx.fillStyle = theme.accent;
       ctx.fillRect(0, top, 3, TRACK_HEIGHT);
     }
+    if (scene.gap?.index === index) drawGap(ctx, scene.gap, top, scene);
     drawClips(ctx, track, top, scene);
   });
 
@@ -187,6 +190,27 @@ function drawClips(ctx: CanvasRenderingContext2D, track: TrackView, top: number,
       ctx.stroke();
     }
   }
+}
+
+/** The selected gap: a translucent fill with an outline in the selection colour. */
+function drawGap(
+  ctx: CanvasRenderingContext2D,
+  gap: { start: number; end: number },
+  top: number,
+  { viewport, theme }: Scene,
+) {
+  const x = timeToX(gap.start, viewport);
+  const w = (gap.end - gap.start) / viewport.flicksPerPixel;
+  ctx.save();
+  ctx.fillStyle = theme.selected;
+  ctx.strokeStyle = theme.selected;
+  ctx.globalAlpha = 0.18;
+  ctx.fillRect(x, top + 3, w, TRACK_HEIGHT - 6);
+  ctx.globalAlpha = 1;
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 3]);
+  ctx.strokeRect(Math.round(x) + 0.5, top + 3.5, Math.max(1, Math.round(w) - 1), TRACK_HEIGHT - 7);
+  ctx.restore();
 }
 
 /** Diagonal stripes: the offline placeholder look (clip path already set). */

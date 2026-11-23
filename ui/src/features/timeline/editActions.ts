@@ -1,0 +1,104 @@
+/**
+ * Split, delete, trim to playhead and clipboard actions (timeline design §4.4–4.8, §6.3). Each one
+ * is a single command call with the selection and the playhead passed explicitly; Rust does the
+ * edit and pushes the new state through `project-changed`. The deciding logic is pure and tested.
+ */
+import { type ClipId, commands, type TrackId } from "@/bindings";
+import { run } from "@/stores/appStore";
+import { playheadStore, setPlayhead } from "@/stores/playheadStore";
+import { useProjectStore } from "@/stores/projectStore";
+import { clearSelection, selectionStore, setSelection } from "@/stores/selectionStore";
+
+import type { GapSelection } from "./gap";
+import type { HitTrack } from "./hitTest";
+
+export type DeleteRequest =
+  { kind: "gap"; track: TrackId; at: number } | { kind: "clips"; clips: ClipId[]; ripple: boolean };
+
+/** What Delete (or Shift+Delete with `ripple`) removes: the selected gap, else the selected clips. */
+export function deleteRequest(
+  selection: { clips: readonly ClipId[]; gap: GapSelection | null },
+  ripple: boolean,
+): DeleteRequest | null {
+  if (selection.gap) return { kind: "gap", ...selection.gap };
+  if (selection.clips.length > 0) return { kind: "clips", clips: [...selection.clips], ripple };
+  return null;
+}
+
+/**
+ * Where the playhead goes after Q (delete left of the playhead): on the magnetic main track the
+ * trimmed clip keeps its start and the content that was at `at` moves there, so the playhead
+ * follows it. `null` when it stays (not magnetic, or no main-track clip is trimmed). The trimmed
+ * clip is a selected main-track clip under `at`, or with no selection the main-track clip there.
+ */
+export function playheadAfterTrimLeft(
+  project: { tracks: readonly HitTrack[]; mainTrack: TrackId; magnetic: boolean },
+  selected: readonly ClipId[],
+  at: number,
+): number | null {
+  if (!project.magnetic) return null;
+  const main = project.tracks.find((track) => track.id === project.mainTrack);
+  const clip = main?.clips.find(
+    (c) => (selected.length === 0 || selected.includes(c.id)) && c.start < at && at < c.start + c.duration,
+  );
+  return clip ? clip.start : null;
+}
+
+const selectedClips = () => [...selectionStore.getState().clips];
+const playhead = () => playheadStore.getState().time;
+
+/** Selects the clips a command created; nothing on failure (`run` already reported it). */
+const selectCreated = (ids: ClipId[] | undefined) => {
+  if (ids) setSelection(ids);
+};
+
+/** Ctrl+B: the selected clips, or every clip under the playhead; selects the right halves. */
+export async function splitAtPlayhead() {
+  selectCreated(await run(commands.splitClips(selectedClips(), playhead())));
+}
+
+/** Delete / Shift+Delete: the selected gap, or the selected clips (with or without ripple). */
+export async function deleteSelection(ripple: boolean) {
+  const request = deleteRequest(selectionStore.getState(), ripple);
+  if (!request) return;
+  if (request.kind === "gap") {
+    const done = await run(commands.deleteGap(request.track, request.at));
+    if (done !== undefined) clearSelection();
+  } else {
+    await run(commands.deleteClips(request.clips, request.ripple));
+  }
+}
+
+/** Q (`left`) / W (`right`): delete the part of the selected clips (or the main clip) past the playhead. */
+export async function trimToPlayhead(side: "left" | "right") {
+  const clips = selectedClips();
+  const at = playhead();
+  const project = useProjectStore.getState().state?.project;
+  const target = side === "left" && project ? playheadAfterTrimLeft(project, clips, at) : null;
+  const done = await run(commands.trimToPlayhead(clips, at, side));
+  if (done !== undefined && target !== null) setPlayhead(target);
+}
+
+export async function copySelection() {
+  await run(commands.copyClips(selectedClips()));
+}
+
+export async function cutSelection() {
+  await run(commands.cutClips(selectedClips()));
+}
+
+/** Ctrl+V at the playhead; selects the pasted clips. */
+export async function pasteAtPlayhead() {
+  selectCreated(await run(commands.pasteClips(playhead())));
+}
+
+/** Ctrl+D: copies of the selection right after it; selects them. */
+export async function duplicateSelection() {
+  selectCreated(await run(commands.duplicateClips(selectedClips())));
+}
+
+export async function toggleMagnetic() {
+  const magnetic = useProjectStore.getState().state?.project.magnetic;
+  if (magnetic === undefined) return;
+  await run(commands.setMagnetic(!magnetic));
+}

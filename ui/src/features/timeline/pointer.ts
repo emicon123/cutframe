@@ -1,6 +1,6 @@
 /**
  * Pointer interaction on the timeline canvas (timeline design §12.2): seek on the ruler, select
- * and marquee on the lanes, move and trim clips as ADR-0006 gestures. The values come from the
+ * clips, a gap (§4.6) or a marquee on the lanes, move and trim clips as ADR-0006 gestures. The values come from the
  * pure functions in `editDrag.ts`; this module only wires pointer events, stores and IPC.
  *
  * A press becomes a drag only past `DRAG_THRESHOLD`, so a click never sends a gesture. Once a
@@ -12,10 +12,11 @@ import { beginGesture, type Gesture } from "@/ipc/gesture";
 import { frameDuration } from "@/lib/time";
 import { playheadStore, setPlayhead } from "@/stores/playheadStore";
 import { useProjectStore } from "@/stores/projectStore";
-import { clearSelection, selectionStore, setSelection } from "@/stores/selectionStore";
+import { clearSelection, selectionStore, setGapSelection, setSelection } from "@/stores/selectionStore";
 import { useUiStore } from "@/stores/uiStore";
 
 import { type DragContext, moveValue, type MoveValue, planMove, planTrim, trimValue } from "./editDrag";
+import { gapOnTrack } from "./gap";
 import { xToTime, type Viewport } from "./geometry";
 import { clipsInRect, type Hit, hitTest, pastThreshold, type Rect } from "./hitTest";
 import { type ClickModifiers, clickSelection, pressSelection, withLinked } from "./selection";
@@ -43,7 +44,7 @@ type State =
   | { mode: "idle" }
   | { mode: "seek" }
   | ({ mode: "clip"; hit: Extract<Hit, { kind: "clip" }>; locked: boolean } & Press)
-  | ({ mode: "lane"; marquee: boolean } & Press)
+  | ({ mode: "lane"; marquee: boolean; track: number | null } & Press)
   | { mode: "move"; drag: Drag<MoveValue> }
   | { mode: "trim"; drag: Drag<number> }
   /** A gesture that Escape or blur cancelled: ignore the pointer until it is released. */
@@ -190,6 +191,14 @@ export function attachPointerInteraction(canvas: HTMLCanvasElement, deps: Pointe
     setOverlay({ marquee });
   };
 
+  /** A plain click on an empty lane spot selects the gap there (§4.6), or clears the selection. */
+  const selectGapOrClear = (s: Extract<State, { mode: "lane" }>) => {
+    const track = s.track === null ? undefined : tracks()[s.track];
+    const at = Math.max(0, xToTime(s.x0, deps.viewport()));
+    if (track && gapOnTrack(track, at)) setGapSelection({ track: track.id, at });
+    else clearSelection();
+  };
+
   const reset = () => {
     state = { mode: "idle" };
     lastSent = undefined;
@@ -216,7 +225,7 @@ export function attachPointerInteraction(canvas: HTMLCanvasElement, deps: Pointe
       setSelection(pressSelection(tracks(), press.before, hit.clip.id, press.mods));
       state = { mode: "clip", hit, locked: tracks()[hit.track]?.locked ?? true, ...press };
     } else {
-      state = { mode: "lane", marquee: false, ...press };
+      state = { mode: "lane", marquee: false, track: hit.track, ...press };
     }
   };
 
@@ -267,7 +276,7 @@ export function attachPointerInteraction(canvas: HTMLCanvasElement, deps: Pointe
     if (s.mode === "clip") {
       setSelection(clickSelection(tracks(), s.before, s.hit.clip.id, s.mods));
     } else if (s.mode === "lane" && !s.marquee) {
-      if (!s.mods.ctrl && !s.mods.shift) clearSelection();
+      if (!s.mods.ctrl && !s.mods.shift) selectGapOrClear(s);
     } else if (s.mode === "move") {
       finishDrag(s.drag, event);
     } else if (s.mode === "trim") {

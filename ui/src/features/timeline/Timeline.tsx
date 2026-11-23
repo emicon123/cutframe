@@ -1,4 +1,4 @@
-import { AudioLines, Film, Lock, Magnet, Plus, Trash2, Type } from "lucide-react";
+import { AudioLines, Film, FoldHorizontal, Lock, Magnet, Plus, Scissors, Trash2, Type } from "lucide-react";
 import { type ComponentType, useEffect, useMemo, useRef } from "react";
 
 import {
@@ -11,6 +11,14 @@ import {
 } from "@/bindings";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  type ActionId,
+  actionLabel,
+  actionTooltip,
+  getAction,
+  isEnabled,
+  useActionContext,
+} from "@/features/editor/actions";
 import { t } from "@/i18n";
 import { importPathsForPlacement } from "@/features/media-bin/importActions";
 import { useFileDrop } from "@/features/media-bin/useFileDrop";
@@ -34,6 +42,7 @@ import {
   type Viewport,
 } from "./geometry";
 import { addMediaClips } from "./addActions";
+import { locateGap } from "./gap";
 import { dropPayload, dropPlacement, dropPreview, type DropPreview } from "./drop";
 import { attachPointerInteraction, type PointerOverlay } from "./pointer";
 import { drawTimeline, readTheme, type TimelineTheme } from "./renderer";
@@ -86,6 +95,10 @@ function TimelineToolbar() {
       <AddTrackButton label={t.timeline.addAudioTrack} icon={AudioLines} onClick={() => addTrack("audio")} />
       <AddTrackButton label={t.timeline.addTextTrack} icon={Type} onClick={() => addTrack("text")} />
       <div className="mx-1 h-5 w-px bg-border" aria-hidden />
+      <ActionButton id="split" icon={Scissors} />
+      <ActionButton id="delete" icon={Trash2} />
+      <div className="mx-1 h-5 w-px bg-border" aria-hidden />
+      <ActionButton id="magnetic" icon={FoldHorizontal} />
       <SnappingToggle />
       <span className="ml-auto text-xs text-muted-foreground">{t.timeline.zoomHint}</span>
     </div>
@@ -106,6 +119,35 @@ function AddTrackButton({
       <TooltipTrigger asChild>
         <Button variant="ghost" size="sm" onClick={onClick} aria-label={label}>
           <Plus className="size-3.5" aria-hidden />
+          <Icon className="size-3.5" aria-hidden />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+/**
+ * A toolbar button for a registered action: the same label, shortcut, enabled and checked state
+ * as its menu entry.
+ */
+function ActionButton({ id, icon: Icon }: { id: ActionId; icon: ComponentType<{ className?: string }> }) {
+  const ctx = useActionContext();
+  const action = getAction(id);
+  const checked = action.checked?.(ctx);
+  const label = actionTooltip(action, ctx);
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="sm"
+          aria-label={actionLabel(action, ctx)}
+          aria-pressed={checked}
+          className={cn(checked && "bg-accent text-primary")}
+          disabled={!isEnabled(action, ctx)}
+          onClick={action.run}
+        >
           <Icon className="size-3.5" aria-hidden />
         </Button>
       </TooltipTrigger>
@@ -244,6 +286,7 @@ function TimelineCanvas({
         offlineLabel: t.timeline.offline,
         drop: dropRef.current,
         selected: new Set(selectionStore.getState().clips),
+        gap: locateGap(sceneRef.current.tracks, selectionStore.getState().gap),
         marquee: overlayRef.current.marquee,
         snapLine: overlayRef.current.snapLine,
         durationText: formatClipDuration,
