@@ -138,6 +138,7 @@ describe("handleShortcut", () => {
         },
       } as unknown as ProjectState,
     });
+    useUiStore.setState({ view: "editor" });
     handleShortcut(press("a", { ctrlKey: true }));
     expect(selectionStore.getState().clips).toEqual(["a", "b"]);
     handleShortcut(press("Escape"));

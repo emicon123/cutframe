@@ -172,7 +172,7 @@ export const ACTIONS: readonly Action[] = [
     id: "select-all",
     label: t.edit.selectAll,
     shortcuts: [{ key: "a", ctrl: true }],
-    enabled: loaded,
+    enabled: editing,
     run: selectAll,
   },
   {
