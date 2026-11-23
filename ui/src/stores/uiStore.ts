@@ -8,6 +8,28 @@ export type MediaLayout = "grid" | "list";
 /** The collapsible side panels that menu actions toggle. */
 export type PanelKey = "mediaBin" | "inspector";
 
+const SNAPPING_KEY = "timeline.snapping.v1";
+
+/**
+ * The timeline snapping toggle is a per-user UI preference in `localStorage`, like the panel
+ * layout (design `preferences.md` §6): it has no meaning in Rust. Blocked storage means "on".
+ */
+function readSnapping(): boolean {
+  try {
+    return window.localStorage.getItem(SNAPPING_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+function writeSnapping(on: boolean) {
+  try {
+    window.localStorage.setItem(SNAPPING_KEY, on ? "on" : "off");
+  } catch {
+    // Blocked storage: the choice lasts for this session only.
+  }
+}
+
 /** Editor layout and dialog toggles opened from the main menu or a shortcut. Not part of the model. */
 type UiStore = {
   historyPanelOpen: boolean;
@@ -24,6 +46,9 @@ type UiStore = {
   collapsedPanels: Readonly<Record<PanelKey, boolean>>;
   /** Changes when the panel layout is reset, so the panel groups remount with default sizes. */
   layoutVersion: number;
+  /** Timeline snapping (F1.45); Alt held during a drag bypasses it. */
+  snapping: boolean;
+  setSnapping: (on: boolean) => void;
   setHistoryPanelOpen: (open: boolean) => void;
   setShortcutsOpen: (open: boolean) => void;
   setProjectSettingsOpen: (open: boolean) => void;
@@ -46,6 +71,11 @@ export const useUiStore = create<UiStore>()((set) => ({
   preferencesOpen: false,
   collapsedPanels: { mediaBin: false, inspector: false },
   layoutVersion: 0,
+  snapping: readSnapping(),
+  setSnapping: (snapping) => {
+    writeSnapping(snapping);
+    set({ snapping });
+  },
   setHistoryPanelOpen: (historyPanelOpen) => set({ historyPanelOpen }),
   setShortcutsOpen: (shortcutsOpen) => set({ shortcutsOpen }),
   setProjectSettingsOpen: (projectSettingsOpen) => set({ projectSettingsOpen }),

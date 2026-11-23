@@ -6,6 +6,7 @@ import { fileActions } from "@/features/project/fileActions";
 import { historyLabelText, t } from "@/i18n";
 import { run } from "@/stores/appStore";
 import { type ProjectState, useProjectStore } from "@/stores/projectStore";
+import { clearSelection, selectAll } from "@/stores/selectionStore";
 import { useUiStore } from "@/stores/uiStore";
 
 import { resetPanelLayout, togglePanel } from "./layout";
@@ -48,6 +49,8 @@ export type ActionId =
   | "exit"
   | "undo"
   | "redo"
+  | "select-all"
+  | "deselect"
   | "preferences"
   | "history-panel"
   | "toggle-media-bin"
@@ -153,6 +156,19 @@ export const ACTIONS: readonly Action[] = [
     run: () => void run(commands.redo()),
   },
   {
+    id: "select-all",
+    label: t.edit.selectAll,
+    shortcuts: [{ key: "a", ctrl: true }],
+    enabled: loaded,
+    run: selectAll,
+  },
+  {
+    id: "deselect",
+    label: t.edit.deselect,
+    shortcuts: [{ key: "Escape" }],
+    run: clearSelection,
+  },
+  {
     id: "preferences",
     label: t.edit.preferences,
     shortcuts: [{ key: ",", ctrl: true }],
@@ -222,7 +238,17 @@ export const MENUS: readonly Menu[] = [
   {
     id: "edit",
     label: t.menu.edit,
-    items: ["undo", "redo", SEPARATOR, "history-panel", SEPARATOR, "preferences"],
+    items: [
+      "undo",
+      "redo",
+      SEPARATOR,
+      "select-all",
+      "deselect",
+      SEPARATOR,
+      "history-panel",
+      SEPARATOR,
+      "preferences",
+    ],
   },
   {
     id: "view",
@@ -292,8 +318,9 @@ export function actionLabel(action: Action, ctx: ActionContext): string {
 
 /** Display text of a key combination, e.g. `"Ctrl+Shift+S"`. */
 export function bindingLabel(binding: KeyBinding): string {
-  const { ctrl, shift, separator } = t.keys;
-  const key = binding.key.length === 1 ? binding.key.toUpperCase() : binding.key;
+  const { ctrl, shift, separator, escape } = t.keys;
+  const key =
+    binding.key === "Escape" ? escape : binding.key.length === 1 ? binding.key.toUpperCase() : binding.key;
   const parts = [binding.ctrl && ctrl, binding.shift === true && shift, key];
   return parts.filter((part) => typeof part === "string").join(separator);
 }

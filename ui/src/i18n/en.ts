@@ -22,7 +22,7 @@ export const en = {
     windowTitle: (name: string, dirty: boolean) => `${dirty ? "*" : ""}${name} - ${APP_NAME}`,
   },
   /** Key names used to display shortcuts, e.g. "Ctrl+Shift+S". */
-  keys: { ctrl: "Ctrl", shift: "Shift", separator: "+", delete: "Del" },
+  keys: { ctrl: "Ctrl", shift: "Shift", separator: "+", delete: "Del", escape: "Esc" },
   /** Main menu bar titles. */
   menu: {
     bar: "Main menu",
@@ -93,6 +93,8 @@ export const en = {
     /** Menu item and tooltip naming the entry, e.g. "Undo Add Track". */
     undoAction: (label: string) => `Undo ${label}`,
     redoAction: (label: string) => `Redo ${label}`,
+    selectAll: "Select all clips",
+    deselect: "Deselect",
   },
   view: {
     historyPanel: "History panel",
@@ -433,6 +435,9 @@ export const en = {
     /** Drawn on clips whose media file is missing. */
     offline: "Media offline",
     dropFiles: "Drop to import and add to the timeline",
+    snapping: "Snapping",
+    snappingOn: "Snapping on (hold Alt while dragging to bypass)",
+    snappingOff: "Snapping off",
     kinds: { video: "Video", audio: "Audio", text: "Text" },
   },
   status: {

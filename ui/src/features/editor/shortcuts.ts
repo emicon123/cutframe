@@ -34,8 +34,13 @@ export function isInOverlay(target: EventTarget | null): boolean {
   );
 }
 
-/** Runs the action of a matching shortcut. Disabled actions only block the WebView default. */
+/**
+ * Runs the action of a matching shortcut. Disabled actions only block the WebView default. An
+ * event something else already handled (`defaultPrevented`) is left alone.
+ */
 export function handleShortcut(event: KeyboardEvent, actions: readonly Action[] = ACTIONS): void {
+  // Already handled, e.g. Escape cancelling a drag (ipc/gesture.ts): it must not also deselect.
+  if (event.defaultPrevented) return;
   const action = findShortcut(event, actions);
   if (!action) return;
   const ignored = isTextEntry(event.target) || isInOverlay(event.target);

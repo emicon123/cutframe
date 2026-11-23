@@ -1,7 +1,8 @@
 /** Draws the timeline lanes, ruler, clips and playhead onto a canvas. No React in here. */
-import type { ClipView, MediaId, TrackId, TrackKind, TrackView } from "@/bindings";
+import type { ClipId, ClipView, MediaId, TrackId, TrackKind, TrackView } from "@/bindings";
 
 import type { DropPreview } from "./drop";
+import { normalizeRect, type Rect } from "./hitTest";
 import {
   RULER_HEIGHT,
   TRACK_HEIGHT,
@@ -26,6 +27,8 @@ export type TimelineTheme = {
   tick: string;
   playhead: string;
   clipText: string;
+  selected: string;
+  snapLine: string;
   clip: Record<TrackKind, string>;
 };
 
@@ -46,6 +49,8 @@ export function readTheme(element: Element): TimelineTheme {
     tick: v("--border"),
     playhead: v("--playhead"),
     clipText: v("--foreground"),
+    selected: v("--clip-selected"),
+    snapLine: v("--snap-line"),
     clip: { video: v("--clip-video"), audio: v("--clip-audio"), text: v("--clip-text") },
   };
 }
@@ -63,6 +68,13 @@ export type Scene = {
   offlineLabel: string;
   /** Where dragged media would land, while a drag is over the timeline. */
   drop: DropPreview | null;
+  selected: ReadonlySet<ClipId>;
+  /** The rubber band of a marquee selection, in canvas CSS px. */
+  marquee: Rect | null;
+  /** Time of the snap indicator while a move or trim snapped. */
+  snapLine: number | null;
+  /** Label text for a clip's length. */
+  durationText: (flicks: number) => string;
 };
 
 export function drawTimeline(ctx: CanvasRenderingContext2D, scene: Scene) {
@@ -83,6 +95,8 @@ export function drawTimeline(ctx: CanvasRenderingContext2D, scene: Scene) {
   });
 
   if (scene.drop) drawDrop(ctx, scene.drop, scene);
+  if (scene.snapLine !== null) drawSnapLine(ctx, scene.snapLine, scene);
+  if (scene.marquee) drawMarquee(ctx, scene.marquee, theme);
   drawRuler(ctx, scene);
 
   const x = Math.round(timeToX(scene.playhead, viewport)) + 0.5;
@@ -148,17 +162,30 @@ function drawClips(ctx: CanvasRenderingContext2D, track: TrackView, top: number,
     ctx.save();
     ctx.clip();
     if (offline) drawHatch(ctx, x, top, w, theme.invalid);
+    // F1.36: the name, and the length under it (with the offline note for a missing file).
     ctx.fillStyle = theme.clipText;
     ctx.font = "500 12px 'Inter Variable', sans-serif";
     ctx.textBaseline = "top";
     const left = Math.max(x, 0) + 8;
     ctx.fillText(clip.name, left, top + 9);
+    const duration = scene.durationText(clip.duration);
+    ctx.font = "500 11px 'Inter Variable', sans-serif";
+    ctx.globalAlpha = 0.75;
+    ctx.fillText(duration, left, top + 27);
+    ctx.globalAlpha = 1;
     if (offline) {
       ctx.fillStyle = theme.invalid;
       ctx.font = "600 11px 'Inter Variable', sans-serif";
-      ctx.fillText(scene.offlineLabel, left, top + 27);
+      ctx.fillText(scene.offlineLabel, left + ctx.measureText(duration).width + 8, top + 27);
     }
     ctx.restore();
+    if (scene.selected.has(clip.id)) {
+      ctx.strokeStyle = theme.selected;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.roundRect(x + 1.5, top + 4, Math.max(2, w - 3), TRACK_HEIGHT - 8, 5);
+      ctx.stroke();
+    }
   }
 }
 
@@ -177,11 +204,8 @@ function drawHatch(ctx: CanvasRenderingContext2D, x: number, top: number, w: num
 }
 
 /** The ghost of a drop: a clip outline on the track, or an insertion line for a new track. */
-function drawDrop(
-  ctx: CanvasRenderingContext2D,
-  drop: DropPreview,
-  { width, height, viewport, theme }: Scene,
-) {
+function drawDrop(ctx: CanvasRenderingContext2D, drop: DropPreview, scene: Scene) {
+  const { width, viewport, theme } = scene;
   const color = drop.valid ? theme.accent : theme.invalid;
   const x = timeToX(drop.start, viewport);
   const w = Math.max(4, drop.duration / viewport.flicksPerPixel);
@@ -209,15 +233,33 @@ function drawDrop(
     ctx.fill();
     ctx.globalAlpha = 1;
   }
-  if (drop.snap !== null) {
-    const sx = Math.round(timeToX(drop.snap, viewport)) + 0.5;
-    ctx.strokeStyle = theme.accent;
-    ctx.lineWidth = 1;
-    ctx.setLineDash([4, 3]);
-    ctx.beginPath();
-    ctx.moveTo(sx, RULER_HEIGHT);
-    ctx.lineTo(sx, height);
-    ctx.stroke();
-  }
+  ctx.restore();
+  if (drop.snap !== null) drawSnapLine(ctx, drop.snap, scene);
+}
+
+/** The dashed line where a drop, move or trim snapped. */
+function drawSnapLine(ctx: CanvasRenderingContext2D, time: number, { height, viewport, theme }: Scene) {
+  const x = Math.round(timeToX(time, viewport)) + 0.5;
+  ctx.save();
+  ctx.strokeStyle = theme.snapLine;
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 3]);
+  ctx.beginPath();
+  ctx.moveTo(x, RULER_HEIGHT);
+  ctx.lineTo(x, height);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawMarquee(ctx: CanvasRenderingContext2D, rect: Rect, theme: TimelineTheme) {
+  const r = normalizeRect(rect);
+  ctx.save();
+  ctx.fillStyle = theme.selected;
+  ctx.strokeStyle = theme.selected;
+  ctx.globalAlpha = 0.12;
+  ctx.fillRect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+  ctx.globalAlpha = 0.8;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(Math.round(r.x0) + 0.5, Math.round(r.y0) + 0.5, r.x1 - r.x0, r.y1 - r.y0);
   ctx.restore();
 }

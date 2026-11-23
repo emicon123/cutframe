@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { FLICKS_PER_SECOND, formatDuration, formatFrameRate, formatTimecode, frameDuration } from "./time";
+import {
+  FLICKS_PER_SECOND,
+  formatClipDuration,
+  formatDuration,
+  formatFrameRate,
+  formatTimecode,
+  frameDuration,
+} from "./time";
 
 const fps30 = { num: 30, den: 1 };
 const ntsc = { num: 30000, den: 1001 };
@@ -53,5 +60,18 @@ describe("formatDuration", () => {
   it("rounds to the nearest second", () => {
     expect(formatDuration(FLICKS_PER_SECOND * 10 + FLICKS_PER_SECOND / 2)).toBe("0:11");
     expect(formatDuration(FLICKS_PER_SECOND * 10 + 1)).toBe("0:10");
+  });
+});
+
+describe("formatClipDuration", () => {
+  it("shows tenths of a second below one minute, truncated", () => {
+    expect(formatClipDuration(0)).toBe("0.0s");
+    expect(formatClipDuration(4.25 * FLICKS_PER_SECOND)).toBe("4.2s");
+    expect(formatClipDuration(59.99 * FLICKS_PER_SECOND)).toBe("59.9s");
+  });
+
+  it("switches to minutes and seconds from one minute", () => {
+    expect(formatClipDuration(60 * FLICKS_PER_SECOND)).toBe("1:00");
+    expect(formatClipDuration(65.9 * FLICKS_PER_SECOND)).toBe("1:05");
   });
 });
