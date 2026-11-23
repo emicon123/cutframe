@@ -3,6 +3,10 @@
 **Tier:** 1 · **Agents:** `backend`, `frontend` · **Depends on:** `0270`
 **Spec:** `docs/feature-catalog.md` (feature IDs below), `docs/adr/`, `docs/design/`, `CLAUDE.md`
 
+> **Closed 2026-11-23 without the manual check (user's standing decision).** `pnpm check` passed on
+> Linux (PR #8); the Windows `pnpm check` and the split, delete, gap, Q/W and clipboard flows in `pnpm dev` were not
+> done by hand.
+
 ## Why
 
 The cut-and-tighten loop that defines a quick editor.
