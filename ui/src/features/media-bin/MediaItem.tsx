@@ -1,3 +1,4 @@
+import { FileWarning, FileX } from "lucide-react";
 import { memo } from "react";
 
 import type { MediaView_Serialize } from "@/bindings";
@@ -41,6 +42,24 @@ function HdrBadge({ item }: { item: MediaView_Serialize }) {
   );
 }
 
+/** "Missing" or "Changed" for media that needs a relink (design §6.6). */
+function StatusBadge({ item }: { item: MediaView_Serialize }) {
+  if (item.status === "online") return null;
+  const Icon = item.status === "offline" ? FileX : FileWarning;
+  return (
+    <span
+      title={t.mediaBin.status.tip[item.status]}
+      className={cn(
+        "flex items-center gap-0.5 rounded-sm bg-background/80 px-1 text-2xs leading-4 font-semibold",
+        item.status === "offline" ? "text-destructive" : "text-warning",
+      )}
+    >
+      <Icon className="size-3" aria-hidden />
+      {t.mediaBin.status.badge[item.status]}
+    </span>
+  );
+}
+
 /**
  * One media item, as a grid tile or a list row. Selection, keyboard and context menu are handled
  * by the parent list through `data-media-id` (event delegation), so the props stay plain data and
@@ -74,6 +93,7 @@ export const MediaItem = memo(function MediaItem({ item, layout, selected, tabba
             <span className="truncate">{mediaDetails(item)}</span>
           </p>
         </div>
+        <StatusBadge item={item} />
         <HdrBadge item={item} />
       </div>
     );
@@ -94,7 +114,10 @@ export const MediaItem = memo(function MediaItem({ item, layout, selected, tabba
             <Icon className="size-3 text-muted-foreground" aria-hidden />
             <span className="sr-only">{t.mediaBin.kinds[item.kind]}</span>
           </span>
-          <HdrBadge item={item} />
+          <span className="flex gap-1">
+            <StatusBadge item={item} />
+            <HdrBadge item={item} />
+          </span>
         </div>
         {duration && (
           <span className="pointer-events-none absolute right-1 bottom-1 rounded-sm bg-background/80 px-1 text-2xs leading-4 tabular-nums">

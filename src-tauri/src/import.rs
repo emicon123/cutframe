@@ -11,7 +11,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use app_core::MediaId;
 use app_core::command::AddMedia;
@@ -21,14 +20,12 @@ use engine::media::{MediaError, Probed, fingerprint, has_media_extension, probe_
 use crate::ipc::IpcError;
 use crate::ipc::events::MediaJobReport;
 use crate::ipc::types::{JobId, JobStage, MediaErrorKind, MediaFileOutcome, MediaFileResult};
-use crate::jobs::{JobContext, JobManager, Priority};
+use crate::jobs::{JobContext, JobManager, Priority, edit_when_idle};
+use crate::media_paths::{normalise, path_key};
 
 /// Most media files one dropped folder may hold (recursively). A larger folder is reported as one
 /// `tooManyFiles` failure and nothing from it is imported.
 pub const MAX_IMPORT_FILES: usize = 2000;
-
-/// How often the finish step retries while a gesture is open.
-const GESTURE_RETRY: Duration = Duration::from_millis(50);
 
 /// Starts importing `paths` (files or folders). Returns at once.
 pub fn start(jobs: &JobManager, paths: Vec<PathBuf>) -> JobId {
@@ -46,33 +43,13 @@ enum Planned {
 
 /// What happened to one file on the pool.
 #[derive(Debug)]
-enum FileResult {
+pub(crate) enum FileResult {
     Probed {
         fingerprint: Fingerprint,
         probed: Box<Probed>,
     },
     Failed(MediaError),
     Cancelled,
-}
-
-/// Paths as stored and shown: absolute, without the Windows `\\?\` prefix.
-fn normalise(path: &Path) -> PathBuf {
-    let text = path.to_string_lossy();
-    let path = match text.strip_prefix(r"\\?\") {
-        Some(rest) if !rest.starts_with("UNC\\") => PathBuf::from(rest),
-        _ => path.to_owned(),
-    };
-    std::path::absolute(&path).unwrap_or(path)
-}
-
-/// The key that makes two spellings of one path the same file (Windows paths ignore case).
-fn path_key(path: &Path) -> String {
-    let text = path.to_string_lossy();
-    if cfg!(windows) {
-        text.to_lowercase()
-    } else {
-        text.into_owned()
-    }
 }
 
 fn shown(path: &Path) -> String {
@@ -91,7 +68,7 @@ fn failed(path: &Path, error: MediaErrorKind, detail: impl Into<String>) -> Plan
 
 /// Media files under `dir`, recursively, sorted. Symlinked folders are not followed (no loops).
 /// `Err` if there are more than `limit`.
-fn walk(dir: &Path, limit: usize) -> std::io::Result<Result<Vec<PathBuf>, ()>> {
+pub(crate) fn walk(dir: &Path, limit: usize) -> std::io::Result<Result<Vec<PathBuf>, ()>> {
     let mut files = Vec::new();
     let mut pending = vec![dir.to_owned()];
     while let Some(dir) = pending.pop() {
@@ -166,7 +143,7 @@ fn io_failure(err: &std::io::Error) -> MediaFileOutcome {
     }
 }
 
-fn probe_file(path: &Path, ctx: &JobContext) -> FileResult {
+pub(crate) fn probe_file(path: &Path, ctx: &JobContext) -> FileResult {
     if ctx.is_cancelled() {
         return FileResult::Cancelled;
     }
@@ -324,34 +301,26 @@ fn finish(ctx: JobContext, planned: &[Planned], mut results: HashMap<usize, File
     }
 
     // Decide and add under the document lock, so two concurrent imports of the same file cannot
-    // both add it. Retry while a gesture is open.
-    let decided = loop {
-        let mut decided = None;
-        let edit = ctx.host().edit(&mut |doc| {
-            if doc.gesture_label().is_some() {
-                return Ok(false);
-            }
-            let (assets, decisions) = plan_assets(&doc.project().media, &candidates);
-            let changed = !assets.is_empty();
-            if changed {
-                doc.execute(Box::new(AddMedia::new(assets)))?;
-            }
-            decided = Some(decisions);
-            Ok(changed)
-        });
-        if let Err(err) = edit {
+    // both add it. Waits while a gesture is open.
+    let decided = edit_when_idle(&ctx, |doc| {
+        let (assets, decisions) = plan_assets(&doc.project().media, &candidates);
+        let changed = !assets.is_empty();
+        if changed {
+            doc.execute(Box::new(AddMedia::new(assets)))?;
+        }
+        Ok((decisions, changed))
+    });
+    let decided = match decided {
+        Ok(Some(decided)) => decided,
+        Ok(None) => {
+            ctx.finish(Err(IpcError::Cancelled("import cancelled".into())));
+            return;
+        }
+        Err(err) => {
             tracing::error!(%err, "adding imported media failed");
             ctx.finish(Err(err));
             return;
         }
-        if let Some(decided) = decided {
-            break decided;
-        }
-        if ctx.is_cancelled() {
-            ctx.finish(Err(IpcError::Cancelled("import cancelled".into())));
-            return;
-        }
-        std::thread::sleep(GESTURE_RETRY);
     };
     let added: Vec<MediaId> = decided
         .iter()
@@ -389,6 +358,7 @@ fn finish(ctx: JobContext, planned: &[Planned], mut results: HashMap<usize, File
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::Ordering;
+    use std::time::Duration;
 
     use app_core::command::RenameProject;
 
@@ -437,6 +407,7 @@ mod tests {
                 MediaFileOutcome::Added { .. } => "added".to_owned(),
                 MediaFileOutcome::AlreadyImported { .. } => "alreadyImported".to_owned(),
                 MediaFileOutcome::Failed { error, .. } => format!("failed:{error:?}"),
+                other => format!("{other:?}"),
             })
             .collect()
     }
@@ -635,15 +606,5 @@ mod tests {
         let doc = host.document.lock().unwrap();
         assert_eq!(doc.project().media.len(), 1);
         assert_eq!(doc.project().name, "Test");
-    }
-
-    #[test]
-    fn windows_long_path_prefix_is_removed() {
-        let path = normalise(Path::new(r"\\?\C:\Videos\a.mp4"));
-        let text = path.to_string_lossy();
-        assert!(!text.contains(r"\\?\"), "{text}");
-        assert!(text.ends_with(r"C:\Videos\a.mp4"), "{text}");
-        #[cfg(windows)]
-        assert_eq!(text, r"C:\Videos\a.mp4");
     }
 }

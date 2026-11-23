@@ -16,8 +16,10 @@ use super::types::{
     AppInfo, CacheInfo, JobId, PreviewMode, PreviewRect, ProjectState, RecoveryEntry,
 };
 use crate::import;
+use crate::media_paths;
 use crate::preferences::{self, CURRENT_PREFERENCES_VERSION, Preferences, PreferencesError};
 use crate::project_file;
+use crate::relink;
 use crate::state::{AppState, SaveSnapshot};
 
 /// Name of a project made by `new_project` and of the one open at startup.
@@ -196,12 +198,18 @@ pub async fn open_project(
 ) -> Result<(), IpcError> {
     let path = std::path::absolute(PathBuf::from(path)).map_err(|err| IpcError::io(&err))?;
     let (path, loaded) = tauri::async_runtime::spawn_blocking(move || {
-        let loaded = project_file::read_project_file(&path);
+        let loaded = project_file::read_project_file(&path).map(|mut loaded| {
+            // ADR-0002 §7: media next to the project (relative path) wins over the absolute path.
+            media_paths::resolve_paths(&mut loaded.project, &path);
+            loaded
+        });
         (path, loaded)
     })
     .await?;
     let loaded = loaded?;
     state.replace_project(&app, loaded.project, Some(path), loaded.source_version)?;
+    // Missing or changed media files, in the background.
+    state.check_media();
     // Previews missing from the cache (another machine, an evicted or cleared cache).
     state.prefetch_previews(None);
     Ok(())
@@ -247,7 +255,8 @@ async fn write(
     let backup = snapshot.backup_of_version(&path);
     let project = snapshot.project.clone();
     let (path, written) = tauri::async_runtime::spawn_blocking(move || {
-        let json = serialization::to_json(&project);
+        // Media paths relative to this file (ADR-0002 §7); the open document is not changed.
+        let json = serialization::to_json(&media_paths::with_relative_paths(&project, Some(&path)));
         let written = project_file::write_project_file(&path, &json, backup);
         (path, written)
     })
@@ -301,8 +310,17 @@ pub async fn restore_recovery(
     id: Uuid,
 ) -> Result<(), IpcError> {
     let store = state.recovery().clone();
-    let restored = tauri::async_runtime::spawn_blocking(move || store.load(id)).await??;
+    let restored = tauri::async_runtime::spawn_blocking(move || {
+        store.load(id).map(|mut restored| {
+            if let Some(file) = &restored.file_path {
+                media_paths::resolve_paths(&mut restored.project, file);
+            }
+            restored
+        })
+    })
+    .await??;
     state.replace_restored(&app, restored, id)?;
+    state.check_media();
     // A restored project may hold media whose previews are not cached yet.
     state.prefetch_previews(None);
     Ok(())
@@ -410,6 +428,58 @@ pub fn remove_media(
         doc.execute(Box::new(RemoveMedia::new(ids))).map(Some)
     })?;
     Ok(())
+}
+
+/// Points media `id` at the file at `path` (absolute), e.g. after it was moved or renamed, and
+/// returns the job id at once (stage `probing`). The file is fingerprinted and probed; the outcome
+/// comes as `mediaJobReport` with one entry, then `jobFinished`:
+/// - `relinked`: done, one undo step (`relinkMedia`);
+/// - `fingerprintMismatch`: the file has other content and `allowMismatch` was `false`; nothing
+///   changed. Ask the user and call again with `allowMismatch = true` to use it anyway (also the
+///   way to accept a `changed` file as it is now);
+/// - `failed` with `kindMismatch` (another kind, e.g. audio for a video) or an import error kind.
+///
+/// Fails with `invalidEdit` for an id that is not in the project.
+#[tauri::command]
+#[specta::specta]
+pub fn relink_media(
+    state: State<'_, AppState>,
+    id: MediaId,
+    path: String,
+    allow_mismatch: bool,
+) -> Result<JobId, IpcError> {
+    ensure_media(&state, id)?;
+    Ok(relink::start_one(
+        &state.jobs,
+        id,
+        PathBuf::from(path),
+        allow_mismatch,
+    ))
+}
+
+/// Searches `folder` (absolute, recursively) for every media item whose file is missing and
+/// relinks all it finds as one undo step (`relinkMedia`). Matches by content only (same file
+/// name tried first); a file with the right name but other content is never taken. Returns the job
+/// id at once (stage `searchingFolder`); `mediaJobReport` lists each missing item in project
+/// order as `relinked` (with its new path) or `notFound` (with its old path), then `jobFinished`,
+/// which fails with `fileNotFound` or `io` when the folder cannot be read.
+#[tauri::command]
+#[specta::specta]
+pub fn relink_media_folder(state: State<'_, AppState>, folder: String) -> Result<JobId, IpcError> {
+    if folder.is_empty() {
+        return Err(IpcError::InvalidEdit("no folder to search".into()));
+    }
+    Ok(relink::start_folder(&state.jobs, PathBuf::from(folder)))
+}
+
+fn ensure_media(state: &AppState, id: MediaId) -> Result<(), IpcError> {
+    if state.snapshot().media.iter().any(|m| m.id == id) {
+        Ok(())
+    } else {
+        Err(IpcError::InvalidEdit(format!(
+            "media {id} is not in the project"
+        )))
+    }
 }
 
 /// Opens the file manager (Explorer) at the media file's folder with the file selected. By id, so

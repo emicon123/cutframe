@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::media::{MediaAsset, MediaId, MediaProblem, validate_asset};
+use crate::media::{MediaAsset, MediaId, MediaKind, MediaProblem, validate_asset};
 use crate::model::{CanvasBackground, Project, ProjectSettings, Track, TrackId, TrackKind};
 use crate::validate::ValidationError;
 
@@ -23,6 +23,8 @@ pub enum HistoryLabel {
     ImportMedia,
     /// Removing media items from the project (one or several at once).
     RemoveMedia,
+    /// Pointing media at another file: one relinked item, or every item a folder relink found.
+    RelinkMedia,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -39,6 +41,13 @@ pub enum CommandError {
     /// does that in the same history entry).
     #[error("media {0} is used by clips")]
     MediaInUse(MediaId),
+    /// A relink to a file of another kind (e.g. a video asset to an audio file).
+    #[error("media {id} is {expected:?}, the new file is {got:?}")]
+    MediaKindMismatch {
+        id: MediaId,
+        expected: MediaKind,
+        got: MediaKind,
+    },
     #[error("media {id} is invalid: {problem}")]
     InvalidMedia { id: MediaId, problem: MediaProblem },
     /// A gesture is open; commit or cancel it before running another edit (ADR-0006 §3).
@@ -447,6 +456,66 @@ impl Command for RemoveMedia {
     }
 }
 
+/// Points media at another file (relink, design §6.6): replaces the asset with the same id by
+/// `relinked`, which carries the new path, fingerprint and probe info. The id, the kind and the
+/// asset's position stay, so everything that references the id keeps working. Fails, changing
+/// nothing, for an id that is not in the project ([`CommandError::MediaNotFound`]), another kind
+/// ([`CommandError::MediaKindMismatch`]) or an invalid asset. Several relinks of one action (a
+/// folder relink) go into one [`Batch`] labelled [`HistoryLabel::RelinkMedia`].
+#[derive(Debug)]
+pub struct RelinkMedia {
+    relinked: MediaAsset,
+    /// The asset before `apply`, for `revert`.
+    previous: Option<MediaAsset>,
+}
+
+impl RelinkMedia {
+    pub fn new(relinked: MediaAsset) -> Self {
+        Self {
+            relinked,
+            previous: None,
+        }
+    }
+
+    pub fn id(&self) -> MediaId {
+        self.relinked.id
+    }
+}
+
+impl Command for RelinkMedia {
+    fn label(&self) -> HistoryLabel {
+        HistoryLabel::RelinkMedia
+    }
+
+    fn apply(&mut self, project: &mut Project) -> Result<(), CommandError> {
+        let id = self.relinked.id;
+        let slot = project
+            .media
+            .iter_mut()
+            .find(|m| m.id == id)
+            .ok_or(CommandError::MediaNotFound(id))?;
+        if slot.kind != self.relinked.kind {
+            return Err(CommandError::MediaKindMismatch {
+                id,
+                expected: slot.kind,
+                got: self.relinked.kind,
+            });
+        }
+        validate_asset(&self.relinked)
+            .map_err(|problem| CommandError::InvalidMedia { id, problem })?;
+        self.previous = Some(std::mem::replace(slot, self.relinked.clone()));
+        Ok(())
+    }
+
+    fn revert(&mut self, project: &mut Project) {
+        if let Some(previous) = self.previous.take()
+            && let Some(slot) = project.media.iter_mut().find(|m| m.id == previous.id)
+        {
+            *slot = previous;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -814,6 +883,104 @@ mod tests {
         assert_eq!(after.media.len(), 2);
     }
 
+    /// `asset` at another path with other content (as a relink with `allow_mismatch` makes it).
+    fn moved(asset: &MediaAsset, seed: u8) -> MediaAsset {
+        let mut relinked = asset.clone();
+        relinked.path = crate::media::MediaPath::absolute(format!("D:\\moved\\{seed}.mp4"));
+        relinked.fingerprint.hash = format!("{seed:02x}").repeat(16);
+        relinked.fingerprint.size += 1;
+        relinked
+    }
+
+    #[test]
+    fn relink_media_is_reversible_and_keeps_id_and_position() {
+        use crate::media::samples;
+        let mut project = Project::new("Test");
+        project.media = vec![samples::video(1), samples::audio(2), samples::image(3)];
+        let relinked = moved(&project.media[1], 0xaa);
+        let command = RelinkMedia::new(relinked.clone());
+        assert_eq!(command.label(), HistoryLabel::RelinkMedia);
+        assert_eq!(command.id(), project.media[1].id);
+        let after = assert_reversible(command, &project);
+        assert_eq!(after.media[1], relinked);
+        assert_eq!(after.media[0], project.media[0]);
+        assert_eq!(after.media[2], project.media[2]);
+    }
+
+    #[test]
+    fn relink_media_rejects_unknown_ids_other_kinds_and_invalid_assets() {
+        use crate::media::samples;
+        let mut project = Project::new("Test");
+        project.media = vec![samples::video(1)];
+        let before = project.clone();
+
+        let unknown = samples::video(2);
+        assert_eq!(
+            RelinkMedia::new(unknown.clone()).apply(&mut project),
+            Err(CommandError::MediaNotFound(unknown.id))
+        );
+
+        let mut audio = samples::audio(3);
+        audio.id = project.media[0].id;
+        assert_eq!(
+            RelinkMedia::new(audio.clone()).apply(&mut project),
+            Err(CommandError::MediaKindMismatch {
+                id: audio.id,
+                expected: MediaKind::Video,
+                got: MediaKind::Audio,
+            })
+        );
+
+        let mut broken = moved(&project.media[0], 4);
+        broken.path.absolute.clear();
+        assert_eq!(
+            RelinkMedia::new(broken.clone()).apply(&mut project),
+            Err(CommandError::InvalidMedia {
+                id: broken.id,
+                problem: MediaProblem::EmptyPath
+            })
+        );
+        assert_eq!(project, before);
+    }
+
+    #[test]
+    fn a_folder_relink_is_one_history_entry() {
+        use crate::media::samples;
+        let mut project = Project::new("Test");
+        project.media = vec![samples::video(1), samples::audio(2), samples::image(3)];
+        let start = project.clone();
+        let relinks: Vec<Box<dyn Command>> = [0, 2]
+            .into_iter()
+            .map(|i| Box::new(RelinkMedia::new(moved(&project.media[i], 0x10 + i as u8))) as _)
+            .collect();
+        let mut doc = crate::Document::new(project);
+        doc.execute(Box::new(Batch::new(HistoryLabel::RelinkMedia, relinks)))
+            .unwrap();
+        assert_eq!(doc.undo_label(), Some(HistoryLabel::RelinkMedia));
+        assert_eq!(doc.project().media[0], moved(&start.media[0], 0x10));
+        assert_eq!(doc.project().media[1], start.media[1]);
+        assert_eq!(doc.project().media[2], moved(&start.media[2], 0x12));
+        assert!(doc.undo());
+        assert_eq!(*doc.project(), start);
+        assert!(!doc.can_undo());
+        assert!(doc.redo());
+        assert_eq!(doc.project().media[2], moved(&start.media[2], 0x12));
+
+        // A failing child leaves the project as it was and records nothing.
+        let mut wrong = samples::audio(9);
+        wrong.id = start.media[0].id;
+        let failing: Vec<Box<dyn Command>> = vec![
+            Box::new(RelinkMedia::new(moved(&start.media[1], 0x20))),
+            Box::new(RelinkMedia::new(wrong)),
+        ];
+        let before = doc.snapshot();
+        assert!(
+            doc.execute(Box::new(Batch::new(HistoryLabel::RelinkMedia, failing)))
+                .is_err()
+        );
+        assert_eq!(doc.snapshot(), before);
+    }
+
     #[test]
     fn rename_project_is_reversible() {
         let project = Project::new("Test");
@@ -841,6 +1008,12 @@ mod tests {
                 picks: Vec<usize>,
                 with_unknown: bool,
             },
+            /// Relink the assets at these positions (modulo the media count) as one batch;
+            /// `wrong_kind` makes the last one another kind, so the whole batch fails.
+            Relink {
+                picks: Vec<usize>,
+                wrong_kind: bool,
+            },
             Undo,
             Redo,
         }
@@ -851,16 +1024,18 @@ mod tests {
                     .prop_map(|(count, with_duplicate)| Op::Import { count, with_duplicate }),
                 2 => (prop::collection::vec(0usize..8, 1..4), prop::bool::weighted(0.2))
                     .prop_map(|(picks, with_unknown)| Op::Remove { picks, with_unknown }),
+                2 => (prop::collection::vec(0usize..8, 1..4), prop::bool::weighted(0.2))
+                    .prop_map(|(picks, wrong_kind)| Op::Relink { picks, wrong_kind }),
                 2 => Just(Op::Undo),
                 1 => Just(Op::Redo),
             ]
         }
 
         proptest! {
-            /// Random imports and removals with undo/redo keep the media invariants, never lose or reorder
+            /// Random imports, removals and relinks with undo/redo keep the media invariants, never lose or reorder
             /// assets, and undoing everything restores the start state.
             #[test]
-            fn imports_and_removals_with_undo_redo_keep_media_valid(ops in prop::collection::vec(op(), 0..40)) {
+            fn imports_removals_and_relinks_with_undo_redo_keep_media_valid(ops in prop::collection::vec(op(), 0..40)) {
                 let start = Project::new("Test");
                 let mut doc = Document::new(start.clone());
                 let mut seed = 0u8;
@@ -910,6 +1085,51 @@ mod tests {
                                 prop_assert!(result.is_ok());
                                 let kept: Vec<_> = before.media.iter().filter(|m| !ids.contains(&m.id)).cloned().collect();
                                 prop_assert_eq!(&doc.project().media, &kept, "the others keep their order");
+                            }
+                        }
+                        Op::Relink { picks, wrong_kind } => {
+                            if before.media.is_empty() {
+                                continue;
+                            }
+                            let mut targets: Vec<usize> = Vec::new();
+                            for p in picks {
+                                let index = p % before.media.len();
+                                if !targets.contains(&index) {
+                                    targets.push(index);
+                                }
+                            }
+                            let mut relinked: Vec<MediaAsset> = targets
+                                .iter()
+                                .map(|&i| {
+                                    seed = seed.wrapping_add(1);
+                                    super::moved(&before.media[i], seed)
+                                })
+                                .collect();
+                            if wrong_kind {
+                                let last = relinked.last_mut().expect("at least one pick");
+                                let id = last.id;
+                                *last = if last.kind == MediaKind::Audio { samples::video(seed) } else { samples::audio(seed) };
+                                last.id = id;
+                            }
+                            let commands: Vec<Box<dyn Command>> = relinked
+                                .iter()
+                                .map(|a| Box::new(RelinkMedia::new(a.clone())) as _)
+                                .collect();
+                            let result = doc.execute(Box::new(Batch::new(HistoryLabel::RelinkMedia, commands)));
+                            if wrong_kind {
+                                prop_assert!(result.is_err());
+                                prop_assert_eq!(&doc.snapshot(), &before);
+                            } else {
+                                prop_assert!(result.is_ok());
+                                let ids: Vec<_> = doc.project().media.iter().map(|m| m.id).collect();
+                                let before_ids: Vec<_> = before.media.iter().map(|m| m.id).collect();
+                                prop_assert_eq!(ids, before_ids, "relink keeps ids and order");
+                                for (i, asset) in doc.project().media.iter().enumerate() {
+                                    match targets.iter().position(|&t| t == i) {
+                                        Some(k) => prop_assert_eq!(asset, &relinked[k]),
+                                        None => prop_assert_eq!(asset, &before.media[i]),
+                                    }
+                                }
                             }
                         }
                         Op::Undo => { doc.undo(); }

@@ -112,8 +112,13 @@ impl RecoveryStore {
     /// Writes `snapshot` as this session's envelope, atomically (tmp + rename). Never touches
     /// `snapshot.file_path`.
     pub fn write(&self, snapshot: &SaveSnapshot, saved_at_ms: i64) -> io::Result<()> {
-        let project = RawValue::from_string(serialization::to_json(&snapshot.project))
-            .map_err(io::Error::other)?;
+        let project = RawValue::from_string(serialization::to_json(
+            &crate::media_paths::with_relative_paths(
+                &snapshot.project,
+                snapshot.file_path.as_deref(),
+            ),
+        ))
+        .map_err(io::Error::other)?;
         let envelope = RecoveryFile {
             recovery_version: RECOVERY_VERSION,
             session_id: self.session_id,

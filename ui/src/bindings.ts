@@ -124,6 +124,28 @@ export const commands = {
 	 */
 	removeMedia: (ids: MediaId[], options?: InvokeOptions) => __TAURI_INVOKE<null>("remove_media", { ids }, options),
 	/**
+	 *  Points media `id` at the file at `path` (absolute), e.g. after it was moved or renamed, and
+	 *  returns the job id at once (stage `probing`). The file is fingerprinted and probed; the outcome
+	 *  comes as `mediaJobReport` with one entry, then `jobFinished`:
+	 *  - `relinked`: done, one undo step (`relinkMedia`);
+	 *  - `fingerprintMismatch`: the file has other content and `allowMismatch` was `false`; nothing
+	 *    changed. Ask the user and call again with `allowMismatch = true` to use it anyway (also the
+	 *    way to accept a `changed` file as it is now);
+	 *  - `failed` with `kindMismatch` (another kind, e.g. audio for a video) or an import error kind.
+	 * 
+	 *  Fails with `invalidEdit` for an id that is not in the project.
+	 */
+	relinkMedia: (id: MediaId, path: string, allowMismatch: boolean, options?: InvokeOptions) => __TAURI_INVOKE<JobId>("relink_media", { id, path, allowMismatch }, options),
+	/**
+	 *  Searches `folder` (absolute, recursively) for every media item whose file is missing and
+	 *  relinks all it finds as one undo step (`relinkMedia`). Matches by content only (same file
+	 *  name tried first); a file with the right name but other content is never taken. Returns the job
+	 *  id at once (stage `searchingFolder`); `mediaJobReport` lists each missing item in project
+	 *  order as `relinked` (with its new path) or `notFound` (with its old path), then `jobFinished`,
+	 *  which fails with `fileNotFound` or `io` when the folder cannot be read.
+	 */
+	relinkMediaFolder: (folder: string, options?: InvokeOptions) => __TAURI_INVOKE<JobId>("relink_media_folder", { folder }, options),
+	/**
 	 *  Opens the file manager (Explorer) at the media file's folder with the file selected. By id, so
 	 *  the webview never hands a path to the shell. Fails with `invalidEdit` for an unknown id and
 	 *  `fileNotFound` when the file is gone.
@@ -469,7 +491,9 @@ export type HistoryLabel = "addTrack" | "removeTrack" | "renameTrack" | "renameP
 /**  One import job: every file it added. */
 "importMedia" | 
 /**  Removing media items from the project (one or several at once). */
-"removeMedia";
+"removeMedia" | 
+/**  Pointing media at another file: one relinked item, or every item a folder relink found. */
+"relinkMedia";
 
 export type HistoryState = HistoryState_Serialize | HistoryState_Deserialize;
 
@@ -582,7 +606,14 @@ export type JobStage =
 /**  Reading and probing media files (import). */
 "probing" | 
 /**  Making posters, waveforms and filmstrips in the background (after import and open). */
-"generatingPreviews";
+"generatingPreviews" | 
+/**
+ *  Checking in the background that every media file is still there and unchanged (after
+ *  open and restore).
+ */
+"checkingMedia" | 
+/**  Looking for missing media files in a folder (`relinkMediaFolder`). */
+"searchingFolder";
 
 export type Keyframe<T> = {
 	/**  Offset from the clip's start, in flicks. */
@@ -612,11 +643,25 @@ export type MediaErrorKind = "fileNotFound" | "accessDenied" |
  *  A dropped folder holds more media files than one import takes (`MAX_IMPORT_FILES`);
  *  nothing from it was imported.
  */
-"tooManyFiles";
+"tooManyFiles" | 
+/**  `relinkMedia` to a file of another kind (e.g. a video to an audio file). Nothing changed. */
+"kindMismatch";
 
 export type MediaFileOutcome = { kind: "added"; media: MediaId } | 
+/**  The media now points at this file. */
+{ kind: "relinked"; media: MediaId } | 
 /**  The same content (fingerprint) is already in the project, or earlier in the same import. */
-{ kind: "alreadyImported"; media: MediaId } | { kind: "failed"; error: MediaErrorKind; 
+{ kind: "alreadyImported"; media: MediaId } | 
+/**
+ *  `relinkMedia` without `allowMismatch`: the file has other content than the media. Ask the
+ *  user, then call `relinkMedia` again with `allowMismatch = true`. Nothing changed.
+ */
+{ kind: "fingerprintMismatch"; media: MediaId } | 
+/**
+ *  `relinkMediaFolder` found no file with this missing media's content; `path` is its old
+ *  path.
+ */
+{ kind: "notFound"; media: MediaId } | { kind: "failed"; error: MediaErrorKind; 
 /**  English, for the log only. */
 detail: string };
 
@@ -649,9 +694,12 @@ export type MediaKind =
 
 /**  Whether the media file is reachable. Session state, not saved (design §6.6). */
 export type MediaStatus = "online" | 
-/**  The file is missing (task 0240). */
+/**  The file is missing (or its drive is not reachable): relink it. */
 "offline" | 
-/**  The file at the path has other content than when it was imported (task 0240). */
+/**
+ *  The file at the path has other content than when it was imported or relinked; relink to
+ *  the file "as it is now" (`allowMismatch`) or to the original.
+ */
 "changed";
 
 /**
@@ -682,13 +730,18 @@ export type MediaView_Deserialize = {
 	hdr?: HdrTransfer | null,
 	/**  The default audio stream; `None` without audio. */
 	audio?: AudioSummary | null,
-	/**  Always `online` until missing-media detection lands (task 0240). */
+	/**
+	 *  Whether the file is reachable and unchanged. Session state: `online` until the background
+	 *  check after open says otherwise; it changes at runtime when a file disappears, and after a
+	 *  relink.
+	 */
 	status: MediaStatus,
 	/**  How many clips reference this media (the "used in timeline" badge). */
 	usedBy: number,
 	/**
-	 *  Append as `?v=` to every `media://` URL of this item, so a relinked or changed file never
-	 *  shows stale previews.
+	 *  Append as `?v=` to every `media://` URL of this item. Opaque; it changes whenever a relink
+	 *  changes the file's path or content, so the UI fetches the previews again (also after an
+	 *  item that was offline is relinked to its own content at a new place).
 	 */
 	previewVersion: string,
 	/**
@@ -720,13 +773,18 @@ export type MediaView_Serialize = {
 	hdr: HdrTransfer | null,
 	/**  The default audio stream; `None` without audio. */
 	audio: AudioSummary | null,
-	/**  Always `online` until missing-media detection lands (task 0240). */
+	/**
+	 *  Whether the file is reachable and unchanged. Session state: `online` until the background
+	 *  check after open says otherwise; it changes at runtime when a file disappears, and after a
+	 *  relink.
+	 */
 	status: MediaStatus,
 	/**  How many clips reference this media (the "used in timeline" badge). */
 	usedBy: number,
 	/**
-	 *  Append as `?v=` to every `media://` URL of this item, so a relinked or changed file never
-	 *  shows stale previews.
+	 *  Append as `?v=` to every `media://` URL of this item. Opaque; it changes whenever a relink
+	 *  changes the file's path or content, so the UI fetches the previews again (also after an
+	 *  item that was offline is relinked to its own content at a new place).
 	 */
 	previewVersion: string,
 	/**
@@ -1096,6 +1154,8 @@ export type MockCommandHandlers = {
     importMediaDialog: (args: { filterLabel: string }) => JobId | null | Promise<JobId | null>,
     cancelJob: (args: { id: JobId }) => null | Promise<null>,
     removeMedia: (args: { ids: MediaId[] }) => null | Promise<null>,
+    relinkMedia: (args: { id: MediaId; path: string; allowMismatch: boolean }) => JobId | Promise<JobId>,
+    relinkMediaFolder: (args: { folder: string }) => JobId | Promise<JobId>,
     revealMedia: (args: { id: MediaId }) => null | Promise<null>,
     takeLaunchPath: () => string | null | Promise<string | null>,
     getPreferences: () => Preferences_Serialize | Promise<Preferences_Serialize>,
@@ -1153,6 +1213,8 @@ export function mockCommands(handlers: Partial<MockCommandHandlers> = {}): void 
             case "import_media_dialog": return mockCommandHandler(mockHandlers.importMediaDialog, "import_media_dialog", args);
             case "cancel_job": return mockCommandHandler(mockHandlers.cancelJob, "cancel_job", args);
             case "remove_media": return mockCommandHandler(mockHandlers.removeMedia, "remove_media", args);
+            case "relink_media": return mockCommandHandler(mockHandlers.relinkMedia, "relink_media", args);
+            case "relink_media_folder": return mockCommandHandler(mockHandlers.relinkMediaFolder, "relink_media_folder", args);
             case "reveal_media": return mockCommandHandler(mockHandlers.revealMedia, "reveal_media", args);
             case "take_launch_path": return mockCommandHandler(mockHandlers.takeLaunchPath, "take_launch_path", args);
             case "get_preferences": return mockCommandHandler(mockHandlers.getPreferences, "get_preferences", args);

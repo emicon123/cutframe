@@ -31,7 +31,7 @@ pub mod waveform;
 pub use encoders::{EncoderBackend, EncoderCandidate, EncoderTarget};
 pub use error::{MediaError, MediaErrorKind};
 pub use ffmpeg::{FfmpegInfo, FfmpegProblem, LibraryInfo};
-pub use fingerprint::fingerprint;
+pub use fingerprint::{fingerprint, modified_millis};
 pub use probe::{Probed, probe, probe_cancellable};
 
 /// File extensions (lowercase, without the dot) that import takes from a folder and the file

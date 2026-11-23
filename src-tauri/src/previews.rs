@@ -12,7 +12,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock};
 
 use app_core::media::FilmstripLayout;
 use app_core::{MediaAsset, MediaId, Project};
@@ -56,9 +56,21 @@ pub enum Outcome {
 /// Called once with the outcome of a product.
 pub type Waiter = Box<dyn FnOnce(&Outcome) + Send>;
 
-/// `?v=` of every `media://` URL of `asset`: the first 16 hex chars of its content hash.
+/// `?v=` of every `media://` URL of `asset`: the first 16 hex chars of its content hash, then 8
+/// hex chars of its path, so a relink to the same content at a new place makes the UI fetch again
+/// (its earlier requests may have failed while the file was offline). The cache itself is keyed
+/// by content only.
 pub fn preview_version(asset: &MediaAsset) -> String {
-    asset.fingerprint.hash.chars().take(16).collect()
+    let hash: String = asset.fingerprint.hash.chars().take(16).collect();
+    let path = crate::media_paths::path_key(Path::new(&asset.path.absolute));
+    format!("{hash}-{:08x}", fnv1a(path.as_bytes()))
+}
+
+/// 32-bit FNV-1a: stable across builds and platforms, enough to tell paths apart in a URL.
+fn fnv1a(bytes: &[u8]) -> u32 {
+    bytes.iter().fold(0x811c_9dc5, |hash, &b| {
+        (hash ^ u32::from(b)).wrapping_mul(0x0100_0193)
+    })
 }
 
 /// The products of `asset` in prefetch order groups: poster, waveform, filmstrip tiles.
@@ -106,7 +118,12 @@ pub struct Previews {
     generate: Box<Generator>,
     inflight: Mutex<HashMap<Key, Vec<Waiter>>>,
     failed: Mutex<HashSet<Key>>,
+    /// Told when a generator finds the media file gone (runtime offline detection, §6.6).
+    on_missing: OnceLock<Box<MissingObserver>>,
 }
+
+/// See [`Previews::on_missing`].
+pub type MissingObserver = dyn Fn(&MediaAsset) + Send + Sync;
 
 impl std::fmt::Debug for Previews {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -131,7 +148,14 @@ impl Previews {
             generate,
             inflight: Mutex::default(),
             failed: Mutex::default(),
+            on_missing: OnceLock::new(),
         }
+    }
+
+    /// Sets the callback for "the file of this asset is gone" (it runs on a pool worker). Only the
+    /// first call has an effect.
+    pub fn on_missing(&self, observer: Box<MissingObserver>) {
+        let _ = self.on_missing.set(observer);
     }
 
     /// The cache in use now (a clone of the `Arc`, so no lock is held during file I/O).
@@ -226,6 +250,11 @@ impl Previews {
                 ) =>
             {
                 tracing::debug!(%err, product = ?key.product, "preview unavailable");
+                if err.kind == MediaErrorKind::FileNotFound
+                    && let Some(observer) = self.on_missing.get()
+                {
+                    observer(asset);
+                }
                 Outcome::Unavailable
             }
             Err(err) => {
@@ -476,6 +505,9 @@ pub(crate) mod tests {
         let calls = Arc::default();
         let previews =
             Previews::with_generator(None, fake_generator(Arc::clone(&calls), Duration::ZERO));
+        let gone: Arc<Mutex<Vec<MediaId>>> = Arc::default();
+        let seen = Arc::clone(&gone);
+        previews.on_missing(Box::new(move |asset| seen.lock().unwrap().push(asset.id)));
         let mut broken = samples::video(1);
         broken.path.absolute = "C:\\broken.mp4".into();
         let key = Key::new(&broken, Product::Poster);
@@ -493,6 +525,11 @@ pub(crate) mod tests {
         previews.produce(&key, &missing, &NEVER);
         assert_eq!(rx.recv().unwrap(), Outcome::Unavailable);
         assert!(!previews.has_failed(&key), "retried on the next request");
+        assert_eq!(
+            *gone.lock().unwrap(),
+            [missing.id],
+            "only the missing file is reported gone"
+        );
     }
 
     #[test]
@@ -540,7 +577,24 @@ pub(crate) mod tests {
         assert_eq!(products(&audio), (None, Some(Product::Waveform), vec![]));
         let image = samples::image(3);
         assert_eq!(products(&image), (Some(Product::Poster), None, vec![]));
-        assert_eq!(preview_version(&video), "0101010101010101");
+        let version = preview_version(&video);
+        assert!(version.starts_with("0101010101010101-"), "{version}");
+        assert_eq!(version.len(), 25);
+        assert_eq!(preview_version(&video), version, "stable");
+        let mut moved = video.clone();
+        moved.path.absolute.push_str(".moved");
+        assert_ne!(
+            preview_version(&moved),
+            version,
+            "a new path is a new version"
+        );
+        let mut changed = video.clone();
+        changed.fingerprint.hash = "ab".repeat(16);
+        assert_ne!(
+            preview_version(&changed),
+            version,
+            "new content is a new version"
+        );
     }
 
     #[test]

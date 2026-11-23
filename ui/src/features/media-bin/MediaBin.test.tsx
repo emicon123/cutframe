@@ -1,4 +1,5 @@
 import { mockConvertFileSrc, mockWindows } from "@tauri-apps/api/mocks";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { emit } from "@tauri-apps/api/event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,12 +7,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mockCommands, type MediaView_Serialize } from "@/bindings";
 import { t } from "@/i18n";
 import { FLICKS_PER_SECOND } from "@/lib/time";
+import { jobResults } from "@/ipc/jobResults";
 import { useAppStore } from "@/stores/appStore";
 import { initialImportState, useImportStore } from "@/stores/importStore";
 import { type ProjectState, useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
 
 import { MediaBin } from "./MediaBin";
+import { closeRelink } from "./relinkStore";
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 
 const video: MediaView_Serialize = {
   id: "m1",
@@ -112,6 +117,8 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.mocked(openDialog).mockReset();
+  closeRelink();
   vi.unstubAllGlobals();
   useUiStore.setState({
     mediaLayout: "grid",
@@ -260,6 +267,7 @@ describe("MediaBin", () => {
   });
 
   it("shows translated per-file reasons after a job with failures", () => {
+    useImportStore.getState().dispatch({ type: "started", id: "j" });
     useImportStore.getState().dispatch({
       type: "report",
       event: {
@@ -294,5 +302,85 @@ describe("MediaBin", () => {
       expect(calls).toContain("import C:\\clips\\a.mp4,C:\\clips\\folder");
     });
     expect(calls.some((c) => c.includes("outside"))).toBe(false);
+  });
+
+  it("flags missing media and relinks it after confirming a content mismatch", async () => {
+    const missing: MediaView_Serialize = { ...video, status: "offline" };
+    useProjectStore.setState({ state: withMedia([missing, photo]) });
+    vi.mocked(openDialog).mockResolvedValue("D:\\moved\\portrait.mp4");
+    let job = 0;
+    mockCommands({
+      relinkMedia: ({ id, path, allowMismatch }) => {
+        calls.push(`relink ${id} ${path} ${allowMismatch}`);
+        const jobId = `r${++job}`;
+        const outcome = allowMismatch
+          ? ({ kind: "relinked", media: id } as const)
+          : ({ kind: "fingerprintMismatch", media: id } as const);
+        // The job may finish before its command resolves; jobResults keeps the result.
+        jobResults.report({ jobId, files: [{ path, outcome }] });
+        jobResults.finished({ jobId, result: { Ok: null } });
+        return jobId;
+      },
+    });
+    render(<MediaBin />);
+    expect(within(option("portrait.mp4")).getByText(t.mediaBin.status.badge.offline)).toBeTruthy();
+    const notice = screen.getByText(t.mediaBin.notice.text(1, 0));
+    expect(notice.textContent).toBe("1 file missing");
+
+    fireEvent.click(screen.getByRole("button", { name: t.mediaBin.notice.relink }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(t.mediaBin.relink.titleAll)).toBeTruthy();
+    // Only the item that needs a relink is listed.
+    expect(within(dialog).queryByText("beach.heic")).toBeNull();
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: t.mediaBin.relink.locateItem("portrait.mp4") }),
+    );
+    await waitFor(() => expect(calls).toEqual(["relink m1 D:\\moved\\portrait.mp4 false"]));
+    expect(vi.mocked(openDialog).mock.calls[0]?.[0]).toMatchObject({
+      defaultPath: "C:\\clips",
+      directory: false,
+    });
+
+    const alert = await within(dialog).findByRole("alert");
+    expect(within(alert).getByText(t.mediaBin.relink.mismatch)).toBeTruthy();
+    fireEvent.click(within(alert).getByRole("button", { name: t.mediaBin.relink.useAnyway }));
+    await waitFor(() => expect(calls[1]).toBe("relink m1 D:\\moved\\portrait.mp4 true"));
+    expect(await within(dialog).findByText(t.mediaBin.relink.outcomes.relinked(1))).toBeTruthy();
+    expect(within(dialog).queryByRole("alert")).toBeNull();
+  });
+
+  it("searches a folder and lists the files it did not find", async () => {
+    const a: MediaView_Serialize = { ...video, status: "offline" };
+    const b: MediaView_Serialize = { ...song, status: "offline" };
+    useProjectStore.setState({ state: withMedia([a, b]) });
+    vi.mocked(openDialog).mockResolvedValue("D:\\moved");
+    mockCommands({
+      relinkMediaFolder: ({ folder }) => {
+        calls.push(`folder ${folder}`);
+        return new Promise((resolve) => {
+          resolve("f1");
+          setTimeout(() => {
+            jobResults.report({
+              jobId: "f1",
+              files: [
+                { path: "D:\\moved\\portrait.mp4", outcome: { kind: "relinked", media: "m1" } },
+                { path: "C:\\music\\song.mp3", outcome: { kind: "notFound", media: "m3" } },
+              ],
+            });
+            jobResults.finished({ jobId: "f1", result: { Ok: null } });
+          }, 10);
+        });
+      },
+    });
+    render(<MediaBin />);
+    fireEvent.contextMenu(option("song.mp3"));
+    fireEvent.click(await screen.findByRole("menuitem", { name: t.mediaBin.relink.action }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(t.mediaBin.relink.titleOne("song.mp3"))).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: t.mediaBin.relink.searchFolder }));
+    await waitFor(() => expect(calls).toEqual(["folder D:\\moved"]));
+    const status = await within(dialog).findByText(t.mediaBin.relink.outcomes.notFound(1));
+    expect(status).toBeTruthy();
+    expect(within(dialog).getByText(t.mediaBin.relink.outcomes.relinked(1))).toBeTruthy();
   });
 });
