@@ -198,7 +198,7 @@ inserted between existing ones.
 
 | ID | Feature | Notes | Status |
 |---|---|---|---|
-| F1.58 | Real-time playback of the composed timeline with audio/video sync | Architecture rules 2–4; Native wgpu preview window renders a test pattern only | missing |
+| F1.58 | Real-time playback of the composed timeline with audio/video sync | Architecture rules 2–4. 0320: the native preview renders the composed timeline at the playhead through the shared render graph (`build_plan` + `Compositor`, render on change, `seek` from the UI playhead); the test pattern is gone. Missing: transport, clock and audio (0330) | partial |
 | F1.59 | Play/pause (Space), current/total timecode display | Playhead timecode shown; Play button disabled | partial |
 | F1.60 | Dropped-frame handling: audio is the master clock, video skips | | missing |
 | F1.61 | Preview quality setting (full / half / quarter resolution) | | missing |
@@ -210,8 +210,8 @@ inserted between existing ones.
 | F1.67 | Loop playback | | missing |
 | F1.68 | J/K/L shuttle (reverse / pause / forward, repeated presses speed up) | | missing |
 | F1.69 | Audio scrubbing while dragging the playhead | | missing |
-| F3.45 | Hardware-accelerated decoding (D3D11VA / D3D12VA on Windows) for HEVC, H.264, AV1 with software fallback | Moved from Tier 3 on 2026-11-22 (4K HEVC phone footage); ID kept. Zero-copy path decided in 0310; `docs/design/media-import.md` §5 | missing |
-| F3.31 | HDR sources (PQ/HLG, Rec.2020, Dolby Vision 8.x base layer) with tone mapping to SDR | Moved from Tier 3 on 2026-11-22 (phone records HDR); ID kept. One simple operator in the shared render graph so preview and export match; probe data in `docs/design/media-import.md` §3. Refinement and 10-bit pipeline: F3.30. Thumbnails (0230): CPU tone map in `engine::media::tonemap` (HLG/PQ, roll-off above a knee, BT.2020→709), to be aligned with the render-graph operator in 0310. Missing: the render graph (0310/0320) | partial |
+| F3.45 | Hardware-accelerated decoding (D3D11VA / D3D12VA on Windows) for HEVC, H.264, AV1 with software fallback | Moved from Tier 3 on 2026-11-22 (4K HEVC phone footage); ID kept. 0320: D3D12VA on wgpu's own device, frames sampled zero-copy as NV12/P010 (`engine::media::d3d12`, `media::readers`); per-stream fallback to download and then software, `CUTFRAME_HWDECODE=off`. Spike and ignored hardware tests: 4K60 HEVC Main 10, 4K30 H.264 and 4K60 AV1 10-bit zero-copy on the RTX 3070 Ti and the Iris Xe (driver 32.0.101.7092), 1–10 % of one core, matching software within the golden tolerance; every golden scene also renders in software (`render-graph.md` §5.4). Missing: manual scrub check in `pnpm dev` | partial |
+| F3.31 | HDR sources (PQ/HLG, Rec.2020, Dolby Vision 8.x base layer) with tone mapping to SDR | Moved from Tier 3 on 2026-11-22 (phone records HDR); ID kept. Refinement: F3.30. 0320: BT.2390 EETF to 203-nit SDR white in the source-convert pass of the shared render graph (`convert.wgsl`), 10-bit kept to the tone map, `engine::color` reference with WARP shader-parity tests; posters use the same operator. Golden frames for the HLG (Dolby Vision 8.4) HEVC and PQ AV1 fixtures: natural colour, no grey wash, no clipping. Missing: manual check with a real iPhone HDR clip in `pnpm dev` | partial |
 
 ### Basic clip properties (inspector)
 

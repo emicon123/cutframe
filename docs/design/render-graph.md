@@ -279,6 +279,14 @@ pub enum OutputFormat {
   placeholder instead, but export fails or asks (0380 decides; the error carries the media id).
 - Export reads the same snapshot type. It takes one `Arc<Project>` at start, so edits during
   export do not change the file being written.
+- **As built (0320).** `OfflineRenderer::new(gpu, options)` has no `MediaPaths`: paths come from
+  the project's `MediaAsset`s. `OfflineOptions` adds `failed_media: Error | Placeholder` (the
+  placeholder golden scenes, and an export "continue anyway" for 0380). The fetch policy is a
+  `CompositorConfig` setting (`PREVIEW`: `BestAvailable`, 256 MB; `EXPORT`: `Exact`, 2 frames
+  per media), and `Compositor::render_with(.., MissingLayers)` implements the 250 ms rule of §7;
+  `Compositor::submitted` must be called after each submit so held GPU frames are released when
+  that submission completes. `FrameProvider` gained `begin_frame` (two layers of one media at
+  different times get two readers). `RenderedFrame::Rgba8` is the canvas over black (opaque).
 
 ## 5. Colour and the frame path
 
@@ -351,6 +359,14 @@ Consequences:
    (`ceil(visible / subsampling)` for chroma): a UV scale alone lets the last luma row of a
    1080-in-1088 surface blend 25 % of chroma padding row 540. Chroma siting is ignored (centre).
 7. **Alpha:** video is opaque; images with alpha are premultiplied here.
+8. **Filtering (as built in 0320).** The pass reads texels with `textureLoad` and filters in
+   `f32` itself instead of using the hardware sampler. With hardware filtering a zero-copy P010
+   frame differed from the software-decoded frame (LSB-aligned 10-bit) by up to 20–30/255 on
+   0.1 % of a 4K HDR frame: the sampler's limited weight precision is amplified by the
+   BT.2020→BT.709 matrix and the gamut clip. With `f32` filtering hardware and software decode
+   match on every GPU (a handful of near-black pixels at the clip differ by up to 6/255). Cost:
+   about +0.7 ms per 4K convert on the iGPU (§13). Images are uploaded as RGBA8 in stored
+   orientation (`ConvertParams::for_image`: no matrix, full range) and turned by the pass.
 
 The constants and the tone curve also exist as plain Rust functions (`engine::color`), the
 reference the shader is tested against (§12) and the source of the CPU lookup table that the
@@ -757,6 +773,25 @@ composite and present, logged every 5 s with the existing present-rate log.
 | Export render of one 1080p frame, offline (excluding encode) | ≤ 8 ms on the iGPU |
 
 Playback budgets (frame drops, A/V sync) are in playback.md §11.
+
+**Measured in 0320** (release, GPU timestamp queries, ignored tests `render::timing` and
+`plan` timing; 2026-11-23):
+
+| What | Budget | Iris Xe (32.0.101.7092) | RTX 3070 Ti |
+|---|---|---|---|
+| `build_plan`, 1,000 clips on 20 tracks | ≤ 0.2 ms | - | 1.5 µs (CPU) |
+| Composite (4 cached layers, 1080p canvas at 1280 x 720) + present | ≤ 4 ms GPU | 1.22 ms | 0.13 ms |
+| Convert 4K P010 → 1280 x 720 with the HLG tone map | ≤ 2 ms GPU | **3.04 ms** (2.36 ms with hardware filtering) | 0.18 ms |
+| Offline 1080p frame excluding decode (upload, convert, composite, output, read-back) | ≤ 8 ms on the iGPU | 4.26 ms GPU, 10.9 ms wall | 0.25 ms GPU, 2.8 ms wall |
+| Idle, paused | 0 presents | `--smoke-test`: `idle_presents=0` on both GPUs and WARP | |
+| `OfflineRenderer::render_frame` in sequence, 4K60 HEVC Main 10 zero-copy: 4K canvas / 1080p on GPU / 1080p + RGBA8 read-back | - | 147 / 274 / 180 fps | 340 / 367 / 318 fps |
+
+Two rows miss the budget on the iGPU: the 4K convert (the `f32` filtering of §5.2 step 8; one
+convert per source frame, so 4K60 still needs only 3 ms of every 16.7 ms frame) and the offline
+frame's wall time (CPU upload and read-back of the test's 8-bit CPU source; the GPU part is
+within budget, and zero-copy sources have no upload). Task 0700 decides whether to optimise
+(e.g. sampler filtering for 8-bit SDR sources only). Not built: the `tracing` spans in the
+present-rate log; the numbers come from the ignored timing tests.
 
 ## 14. Task breakdown
 

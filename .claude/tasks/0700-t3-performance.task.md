@@ -23,6 +23,7 @@ catalog, and drop anything already `done` from the scope.
 - **architect:** proxy and render-cache design (storage, invalidation, export always uses originals).
 - **backend:** proxy generation and toggle (hardware decode itself moved to Tier 1, task 0320, on 2026-11-22), render cache, priorities and per-kind limits on top of the job manager from 0220 (`docs/design/media-import.md` §6.1), memory/GPU budgets, benchmark with 1h / 500-clip project (review F41).
 - **frontend:** proxy toggle, job list, cache indicators on the timeline.
+- **backend (from 0320 measurements, `docs/design/render-graph.md` §13):** the 4K P010 convert with `f32` filtering takes 3.0 ms on the Iris Xe (budget 2 ms) and the offline 1080p frame with a CPU source 10.9 ms wall (budget 8 ms); decide whether to optimise (e.g. sampler filtering for 8-bit SDR sources, upload/read-back overlap) and add the `tracing` spans to the present-rate log.
 
 ## Done when
 

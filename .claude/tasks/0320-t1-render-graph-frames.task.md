@@ -9,8 +9,8 @@ The preview shows a test pattern; it must show the composed timeline.
 
 ## Features
 
-- [ ] `F3.45` Hardware-accelerated decoding (D3D11VA / D3D12VA on Windows) — *missing* (moved to Tier 1 on 2026-11-22)
-- [ ] `F3.31` HDR sources (PQ/HLG, Rec.2020) with tone mapping to SDR — *missing* (moved to Tier 1 on 2026-11-22)
+- [ ] `F3.45` Hardware-accelerated decoding (D3D11VA / D3D12VA on Windows) — *partial* (built and tested; manual `pnpm dev` check open)
+- [ ] `F3.31` HDR sources (PQ/HLG, Rec.2020) with tone mapping to SDR — *partial* (built and golden-tested; real iPhone clip check open)
 
 ## Scope
 
@@ -37,3 +37,29 @@ Design: `docs/design/render-graph.md` (§14 task breakdown) and the `seek` part 
 - design docs/ADRs are in `docs/`, valid Mermaid, no production code; dependent task files are updated if the design changes their scope
 - `pnpm check` passes; after any IPC change `pnpm bindings` is re-run and `ui/src/bindings.ts` committed
 - architecture rules in `CLAUDE.md` hold (model changes are undoable commands, no frames over JSON IPC, integer flicks, LGPL-only FFmpeg, no reference-product names or assets)
+
+## Status (2026-11-23, branch `claude/project-thread-z58xeb`)
+
+- [ ] **Scrubbing in the native preview on Windows (iGPU, WARP):** built (seek from the timeline
+  ruler, render on change, compositor at the playhead) and `--smoke-test` presents the
+  compositor on the RTX 3070 Ti, the Iris Xe and WARP; golden tests run locally on WARP inside
+  `cargo test --workspace`. Open: a person scrubbing in `pnpm dev` on the iGPU, dGPU and WARP
+  (`WGPU_FORCE_FALLBACK_ADAPTER=1`), and a manual CI run.
+- [x] **Spike recorded; 4K HEVC 10-bit decoded in hardware without a CPU copy on both GPUs:**
+  `render-graph.md` status line and §5.4 "Spike result" (Iris Xe after the driver update to
+  32.0.101.7092; the D3D11VA fallback is not needed).
+- [ ] **iPhone HDR clip natural in preview and offscreen render:** the HLG Dolby Vision 8.4 and
+  PQ AV1 fixtures render natural colour in the golden frames (offline renderer = preview
+  compositor). Open: a real iPhone clip checked by eye in `pnpm dev` (none on this machine).
+- [x] **`CUTFRAME_HWDECODE=off` renders every fixture:** ignored hardware test on both GPUs; all
+  golden scenes match the WARP references in software decode.
+- [x] **Paused and idle: no presents, render thread blocked:** idle blocks on the channel;
+  `--smoke-test` logs `idle_presents=0`.
+- [x] **Catalog rows updated:** F3.45, F3.31 (partial, manual checks open) and F1.58.
+- [x] **Design docs:** spike result, as-built deviations (§4.5 API, §5.2 filtering and padding
+  clamp) and the measured budget (§13) in `render-graph.md`; task 0700 notes the two iGPU rows
+  over budget.
+- [x] **`pnpm check` passes; `pnpm bindings` committed** (`seek`).
+- [x] **Architecture rules:** no model changes, frames never cross IPC (zero-copy on the GPU),
+  flicks in plan and IPC, LGPL FFmpeg only (D3D12VA from the pinned build), no reference-product
+  names.
