@@ -1,4 +1,4 @@
-import { FileWarning, FileX } from "lucide-react";
+import { CircleCheck, FileWarning, FileX, Plus } from "lucide-react";
 import { memo } from "react";
 
 import type { MediaView_Serialize } from "@/bindings";
@@ -60,6 +60,43 @@ function StatusBadge({ item }: { item: MediaView_Serialize }) {
   );
 }
 
+/** How many timeline clips use the item (F1.18). */
+function UsedBadge({ item }: { item: MediaView_Serialize }) {
+  if (item.usedBy === 0) return null;
+  return (
+    <span
+      title={t.mediaBin.used.tip(item.usedBy)}
+      className="flex items-center gap-0.5 rounded-sm bg-background/80 px-1 text-2xs leading-4 font-semibold text-primary"
+    >
+      <CircleCheck className="size-3" aria-hidden />
+      {item.usedBy}
+      <span className="sr-only">{t.mediaBin.used.tip(item.usedBy)}</span>
+    </span>
+  );
+}
+
+/**
+ * The "+" button (append to the timeline; Alt inserts at the playhead). Handled by the list
+ * through `data-action`, like the rest of the item.
+ */
+function AddButton({ item, className }: { item: MediaView_Serialize; className?: string }) {
+  return (
+    <button
+      type="button"
+      tabIndex={-1}
+      data-action="append"
+      aria-label={t.mediaBin.add.button(item.fileName)}
+      title={t.mediaBin.add.tip}
+      className={cn(
+        "flex size-5 items-center justify-center rounded-sm bg-primary text-primary-foreground shadow-sm hover:bg-primary/90",
+        className,
+      )}
+    >
+      <Plus className="size-3.5" aria-hidden />
+    </button>
+  );
+}
+
 /**
  * One media item, as a grid tile or a list row. Selection, keyboard and context menu are handled
  * by the parent list through `data-media-id` (event delegation), so the props stay plain data and
@@ -81,7 +118,7 @@ export const MediaItem = memo(function MediaItem({ item, layout, selected, tabba
       <div
         {...common}
         className={cn(
-          "flex items-center gap-2 rounded-sm px-2 py-1 outline-none select-none hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring",
+          "group flex items-center gap-2 rounded-sm px-2 py-1 outline-none select-none hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring",
           selected && "bg-accent hover:bg-accent",
         )}
       >
@@ -93,8 +130,13 @@ export const MediaItem = memo(function MediaItem({ item, layout, selected, tabba
             <span className="truncate">{mediaDetails(item)}</span>
           </p>
         </div>
+        <UsedBadge item={item} />
         <StatusBadge item={item} />
         <HdrBadge item={item} />
+        <AddButton
+          item={item}
+          className="opacity-0 group-hover:opacity-100 group-aria-selected:opacity-100"
+        />
       </div>
     );
   }
@@ -103,7 +145,7 @@ export const MediaItem = memo(function MediaItem({ item, layout, selected, tabba
     <div
       {...common}
       className={cn(
-        "flex min-w-0 flex-col gap-1 rounded-md p-1 outline-none select-none hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring",
+        "group flex min-w-0 flex-col gap-1 rounded-md p-1 outline-none select-none hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring",
         selected && "bg-accent ring-2 ring-primary hover:bg-accent",
       )}
     >
@@ -115,10 +157,15 @@ export const MediaItem = memo(function MediaItem({ item, layout, selected, tabba
             <span className="sr-only">{t.mediaBin.kinds[item.kind]}</span>
           </span>
           <span className="flex gap-1">
+            <UsedBadge item={item} />
             <StatusBadge item={item} />
             <HdrBadge item={item} />
           </span>
         </div>
+        <AddButton
+          item={item}
+          className="absolute bottom-1 left-1 opacity-0 group-hover:opacity-100 group-aria-selected:opacity-100"
+        />
         {duration && (
           <span className="pointer-events-none absolute right-1 bottom-1 rounded-sm bg-background/80 px-1 text-2xs leading-4 tabular-nums">
             {duration}
