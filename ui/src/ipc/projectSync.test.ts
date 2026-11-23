@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { events, mockCommands, type MockCommandHandlers } from "@/bindings";
 import { fileActions } from "@/features/project/fileActions";
 import { recovery } from "@/features/project/recovery";
+import { playheadStore } from "@/stores/playheadStore";
 import { type ProjectState, useProjectStore } from "@/stores/projectStore";
 import { useAppStore } from "@/stores/appStore";
 
@@ -34,6 +35,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   useProjectStore.setState({ state: null });
   useAppStore.setState({ info: null, lastError: null, gpuNotice: null });
+  playheadStore.setState({ time: 0, seekGeneration: null });
 });
 
 function mockStartup(
@@ -44,6 +46,7 @@ function mockStartup(
   mockCommands({
     listRecovery: () => [],
     takeLaunchPath: () => null,
+    seek: () => 1,
     ...extra,
     cancelGesture,
     getProject: () => {
@@ -173,5 +176,34 @@ describe("startProjectSync", () => {
     await events.appInfoChanged.emit({ version: "0.0.0", gpu: null, previewMode: "unavailable" });
     await vi.waitFor(() => expect(useAppStore.getState().info?.previewMode).toBe("unavailable"));
     expect(useAppStore.getState().gpuNotice).toEqual({ kind: "previewLost" });
+  });
+
+  it("sends the playhead on the first state and when a longer timeline may reach it", async () => {
+    const seeks: string[] = [];
+    mockStartup(() => null, [], {
+      seek: ({ time, mode }) => {
+        seeks.push(`${mode} ${time}`);
+        return seeks.length;
+      },
+    });
+    vi.spyOn(recovery, "load").mockResolvedValue();
+    playheadStore.setState({ time: 500 });
+
+    stop = startProjectSync();
+    await vi.waitFor(() => expect(seeks).toEqual(["exact 500"]));
+
+    // The engine clamped 500 to the empty timeline; it reaches the playhead now.
+    const apply = useProjectStore.getState().apply;
+    apply({ ...project, revision: 4, project: { ...project.project, duration: 800 } });
+    await vi.waitFor(() => expect(seeks).toEqual(["exact 500", "exact 500"]));
+
+    // Shorter: the engine keeps 500, nothing to send. A change from a duration below the
+    // playhead sends it again, as the engine may have clamped a seek made meanwhile.
+    apply({ ...project, revision: 5, project: { ...project.project, duration: 300 } });
+    await Promise.resolve();
+    expect(seeks).toHaveLength(2);
+    apply({ ...project, revision: 6, project: { ...project.project, duration: 900 } });
+    await vi.waitFor(() => expect(seeks).toEqual(["exact 500", "exact 500", "exact 500"]));
+    await vi.waitFor(() => expect(playheadStore.getState().seekGeneration).toBe(3));
   });
 });

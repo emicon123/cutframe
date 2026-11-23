@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { t } from "@/i18n";
 import { run } from "@/stores/appStore";
-import { playheadStore, setPlayhead } from "@/stores/playheadStore";
+import { playheadStore } from "@/stores/playheadStore";
 import { useProjectStore } from "@/stores/projectStore";
 
 import {
@@ -20,6 +20,7 @@ import {
   zoomAt,
   type Viewport,
 } from "./geometry";
+import { startPlayheadDrag } from "./playheadDrag";
 import { drawTimeline, readTheme, type TimelineTheme } from "./renderer";
 
 const EMPTY_TRACKS: TrackView[] = [];
@@ -162,7 +163,10 @@ function TimelineCanvas({ tracks, contentHeight }: { tracks: TrackView[]; conten
     });
     resize.observe(container);
 
-    const unsubscribePlayhead = playheadStore.subscribe(requestDraw);
+    // Only the time is drawn; a new seek generation alone needs no redraw.
+    const unsubscribePlayhead = playheadStore.subscribe((s, prev) => {
+      if (s.time !== prev.time) requestDraw();
+    });
 
     const onWheel = (event: WheelEvent) => {
       if (event.ctrlKey) {
@@ -179,20 +183,12 @@ function TimelineCanvas({ tracks, contentHeight }: { tracks: TrackView[]; conten
     };
     canvas.addEventListener("wheel", onWheel, { passive: false });
 
-    const scrubTo = (event: PointerEvent) => {
-      const x = event.clientX - canvas.getBoundingClientRect().left;
-      setPlayhead(xToTime(x, viewportRef.current));
-    };
+    const timeAt = (event: PointerEvent) =>
+      xToTime(event.clientX - canvas.getBoundingClientRect().left, viewportRef.current);
     const onPointerDown = (event: PointerEvent) => {
-      if (event.button !== 0) return;
-      canvas.setPointerCapture(event.pointerId);
-      scrubTo(event);
-    };
-    const onPointerMove = (event: PointerEvent) => {
-      if (canvas.hasPointerCapture(event.pointerId)) scrubTo(event);
+      if (event.button === 0) startPlayheadDrag(canvas, event, timeAt);
     };
     canvas.addEventListener("pointerdown", onPointerDown);
-    canvas.addEventListener("pointermove", onPointerMove);
 
     return () => {
       cancelAnimationFrame(frame);
@@ -200,7 +196,6 @@ function TimelineCanvas({ tracks, contentHeight }: { tracks: TrackView[]; conten
       unsubscribePlayhead();
       canvas.removeEventListener("wheel", onWheel);
       canvas.removeEventListener("pointerdown", onPointerDown);
-      canvas.removeEventListener("pointermove", onPointerMove);
       requestDrawRef.current = () => undefined;
     };
   }, []);

@@ -1,7 +1,7 @@
 import type { IpcError } from "@/bindings";
 import { errorKindText, t } from "@/i18n";
 
-function isIpcError(value: unknown): value is IpcError {
+export function isIpcError(value: unknown): value is IpcError {
   return (
     typeof value === "object" &&
     value !== null &&

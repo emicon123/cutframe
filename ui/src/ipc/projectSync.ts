@@ -4,6 +4,7 @@ import { fileActions } from "@/features/project/fileActions";
 import { recovery } from "@/features/project/recovery";
 import { logError } from "@/ipc/errors";
 import { useAppStore } from "@/stores/appStore";
+import { reseekOnDurationChange } from "@/stores/playheadStore";
 import { useProjectStore } from "@/stores/projectStore";
 
 /**
@@ -11,12 +12,17 @@ import { useProjectStore } from "@/stores/projectStore";
  * answered with the unsaved-changes prompt; `openFileRequested`, a project double-clicked while
  * the app runs; `appInfoChanged`, a GPU change at runtime) first, cancels any stale gesture, then
  * fetches the current state, so no change is missed in between. Then it opens the project file the
- * app was launched with, if any, and only after that offers crash recovery. Returns a cleanup
- * function.
+ * app was launched with, if any, and only after that offers crash recovery. It also re-sends the
+ * playhead to the engine on the first state and when a duration change may have clamped it.
+ * Returns a cleanup function.
  */
 export function startProjectSync(): () => void {
   let disposed = false;
-  const unlisteners: (() => void)[] = [];
+  const unlisteners: (() => void)[] = [
+    useProjectStore.subscribe((s, prev) =>
+      reseekOnDurationChange(prev.state?.project.duration, s.state?.project.duration),
+    ),
+  ];
   const { apply } = useProjectStore.getState();
   const { setInfo, reportError } = useAppStore.getState();
 
