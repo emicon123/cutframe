@@ -1,9 +1,13 @@
 //! GPU rendering with wgpu.
 
+pub(crate) mod convert;
+#[cfg(test)]
+mod convert_parity;
 mod gpu;
 mod offscreen;
 mod test_pattern;
 
+pub use convert::{AlphaMode, ConvertParams, TransferPath};
 pub use gpu::{AdapterMode, DeviceKind, FallbackReason, GpuContext, GpuError, GpuInfo};
 pub use offscreen::{OffscreenFrame, render_offscreen};
 pub use test_pattern::{PatternParams, TestPattern};

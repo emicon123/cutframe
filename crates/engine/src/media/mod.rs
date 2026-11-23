@@ -18,6 +18,7 @@ pub mod encoders;
 mod error;
 pub mod ffmpeg;
 pub mod fingerprint;
+pub(crate) mod frame;
 mod heif;
 mod input;
 pub mod picture;
