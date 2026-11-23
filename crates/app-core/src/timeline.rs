@@ -30,6 +30,35 @@ pub fn place_clip(track: &mut Track, clip: Clip) -> Result<usize, CommandError> 
     Ok(index)
 }
 
+/// Where a new track of `kind` goes for a requested `index`: clamped into the overlay section
+/// (video, text: `0..=main`) or the audio section (`main + 1..=len`). `None` is the bottom of the
+/// section.
+pub fn section_index(project: &Project, kind: TrackKind, index: Option<usize>) -> usize {
+    let len = project.tracks.len();
+    let main = project.main_index().unwrap_or(len);
+    let (first, last) = match kind {
+        TrackKind::Audio => ((main + 1).min(len), len),
+        TrackKind::Video | TrackKind::Text => (0, main),
+    };
+    index.unwrap_or(last).clamp(first, last)
+}
+
+/// Removes the overlay and audio tracks that held clips in `before` and hold none in `after`
+/// (F1.28). Tracks that were already empty, new tracks and the main track are kept. Commands call
+/// it on commit only, so the layout does not jump under the pointer during a drag.
+pub fn remove_emptied_tracks(before: &Project, after: &mut Project) {
+    let had_clips: std::collections::HashSet<TrackId> = before
+        .tracks
+        .iter()
+        .filter(|t| !t.clips.is_empty())
+        .map(|t| t.id)
+        .collect();
+    let main = after.main_track;
+    after
+        .tracks
+        .retain(|t| t.id == main || !t.clips.is_empty() || !had_clips.contains(&t.id));
+}
+
 /// While `project.magnetic` is on, recomputes the main track's starts in list order so its clips
 /// are contiguous from 0. Does nothing when magnetic is off.
 pub fn repack_main(project: &mut Project) {

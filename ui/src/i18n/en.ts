@@ -228,6 +228,7 @@ export const en = {
       importMedia: "Import Media",
       removeMedia: "Remove Media",
       relinkMedia: "Relink Media",
+      addClips: "Add Clips",
     } satisfies Record<HistoryLabel, string>,
     /** Shown for a key this UI build does not know. */
     unknown: "Last Action",
@@ -334,10 +335,24 @@ export const en = {
       title: (n: number, name: string) => (n === 1 ? `Remove “${name}”?` : `Remove ${n} media items?`),
       description: "The files stay on disk. Undo (Ctrl+Z) brings them back.",
       more: (n: number) => `and ${n} more`,
+      used: (n: number) =>
+        n === 1
+          ? "Used in 1 clip on the timeline; it will be removed too."
+          : `Used in ${n} clips on the timeline; they will be removed too.`,
       confirm: "Remove",
       cancel: "Cancel",
     },
     background: "Generating previews in the background",
+    used: {
+      tip: (n: number) => (n === 1 ? "Used in 1 clip on the timeline" : `Used in ${n} clips on the timeline`),
+    },
+    add: {
+      button: (name: string) => `Add “${name}” to the timeline`,
+      tip: "Add to the end of the timeline (Alt: insert at the playhead)",
+      append: "Add to timeline",
+      insert: "Insert at playhead",
+      dragMany: (n: number) => `${n} items`,
+    },
     status: {
       badge: { offline: "Missing", changed: "Changed" } satisfies Record<
         Exclude<MediaStatus, "online">,
@@ -408,6 +423,12 @@ export const en = {
     addTextTrack: "Add text track",
     removeTrack: (name: string) => `Remove ${name}`,
     zoomHint: "Ctrl + wheel to zoom, wheel to scroll",
+    mainTrack: "Main",
+    mainTrackTip: "Main track: clips play one after another",
+    locked: "Locked",
+    /** Drawn on clips whose media file is missing. */
+    offline: "Media offline",
+    dropFiles: "Drop to import and add to the timeline",
     kinds: { video: "Video", audio: "Audio", text: "Text" },
   },
   status: {
