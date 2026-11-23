@@ -51,6 +51,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         .commands(collect_commands![
             commands::get_project,
             commands::add_track,
+            commands::add_clips,
             commands::remove_track,
             commands::rename_track,
             commands::rename_project,

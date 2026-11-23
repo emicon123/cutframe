@@ -1,5 +1,9 @@
 //! Edit commands. Every change to a [`Project`] is a command so it can be undone.
 
+mod clips;
+
+pub use clips::{AddClips, NewClipSource, Placement, RemoveClipsOfMedia, TrackTarget};
+
 use serde::{Deserialize, Serialize};
 
 use crate::media::{MediaAsset, MediaId, MediaKind, MediaProblem, validate_asset};
@@ -25,6 +29,8 @@ pub enum HistoryLabel {
     RemoveMedia,
     /// Pointing media at another file: one relinked item, or every item a folder relink found.
     RelinkMedia,
+    /// Putting media or colour cards on the timeline (one drop, `+` click or insert).
+    AddClips,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -74,6 +80,16 @@ pub enum CommandError {
     /// The clip would overlap another clip on its track.
     #[error("the clip would overlap another clip")]
     Overlap,
+    /// The clip cannot live on that track (e.g. audio-only media on a video track).
+    #[error("the clip does not fit that track")]
+    TrackKindMismatch,
+    /// An edit was given nothing to work on (e.g. no sources to add).
+    #[error("nothing to edit")]
+    NothingToEdit,
+    /// The edit would leave an invalid project (e.g. past the largest supported time). Commands
+    /// that build clips check their result, so this never leaves the project broken.
+    #[error("the edit would make the project invalid: {0}")]
+    InvalidResult(ValidationError),
 }
 
 /// A reversible edit.
@@ -164,15 +180,7 @@ impl Command for AddTrack {
     fn apply(&mut self, project: &mut Project) -> Result<(), CommandError> {
         let mut track = Track::new(self.kind, project.next_track_name(self.kind));
         track.id = self.id;
-        let main = project.main_index().unwrap_or(project.tracks.len());
-        let section = match self.kind {
-            TrackKind::Audio => (main + 1).min(project.tracks.len())..=project.tracks.len(),
-            TrackKind::Video | TrackKind::Text => 0..=main,
-        };
-        let index = self
-            .index
-            .unwrap_or(*section.end())
-            .clamp(*section.start(), *section.end());
+        let index = crate::timeline::section_index(project, self.kind, self.index);
         project.tracks.insert(index, track);
         self.inserted_at = Some(index);
         Ok(())

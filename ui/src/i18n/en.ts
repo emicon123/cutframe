@@ -228,6 +228,7 @@ export const en = {
       importMedia: "Import Media",
       removeMedia: "Remove Media",
       relinkMedia: "Relink Media",
+      addClips: "Add Clips",
     } satisfies Record<HistoryLabel, string>,
     /** Shown for a key this UI build does not know. */
     unknown: "Last Action",
