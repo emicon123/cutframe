@@ -47,6 +47,9 @@ pub enum IpcError {
     /// The edit would change a clip on a locked track. The project is unchanged.
     #[error("{0}")]
     TrackLocked(String),
+    /// `replace_clip_media`: the new media is shorter than the clip. The project is unchanged.
+    #[error("{0}")]
+    MediaTooShort(String),
 }
 
 impl IpcError {
@@ -85,6 +88,7 @@ impl From<CommandError> for IpcError {
         match err {
             CommandError::Overlap => IpcError::Overlap(message),
             CommandError::TrackLocked(_) => IpcError::TrackLocked(message),
+            CommandError::MediaTooShort => IpcError::MediaTooShort(message),
             _ => IpcError::InvalidEdit(message),
         }
     }
@@ -115,6 +119,7 @@ mod tests {
             (IpcError::Cancelled("x".into()), "cancelled"),
             (IpcError::Overlap("x".into()), "overlap"),
             (IpcError::TrackLocked("x".into()), "trackLocked"),
+            (IpcError::MediaTooShort("x".into()), "mediaTooShort"),
         ];
         for (error, kind) in cases {
             assert_eq!(
@@ -139,6 +144,8 @@ mod tests {
                 CommandError::TrackLocked(app_core::TrackId::new()),
                 "trackLocked",
             ),
+            (CommandError::MediaTooShort, "mediaTooShort"),
+            (CommandError::InvalidLink, "invalidEdit"),
             (CommandError::NothingToEdit, "invalidEdit"),
         ];
         for (error, expected) in cases {

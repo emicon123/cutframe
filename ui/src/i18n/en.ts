@@ -294,6 +294,14 @@ export const en = {
       setMagnetic: "Toggle Magnetic Track",
       pasteClips: "Paste",
       duplicateClips: "Duplicate",
+      linkClips: "Link Clips",
+      unlinkClips: "Unlink Clips",
+      detachAudio: "Detach Audio",
+      replaceClipMedia: "Replace Clip",
+      setTrackMuted: "Toggle Track Mute",
+      setTrackHidden: "Toggle Track Visibility",
+      setTrackLocked: "Toggle Track Lock",
+      moveTrack: "Move Track",
     } satisfies Record<HistoryLabel, string>,
     /** Shown for a key this UI build does not know. */
     unknown: "Last Action",
@@ -312,6 +320,7 @@ export const en = {
       cancelled: "Cancelled",
       overlap: "There is already a clip there",
       trackLocked: "That track is locked",
+      mediaTooShort: "That media is shorter than the clip",
     } satisfies Record<IpcError["kind"], string>,
     /** Shown for an unknown kind or a failure that is not an `IpcError`. */
     unknown: "Something went wrong",
