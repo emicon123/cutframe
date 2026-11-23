@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::media::{MediaAsset, MediaId, MediaKind, MediaProblem, validate_asset};
-use crate::model::{Project, ProjectSettings, Track, TrackId, TrackKind};
+use crate::model::{CanvasBackground, Project, ProjectSettings, Track, TrackId, TrackKind};
 use crate::validate::ValidationError;
 
 /// Stable key naming an undo/redo history entry, e.g. for an "Undo Add Track" menu item.
@@ -65,6 +65,15 @@ pub enum CommandError {
     /// A history jump to a point that is not in the history ([`crate::Document::jump_to`]).
     #[error("history point {index} is out of range (0..={len})")]
     HistoryOutOfRange { index: usize, len: usize },
+    /// The main track cannot be removed or moved.
+    #[error("the main track cannot be removed or moved")]
+    MainTrack,
+    /// The edit would change a clip on a locked track.
+    #[error("track {0:?} is locked")]
+    TrackLocked(TrackId),
+    /// The clip would overlap another clip on its track.
+    #[error("the clip would overlap another clip")]
+    Overlap,
 }
 
 /// A reversible edit.
@@ -119,7 +128,9 @@ impl Command for Batch {
     }
 }
 
-/// Inserts a new empty track at `index` (or at the bottom).
+/// Inserts a new empty track at `index`, clamped into the section that fits `kind` (video and text:
+/// the overlay section above the main track; audio: below it). `None` is the bottom of that
+/// section.
 #[derive(Debug)]
 pub struct AddTrack {
     id: TrackId,
@@ -153,10 +164,15 @@ impl Command for AddTrack {
     fn apply(&mut self, project: &mut Project) -> Result<(), CommandError> {
         let mut track = Track::new(self.kind, project.next_track_name(self.kind));
         track.id = self.id;
+        let main = project.main_index().unwrap_or(project.tracks.len());
+        let section = match self.kind {
+            TrackKind::Audio => (main + 1).min(project.tracks.len())..=project.tracks.len(),
+            TrackKind::Video | TrackKind::Text => 0..=main,
+        };
         let index = self
             .index
-            .unwrap_or(project.tracks.len())
-            .min(project.tracks.len());
+            .unwrap_or(*section.end())
+            .clamp(*section.start(), *section.end());
         project.tracks.insert(index, track);
         self.inserted_at = Some(index);
         Ok(())
@@ -169,7 +185,8 @@ impl Command for AddTrack {
     }
 }
 
-/// Removes a track with all its clips.
+/// Removes a track with all its clips. The main track cannot be removed
+/// ([`CommandError::MainTrack`]).
 #[derive(Debug)]
 pub struct RemoveTrack {
     id: TrackId,
@@ -191,6 +208,9 @@ impl Command for RemoveTrack {
         let index = project
             .track_index(self.id)
             .ok_or(CommandError::TrackNotFound(self.id))?;
+        if self.id == project.main_track {
+            return Err(CommandError::MainTrack);
+        }
         self.removed = Some((index, project.tracks.remove(index)));
         Ok(())
     }
@@ -369,8 +389,8 @@ impl Command for AddMedia {
     }
 }
 
-/// Removes media assets. Fails with [`CommandError::MediaInUse`] while a clip references one of
-/// them, and with [`CommandError::MediaNotFound`] for an id that is not in the project. Revert
+/// Removes media assets. Fails with [`CommandError::MediaInUse`] while a clip or the canvas
+/// background references one of them, and with [`CommandError::MediaNotFound`] for an id that is not in the project. Revert
 /// puts every asset back at its original position.
 #[derive(Debug)]
 pub struct RemoveMedia {
@@ -395,11 +415,9 @@ impl RemoveMedia {
     }
 }
 
-/// How many clips reference media `id`. Clips reference media from design 0250 on; until then
-/// nothing uses media and this is always 0.
+/// How many clips reference media `id` (the media panel's "used in timeline" count).
 pub fn media_users(project: &Project, id: MediaId) -> usize {
-    let _ = (project, id);
-    0
+    project.media_users(id)
 }
 
 impl Command for RemoveMedia {
@@ -415,7 +433,8 @@ impl Command for RemoveMedia {
                 .iter()
                 .position(|m| m.id == id)
                 .ok_or(CommandError::MediaNotFound(id))?;
-            if media_users(project, id) > 0 {
+            let background = project.background == CanvasBackground::Image { media: id };
+            if background || media_users(project, id) > 0 {
                 return Err(CommandError::MediaInUse(id));
             }
             indices.push(index);
@@ -536,9 +555,44 @@ mod tests {
     #[test]
     fn remove_track_is_reversible() {
         let project = Project::new("Test");
-        let id = project.tracks[0].id;
+        let id = project.tracks[1].id;
         let after = assert_reversible(RemoveTrack::new(id), &project);
         assert!(after.track(id).is_none());
+    }
+
+    #[test]
+    fn the_main_track_cannot_be_removed() {
+        let mut project = Project::new("Test");
+        let before = project.clone();
+        assert_eq!(
+            RemoveTrack::new(project.main_track).apply(&mut project),
+            Err(CommandError::MainTrack)
+        );
+        assert_eq!(project, before);
+    }
+
+    #[test]
+    fn add_track_clamps_into_the_kind_section() {
+        let mut project = Project::new("Test");
+        // Tracks: Video 1 (main), Audio 1.
+        let cases = [
+            (TrackKind::Audio, Some(0), 1),
+            (TrackKind::Audio, None, 3),
+            (TrackKind::Video, Some(9), 0),
+            (TrackKind::Text, None, 1),
+            (TrackKind::Video, Some(0), 0),
+        ];
+        for (kind, index, expected) in cases {
+            let command = AddTrack::new(kind, index);
+            let id = command.track_id();
+            project = assert_reversible(command, &project);
+            assert_eq!(
+                project.track_index(id),
+                Some(expected),
+                "{kind:?} {index:?}"
+            );
+            assert_eq!(project.validate(), Ok(()));
+        }
     }
 
     #[test]
@@ -622,7 +676,7 @@ mod tests {
     #[test]
     fn batch_rolls_back_applied_children_when_one_fails() {
         let project = Project::new("Test");
-        let first = project.tracks[0].id;
+        let first = project.tracks[1].id;
         let missing = TrackId::new();
         let mut batch = Batch::new(
             HistoryLabel::RemoveTrack,
@@ -653,13 +707,14 @@ mod tests {
     #[test]
     fn set_project_settings_is_reversible_and_leaves_clips_alone() {
         let mut project = Project::new("Test");
-        project.tracks[0].clips.push(crate::model::Clip {
-            id: crate::model::ClipId::new(),
-            name: "Odd".into(),
+        project.magnetic = false;
+        project.tracks[0].clips.push(crate::model::Clip::color(
+            "Odd",
             // Not on the 30 or 60 fps grid.
-            start: crate::time::Time(12_345_677),
-            duration: crate::time::Time(98_765_431),
-        });
+            crate::time::Time(12_345_677),
+            crate::time::Time(98_765_431),
+            crate::model::Rgba8::BLACK,
+        ));
         let after = assert_reversible(SetProjectSettings::new(vertical_60fps()), &project);
         assert_eq!(after.settings, vertical_60fps());
         assert_eq!(after.tracks, project.tracks, "clips are bit-identical");
@@ -780,11 +835,52 @@ mod tests {
     }
 
     #[test]
-    fn nothing_uses_media_before_clips_reference_it() {
+    fn media_used_by_clips_or_the_background_cannot_be_removed() {
         use crate::media::samples;
+        use crate::model::{Clip, ClipSource, Rgba8};
+        use crate::time::Time;
+
         let mut project = Project::new("Test");
-        project.media.push(samples::video(1));
-        assert_eq!(media_users(&project, project.media[0].id), 0);
+        project.media = vec![samples::video(1), samples::image(2), samples::audio(3)];
+        let (video, image, song) = (
+            project.media[0].id,
+            project.media[1].id,
+            project.media[2].id,
+        );
+        let clip = |media| Clip {
+            source: ClipSource::Media {
+                media,
+                source_in: Time::ZERO,
+            },
+            ..Clip::color("C", Time::ZERO, Time(10), Rgba8::BLACK)
+        };
+        project.tracks[0].clips = vec![
+            clip(video),
+            Clip {
+                start: Time(10),
+                ..clip(video)
+            },
+        ];
+        project.background = CanvasBackground::Image { media: image };
+        assert_eq!(project.validate(), Ok(()));
+        assert_eq!(media_users(&project, video), 2);
+        assert_eq!(
+            media_users(&project, image),
+            0,
+            "the background is not a clip"
+        );
+        assert_eq!(media_users(&project, song), 0);
+
+        for id in [video, image] {
+            let mut doc = crate::Document::new(project.clone());
+            assert_eq!(
+                doc.execute(Box::new(RemoveMedia::new(vec![song, id]))),
+                Err(CommandError::MediaInUse(id))
+            );
+            assert_eq!(*doc.project(), project);
+        }
+        let after = assert_reversible(RemoveMedia::new(vec![song]), &project);
+        assert_eq!(after.media.len(), 2);
     }
 
     /// `asset` at another path with other content (as a relink with `allow_mismatch` makes it).
