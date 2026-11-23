@@ -14,7 +14,7 @@ pub mod timeline;
 pub mod validate;
 
 pub use document::{Document, EditPhase, HistoryPosition};
-pub use media::{MediaAsset, MediaId, MediaKind};
+pub use media::{MediaAsset, MediaId, MediaKind, cover_hash};
 pub use model::{
     CanvasBackground, Clip, ClipId, ClipSource, LinkId, Project, ProjectId, ProjectSettings, Rgba8,
     Track, TrackId, TrackKind,

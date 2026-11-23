@@ -11,6 +11,139 @@ export const commands = {
 	getProject: (options?: InvokeOptions) => __TAURI_INVOKE<ProjectState_Serialize>("get_project", undefined, options),
 	/**  Adds an empty track at `index` (top = 0) or at the bottom. Returns the new track's id. */
 	addTrack: (kind: TrackKind, index: number | null, options?: InvokeOptions) => __TAURI_INVOKE<TrackId>("add_track", { kind, index }, options),
+	/**
+	 *  Puts media items or colour cards on the timeline as one undo step (`addClips`) and returns the
+	 *  new clips' ids, one per source in order (select them). Several sources go one after another.
+	 * 
+	 *  - `append`: end of the main track; audio-only media at the end of the first unlocked audio
+	 *    track (created at the top of the audio section when there is none).
+	 *  - `insert`: into the main track at the clip boundary nearest `at`; later main clips ripple and
+	 *    the overlays, captions and audio over them follow (bumped to another track on collision).
+	 *  - `drop`: on an existing track or a new one (`new.index` is clamped into the section that fits
+	 *    the first clip) from `start`. On the magnetic main track a drop is an insert.
+	 * 
+	 *  Video clips take the media's whole length (with its sound when it has audio), images 5 s and
+	 *  colour cards 5 s. Fails with `overlap` for an occupied range, `trackLocked` for a locked
+	 *  target, and `invalidEdit` for no sources, unknown media or tracks, a clip that does not fit the
+	 *  track (e.g. audio-only media on a video track), or a time outside `0..=2^53` flicks.
+	 */
+	addClips: (sources: NewClipSource[], placement: Placement, options?: InvokeOptions) => __TAURI_INVOKE<ClipId[]>("add_clips", { sources, placement }, options),
+	/**
+	 *  Moves clips by dragging, as an ADR-0006 gesture (`moveClips`): send `update` at most once per
+	 *  animation frame, `commit` on pointer-up and `cancelGesture` on Escape, blur or lost capture.
+	 *  The whole drag is one undo step.
+	 * 
+	 *  `anchor` (the clip under the pointer, counted as listed) goes to the absolute `start`; the other
+	 *  `clips` keep their offset from it, and clips linked to them come along in time on their own
+	 *  tracks. `track` is where the anchor's clips go: allowed only when every listed clip is on the
+	 *  anchor's track (or linked to one there), otherwise the move is time-only and `track` is
+	 *  ignored. Pass the anchor's own track for a horizontal drag; `new.index` creates a track in the
+	 *  section of the clip's kind. On the magnetic main track `start` picks the insertion slot (the
+	 *  other clips whose midpoint lies before it) and the track repacks; the overlays, captions and
+	 *  audio over moved main clips follow them. Tracks left empty are removed on `commit` only.
+	 * 
+	 *  Errors: `overlap` (occupied spot, or a start before 0 off the magnetic main track),
+	 *  `trackLocked`, and `invalidEdit` (unknown clip or track, a track of another kind, a time outside
+	 *  ±2^53 flicks). A failed `update` keeps the last valid state; after a failed `commit` the
+	 *  gesture is still open, so cancel it.
+	 */
+	moveClips: (clips: ClipId[], anchor: ClipId, start: Time, track: TrackTarget, phase: EditPhase, options?: InvokeOptions) => __TAURI_INVOKE<null>("move_clips", { clips, anchor, start, track, phase }, options),
+	/**
+	 *  Drags one edge of a clip to the absolute `time`, as an ADR-0006 gesture (`trimClip`, same
+	 *  lifecycle as `moveClips`). The edge is clamped, never rejected: to the media's source range
+	 *  (`ClipView.sourceDuration`; none for images and colour cards), to at least one frame, to the
+	 *  neighbouring clips (not on the magnetic main track) and to the same limits of linked clips whose
+	 *  edge was at the same time, which trim with it. A start trim keeps the content in place
+	 *  (`sourceIn` moves with the edge); on the magnetic main track the clip keeps its start instead,
+	 *  its content shifts and the later clips ripple, with the clips over them following.
+	 * 
+	 *  Errors: `trackLocked`, and `invalidEdit` (unknown clip, a time outside ±2^53 flicks).
+	 */
+	trimClip: (clip: ClipId, edge: Edge, time: Time, phase: EditPhase, options?: InvokeOptions) => __TAURI_INVOKE<null>("trim_clip", { clip, edge, time, phase }, options),
+	/**
+	 *  Splits clips at `at` (Ctrl+B, `splitClips`) and returns the ids of the right halves (select
+	 *  them), in track order. With `clips` empty, every clip under `at` on an unlocked track splits;
+	 *  otherwise the listed clips and their linked members do. A clip splits only when both halves
+	 *  are at least one project frame long; the right halves of a link group share a new link.
+	 * 
+	 *  Errors: `trackLocked` (a listed clip or linked member on a locked track), `invalidEdit` (no clip
+	 *  to split, unknown clip, a time outside `0..=2^53` flicks).
+	 */
+	splitClips: (clips: ClipId[], at: Time, options?: InvokeOptions) => __TAURI_INVOKE<ClipId[]>("split_clips", { clips, at }, options),
+	/**
+	 *  Deletes clips and their linked members (Delete: `ripple: false`, `deleteClips`; Shift+Delete:
+	 *  `ripple: true`, `rippleDeleteClips`). On the magnetic main track Delete always closes the gap.
+	 *  When main-track clips close up, the overlays, captions and audio over later clips follow, and
+	 *  the ones entirely inside a deleted main clip are deleted with it. With `ripple` and no
+	 *  main-track clip selected, each track that lost clips closes its gaps (linked members move too).
+	 *  A plain Delete elsewhere leaves a gap. Tracks the delete emptied are removed.
+	 * 
+	 *  Errors: `trackLocked`, `overlap` (a ripple would move a linked clip into another), and
+	 *  `invalidEdit` (no clips, unknown clip).
+	 */
+	deleteClips: (clips: ClipId[], ripple: boolean, options?: InvokeOptions) => __TAURI_INVOKE<null>("delete_clips", { clips, ripple }, options),
+	/**
+	 *  Closes the gap that contains `at` on `track` (`deleteGap`): the later clips on that track and
+	 *  their linked members move left by its length; on the main track the clips over them follow.
+	 *  A gap is the free span before the first clip or between two clips, never after the last.
+	 * 
+	 *  Errors: `trackLocked`, `overlap` (a linked clip would collide), `invalidEdit` (no gap at `at`,
+	 *  unknown track, a time outside `0..=2^53` flicks).
+	 */
+	deleteGap: (track: TrackId, at: Time, options?: InvokeOptions) => __TAURI_INVOKE<null>("delete_gap", { track, at }, options),
+	/**
+	 *  Deletes the part of clips left (Q, `side: left`) or right (W, `side: right`) of `at`
+	 *  (`trimToPlayhead`). With `clips` empty, the main-track clip under `at` is trimmed. Clips that
+	 *  `at` does not lie inside are skipped. Same clamping, linked members, ripple and following as
+	 *  `trimClip`: on the magnetic main track a left trim keeps the clip's start, so the content that
+	 *  was at `at` is now at the clip's start (move the playhead there).
+	 * 
+	 *  Errors: `trackLocked`, `invalidEdit` (nothing to trim, unknown clip, a time outside
+	 *  `0..=2^53` flicks).
+	 */
+	trimToPlayhead: (clips: ClipId[], at: Time, side: Side, options?: InvokeOptions) => __TAURI_INVOKE<null>("trim_to_playhead", { clips, at, side }, options),
+	/**
+	 *  Turns the magnetic main track on or off (`setMagnetic`). Turning it on closes every gap on the
+	 *  main track, and the clips over moved main clips follow, in one undo step. Setting the value it
+	 *  already has does nothing (no history entry, no event).
+	 * 
+	 *  Errors: `trackLocked` (the main track is locked and would move, or a clip linked to a moved
+	 *  main clip is on a locked track).
+	 */
+	setMagnetic: (on: boolean, options?: InvokeOptions) => __TAURI_INVOKE<null>("set_magnetic", { on }, options),
+	/**
+	 *  Copies clips and their linked members to the app's clip clipboard (Ctrl+C). Not the system
+	 *  clipboard; cleared when a project is created, opened or restored. No undo step, no event.
+	 * 
+	 *  Errors: `invalidEdit` (no clips, unknown clip).
+	 */
+	copyClips: (clips: ClipId[], options?: InvokeOptions) => __TAURI_INVOKE<null>("copy_clips", { clips }, options),
+	/**
+	 *  Copies clips to the clip clipboard and deletes them, as one undo step (Ctrl+X, `cutClips`).
+	 *  The delete is a plain Delete (it closes the gap on the magnetic main track). The clipboard
+	 *  changes only if the delete succeeds. Errors as `deleteClips`.
+	 */
+	cutClips: (clips: ClipId[], options?: InvokeOptions) => __TAURI_INVOKE<null>("cut_clips", { clips }, options),
+	/**
+	 *  Pastes the clip clipboard at `at` (Ctrl+V, `pasteClips`) and returns the new clips' ids
+	 *  (select them), in clipboard order: track order, then time. Main-track clips go into the main
+	 *  track (on the magnetic one at the clip boundary nearest `at`, with a ripple; the other pasted
+	 *  clips keep their offsets to them). Other clips go to their original track at `at` plus their
+	 *  offset when it is free and unlocked, else onto a new track above (video, text) or below
+	 *  (audio) the main track. Pasted link groups get new links.
+	 * 
+	 *  Errors: `invalidEdit` (the clipboard is empty, copied media was removed since, a time outside
+	 *  `0..=2^53` flicks), `trackLocked`.
+	 */
+	pasteClips: (at: Time, options?: InvokeOptions) => __TAURI_INVOKE<ClipId[]>("paste_clips", { at }, options),
+	/**
+	 *  Duplicates clips and their linked members right after the latest end among them (Ctrl+D,
+	 *  `duplicateClips`), like a paste there, without touching the clipboard. Returns the new clips'
+	 *  ids (select them).
+	 * 
+	 *  Errors: `invalidEdit` (no clips, unknown clip), `trackLocked`.
+	 */
+	duplicateClips: (clips: ClipId[], options?: InvokeOptions) => __TAURI_INVOKE<ClipId[]>("duplicate_clips", { clips }, options),
 	removeTrack: (id: TrackId, options?: InvokeOptions) => __TAURI_INVOKE<null>("remove_track", { id }, options),
 	renameTrack: (id: TrackId, name: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("rename_track", { id, name }, options),
 	renameProject: (name: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("rename_project", { name }, options),
@@ -125,10 +258,11 @@ export const commands = {
 	 */
 	cancelJob: (id: JobId, options?: InvokeOptions) => __TAURI_INVOKE<null>("cancel_job", { id }, options),
 	/**
-	 *  Removes media items from the project as one undo step (`removeMedia`). Fails with
-	 *  `invalidEdit` for an empty list, an id that is not in the project, or media that clips or the
-	 *  canvas background still use (`MediaInUse`; `MediaView.usedBy` counts the clips). Removing the
-	 *  clips in the same step, after a warning, comes with `add_clips` in task 0260. Cached previews stay on disk, so undo shows them again at once.
+	 *  Removes media items from the project as one undo step (`removeMedia`), together with every
+	 *  clip that uses them (the UI warns first when `MediaView.usedBy` is not 0). Main-track gaps
+	 *  close and the clips over them follow; a canvas background showing a removed image goes back to
+	 *  black. Fails with `invalidEdit` for an empty list, an id that is not in the project, or a clip
+	 *  of the media on a locked track. Cached previews stay on disk, so undo shows them again at once.
 	 */
 	removeMedia: (ids: MediaId[], options?: InvokeOptions) => __TAURI_INVOKE<null>("remove_media", { ids }, options),
 	/**
@@ -180,6 +314,41 @@ export const commands = {
 	 *  Returns the info after clearing.
 	 */
 	clearCache: (options?: InvokeOptions) => __TAURI_INVOKE<CacheInfo>("clear_cache", undefined, options),
+	/**
+	 *  Recent projects for the home screen, newest first, each with its file's modification time
+	 *  (`modifiedMs: null` = missing). Never removes an entry; a missing or broken list is empty.
+	 */
+	listRecentProjects: (options?: InvokeOptions) => __TAURI_INVOKE<RecentProject_Serialize[]>("list_recent_projects", undefined, options),
+	/**  Removes `path` from the recent list (the file is not touched). An unknown path is fine. */
+	removeRecentProject: (path: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("remove_recent_project", { path }, options),
+	/**
+	 *  Renames the recent project's file to `<name>.cutframe` in its folder (characters Windows
+	 *  forbids become `_`) and sets the project name inside it to `name` (trimmed). Fails with
+	 *  `invalidEdit` when the name is empty, a different file with that name exists, or `path` is not
+	 *  a recent project or is the open one; with `fileNotFound` / `malformedProject` /
+	 *  `projectTooNew` / `invalidProject` when the file cannot be opened; with `io` when the rename or
+	 *  write fails (then nothing changed). Not an undo step.
+	 */
+	renameProjectFile: (path: string, name: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("rename_project_file", { path, name }, options),
+	/**
+	 *  Copies the recent project to `<name>.cutframe` in its folder (`<name> (2).cutframe`, ... when
+	 *  taken) as a new project called `name`, and puts the copy first in the recent list. The UI
+	 *  passes the translated copy name. Errors as for `renameProjectFile`. Not an undo step.
+	 */
+	duplicateProjectFile: (path: string, name: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("duplicate_project_file", { path, name }, options),
+	/**
+	 *  Moves the recent project's file to the Recycle Bin (its `.v<n>.bak` backups stay) and removes
+	 *  it from the list. Ask for confirmation first. Fails with `invalidEdit` when `path` is not a
+	 *  recent project or is the open one, `fileNotFound` when the file is gone, and `io` when the
+	 *  Recycle Bin refuses it (then the entry stays).
+	 */
+	trashProjectFile: (path: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("trash_project_file", { path }, options),
+	/**
+	 *  Opens Explorer at the recent project's folder with its file selected. Fails with
+	 *  `invalidEdit` when `path` is not a recent project or is the open one, `fileNotFound` when the
+	 *  file is gone and `unavailable` when the file manager cannot be started.
+	 */
+	revealProjectFile: (path: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("reveal_project_file", { path }, options),
 };
 
 /** Events */
@@ -377,6 +546,9 @@ export type CropInsets = {
 
 export type Easing = "linear" | "easeIn" | "easeOut" | "easeInOut" | "hold";
 
+/**  Which edge of a clip a trim moves. */
+export type Edge = "start" | "end";
+
 /**  Which step of a continuous edit (drag, trim, slider) a command is (ADR-0006 §4). */
 export type EditPhase = 
 /**  Show this value live; opens a gesture if none is open. Records nothing. */
@@ -501,7 +673,31 @@ export type HistoryLabel = "addTrack" | "removeTrack" | "renameTrack" | "renameP
 /**  Removing media items from the project (one or several at once). */
 "removeMedia" | 
 /**  Pointing media at another file: one relinked item, or every item a folder relink found. */
-"relinkMedia";
+"relinkMedia" | 
+/**  Putting media or colour cards on the timeline (one drop, `+` click or insert). */
+"addClips" | 
+/**  Dragging clips in time or to another track (one drag or nudge). */
+"moveClips" | 
+/**  Dragging a clip edge (one drag or nudge). */
+"trimClip" | 
+/**  Splitting clips at the playhead (Ctrl+B). */
+"splitClips" | 
+/**  Deleting clips (Delete); closes the gap on the magnetic main track. */
+"deleteClips" | 
+/**  Deleting clips and closing the gaps they leave (Shift+Delete). */
+"rippleDeleteClips" | 
+/**  Cutting clips to the clipboard (Ctrl+X). */
+"cutClips" | 
+/**  Closing a gap on one track. */
+"deleteGap" | 
+/**  Deleting the part of clips left or right of the playhead (Q / W). */
+"trimToPlayhead" | 
+/**  Turning the magnetic main track on or off. */
+"setMagnetic" | 
+/**  Pasting the clipboard (Ctrl+V). */
+"pasteClips" | 
+/**  Duplicating clips (Ctrl+D). */
+"duplicateClips";
 
 export type HistoryState = HistoryState_Serialize | HistoryState_Deserialize;
 
@@ -570,7 +766,14 @@ export type IpcError =
 /**  Any other file-system failure: permission denied, disk full, file locked. */
 { kind: "io"; message: string } | 
 /**  The job was cancelled with `cancel_job`; only used as a `job-finished` result. */
-{ kind: "cancelled"; message: string };
+{ kind: "cancelled"; message: string } | 
+/**
+ *  The edit would put a clip over another clip (a move or drop into an occupied spot). The
+ *  project is unchanged; during a drag the last valid state stays visible.
+ */
+{ kind: "overlap"; message: string } | 
+/**  The edit would change a clip on a locked track. The project is unchanged. */
+{ kind: "trackLocked"; message: string };
 
 /**  The end of a job. After `cancel_job` the result is `{ Err: { kind: "cancelled" } }`. */
 export type JobFinished = {
@@ -802,6 +1005,16 @@ export type MediaView_Serialize = {
 	filmstrip: FilmstripLayout | null,
 };
 
+/**  What a new clip shows. */
+export type NewClipSource = 
+/**
+ *  A media item: the whole source range of a video or audio file, or an image for
+ *  [`DEFAULT_IMAGE_DURATION`].
+ */
+{ kind: "media"; media: MediaId } | 
+/**  A colour card for [`DEFAULT_COLOR_DURATION`]. */
+{ kind: "color"; color: Rgba8 };
+
 /**
  *  A second launch of the app passed a project path (e.g. a double-click in Explorer). The window
  *  was already brought to the front. Open it like File → Open, after the unsaved-changes prompt;
@@ -811,6 +1024,24 @@ export type OpenFileRequested = {
 	/**  Absolute path as given on the command line; not checked (opening reports errors). */
 	path: string,
 };
+
+/**  Where [`AddClips`] puts its clips. Several clips go one after another. */
+export type Placement = 
+/**
+ *  At the end of the main track; audio-only media at the end of the first unlocked audio
+ *  track (a new one at the top of the audio section if there is none).
+ */
+{ kind: "append" } | 
+/**
+ *  Into the main track at the clip boundary nearest `at`. Later main clips ripple and the
+ *  clips on other tracks follow them.
+ */
+{ kind: "insert"; at: Time } | 
+/**
+ *  On `track` from `start`. On the magnetic main track this is [`Placement::Insert`].
+ *  Elsewhere a clip that would overlap fails with [`CommandError::Overlap`].
+ */
+{ kind: "drop"; track: TrackTarget; start: Time };
 
 export type Preferences = Preferences_Serialize | Preferences_Deserialize;
 
@@ -986,6 +1217,47 @@ export type RationalRepr = {
 	den: number,
 };
 
+/**  A project on the home screen's recent list, newest first (design `home-screen.md` §5). */
+export type RecentProject = RecentProject_Serialize | RecentProject_Deserialize;
+
+/**  A project on the home screen's recent list, newest first (design `home-screen.md` §5). */
+export type RecentProject_Deserialize = {
+	/**  Absolute path of the project file; pass it back to the recent-project commands. */
+	path: string,
+	/**  The project's name at the last open or save (model data, not translated). */
+	name: string,
+	/**  The project's duration at that time, flicks. */
+	duration: Time,
+	/**  Unix milliseconds of the last open, save or duplicate by this app. */
+	openedAtMs: number,
+	/**
+	 *  The file's modification time in Unix milliseconds; `null` = the file is missing or
+	 *  unreachable (show it as missing, offer only `removeRecentProject`).
+	 */
+	modifiedMs?: number | null,
+	/**  Content hash of the cover: `media://cover/<hash>` (404 = show a placeholder). */
+	cover?: string | null,
+};
+
+/**  A project on the home screen's recent list, newest first (design `home-screen.md` §5). */
+export type RecentProject_Serialize = {
+	/**  Absolute path of the project file; pass it back to the recent-project commands. */
+	path: string,
+	/**  The project's name at the last open or save (model data, not translated). */
+	name: string,
+	/**  The project's duration at that time, flicks. */
+	duration: Time,
+	/**  Unix milliseconds of the last open, save or duplicate by this app. */
+	openedAtMs: number,
+	/**
+	 *  The file's modification time in Unix milliseconds; `null` = the file is missing or
+	 *  unreachable (show it as missing, offer only `removeRecentProject`).
+	 */
+	modifiedMs: number | null,
+	/**  Content hash of the cover: `media://cover/<hash>` (404 = show a placeholder). */
+	cover: string | null,
+};
+
 /**  An autosave left by an instance that did not exit cleanly, offered for restore at startup. */
 export type RecoveryEntry = RecoveryEntry_Serialize | RecoveryEntry_Deserialize;
 
@@ -1025,6 +1297,13 @@ export type SeekMode =
 /**  While the playhead is dragged: show the nearest ready frame at once. */
 "scrub";
 
+/**  Which part of a clip [`TrimToPlayhead`] deletes. */
+export type Side = 
+/**  Delete left of the playhead (Q): the start edge moves to the playhead. */
+"left" | 
+/**  Delete right of the playhead (W): the end edge moves to the playhead. */
+"right";
+
 /**
  *  A point in time or a duration, in flicks.
  * 
@@ -1036,6 +1315,14 @@ export type Time = number;
 export type TrackId = string;
 
 export type TrackKind = "video" | "audio" | "text";
+
+/**  The track a drop lands on. */
+export type TrackTarget = { kind: "existing"; track: TrackId } | 
+/**
+ *  A new track created at `index` (top = 0), clamped into the section that fits the first
+ *  clip: video tracks above the main track, audio tracks below it.
+ */
+{ kind: "new"; index: number };
 
 export type TrackView = TrackView_Serialize | TrackView_Deserialize;
 
@@ -1146,6 +1433,18 @@ function makeEvent<TListen, TEmit = TListen>(name: string, serialize?: (payload:
 export type MockCommandHandlers = {
     getProject: () => ProjectState_Serialize | Promise<ProjectState_Serialize>,
     addTrack: (args: { kind: TrackKind; index: number | null }) => TrackId | Promise<TrackId>,
+    addClips: (args: { sources: NewClipSource[]; placement: Placement }) => ClipId[] | Promise<ClipId[]>,
+    moveClips: (args: { clips: ClipId[]; anchor: ClipId; start: Time; track: TrackTarget; phase: EditPhase }) => null | Promise<null>,
+    trimClip: (args: { clip: ClipId; edge: Edge; time: Time; phase: EditPhase }) => null | Promise<null>,
+    splitClips: (args: { clips: ClipId[]; at: Time }) => ClipId[] | Promise<ClipId[]>,
+    deleteClips: (args: { clips: ClipId[]; ripple: boolean }) => null | Promise<null>,
+    deleteGap: (args: { track: TrackId; at: Time }) => null | Promise<null>,
+    trimToPlayhead: (args: { clips: ClipId[]; at: Time; side: Side }) => null | Promise<null>,
+    setMagnetic: (args: { on: boolean }) => null | Promise<null>,
+    copyClips: (args: { clips: ClipId[] }) => null | Promise<null>,
+    cutClips: (args: { clips: ClipId[] }) => null | Promise<null>,
+    pasteClips: (args: { at: Time }) => ClipId[] | Promise<ClipId[]>,
+    duplicateClips: (args: { clips: ClipId[] }) => ClipId[] | Promise<ClipId[]>,
     removeTrack: (args: { id: TrackId }) => null | Promise<null>,
     renameTrack: (args: { id: TrackId; name: string }) => null | Promise<null>,
     renameProject: (args: { name: string }) => null | Promise<null>,
@@ -1178,6 +1477,12 @@ export type MockCommandHandlers = {
     setPreferences: (args: { preferences: Preferences_Deserialize }) => Preferences_Serialize | Promise<Preferences_Serialize>,
     getCacheInfo: () => CacheInfo | Promise<CacheInfo>,
     clearCache: () => CacheInfo | Promise<CacheInfo>,
+    listRecentProjects: () => RecentProject_Serialize[] | Promise<RecentProject_Serialize[]>,
+    removeRecentProject: (args: { path: string }) => null | Promise<null>,
+    renameProjectFile: (args: { path: string; name: string }) => null | Promise<null>,
+    duplicateProjectFile: (args: { path: string; name: string }) => null | Promise<null>,
+    trashProjectFile: (args: { path: string }) => null | Promise<null>,
+    revealProjectFile: (args: { path: string }) => null | Promise<null>,
 };
 
 /**
@@ -1206,6 +1511,18 @@ export function mockCommands(handlers: Partial<MockCommandHandlers> = {}): void 
         switch (cmd) {
             case "get_project": return mockCommandHandler(mockHandlers.getProject, "get_project", args);
             case "add_track": return mockCommandHandler(mockHandlers.addTrack, "add_track", args);
+            case "add_clips": return mockCommandHandler(mockHandlers.addClips, "add_clips", args);
+            case "move_clips": return mockCommandHandler(mockHandlers.moveClips, "move_clips", args);
+            case "trim_clip": return mockCommandHandler(mockHandlers.trimClip, "trim_clip", args);
+            case "split_clips": return mockCommandHandler(mockHandlers.splitClips, "split_clips", args);
+            case "delete_clips": return mockCommandHandler(mockHandlers.deleteClips, "delete_clips", args);
+            case "delete_gap": return mockCommandHandler(mockHandlers.deleteGap, "delete_gap", args);
+            case "trim_to_playhead": return mockCommandHandler(mockHandlers.trimToPlayhead, "trim_to_playhead", args);
+            case "set_magnetic": return mockCommandHandler(mockHandlers.setMagnetic, "set_magnetic", args);
+            case "copy_clips": return mockCommandHandler(mockHandlers.copyClips, "copy_clips", args);
+            case "cut_clips": return mockCommandHandler(mockHandlers.cutClips, "cut_clips", args);
+            case "paste_clips": return mockCommandHandler(mockHandlers.pasteClips, "paste_clips", args);
+            case "duplicate_clips": return mockCommandHandler(mockHandlers.duplicateClips, "duplicate_clips", args);
             case "remove_track": return mockCommandHandler(mockHandlers.removeTrack, "remove_track", args);
             case "rename_track": return mockCommandHandler(mockHandlers.renameTrack, "rename_track", args);
             case "rename_project": return mockCommandHandler(mockHandlers.renameProject, "rename_project", args);
@@ -1238,6 +1555,12 @@ export function mockCommands(handlers: Partial<MockCommandHandlers> = {}): void 
             case "set_preferences": return mockCommandHandler(mockHandlers.setPreferences, "set_preferences", args);
             case "get_cache_info": return mockCommandHandler(mockHandlers.getCacheInfo, "get_cache_info", args);
             case "clear_cache": return mockCommandHandler(mockHandlers.clearCache, "clear_cache", args);
+            case "list_recent_projects": return mockCommandHandler(mockHandlers.listRecentProjects, "list_recent_projects", args);
+            case "remove_recent_project": return mockCommandHandler(mockHandlers.removeRecentProject, "remove_recent_project", args);
+            case "rename_project_file": return mockCommandHandler(mockHandlers.renameProjectFile, "rename_project_file", args);
+            case "duplicate_project_file": return mockCommandHandler(mockHandlers.duplicateProjectFile, "duplicate_project_file", args);
+            case "trash_project_file": return mockCommandHandler(mockHandlers.trashProjectFile, "trash_project_file", args);
+            case "reveal_project_file": return mockCommandHandler(mockHandlers.revealProjectFile, "reveal_project_file", args);
             default: throw new Error(`No mock handler registered for command '${cmd}'`);
         }
     }, { shouldMockEvents: true });

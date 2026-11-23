@@ -6,15 +6,16 @@ import { logError } from "@/ipc/errors";
 import { useAppStore } from "@/stores/appStore";
 import { reseekOnDurationChange } from "@/stores/playheadStore";
 import { useProjectStore } from "@/stores/projectStore";
+import { useUiStore } from "@/stores/uiStore";
 
 /**
  * Keeps the project store in sync with Rust: subscribes to `projectChanged` (and `quitRequested`,
  * answered with the unsaved-changes prompt; `openFileRequested`, a project double-clicked while
  * the app runs; `appInfoChanged`, a GPU change at runtime) first, cancels any stale gesture, then
  * fetches the current state, so no change is missed in between. Then it opens the project file the
- * app was launched with, if any, and only after that offers crash recovery. It also re-sends the
- * playhead to the engine on the first state and when a duration change may have clamped it.
- * Returns a cleanup function.
+ * app was launched with, if any (it shows the editor; otherwise the home screen stays), and only
+ * after that offers crash recovery over either view. It also re-sends the playhead to the engine
+ * on the first state and when a duration change may have clamped it. Returns a cleanup function.
  */
 export function startProjectSync(): () => void {
   let disposed = false;
@@ -52,9 +53,12 @@ export function startProjectSync(): () => void {
         return null;
       });
       if (launchPath !== null) await fileActions.openPath(launchPath);
+      useUiStore.getState().setStarted();
       void recovery.load();
     })
-    .catch(reportError);
+    .catch(reportError)
+    // A failed startup still shows a screen (the home screen, with the error).
+    .finally(() => useUiStore.getState().setStarted());
 
   return () => {
     disposed = true;

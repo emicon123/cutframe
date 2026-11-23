@@ -33,11 +33,15 @@
   --timeline: oklch(0.17 0.008 285);
   --track: oklch(0.21 0.009 285);
   --track-alt: oklch(0.195 0.009 285);
+  --track-main: oklch(0.235 0.018 292);
   --ruler: oklch(0.23 0.01 285);
   --playhead: oklch(0.72 0.2 15);
   --clip-video: oklch(0.55 0.15 292);
   --clip-audio: oklch(0.6 0.13 165);
   --clip-text: oklch(0.7 0.14 75);
+  /* Outline of selected clips and the marquee, and the snap indicator line. */
+  --clip-selected: oklch(0.97 0.005 285);
+  --snap-line: oklch(0.86 0.16 95);
   --preview-bg: oklch(0.1 0.005 285);
 }
 
@@ -69,6 +73,8 @@
   --text-2xs: 0.625rem;
   /* Smallest width of a media panel grid tile. */
   --spacing-media-tile: 7.5rem;
+  /* Smallest width of a home-screen project card. */
+  --spacing-project-card: 13rem;
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);

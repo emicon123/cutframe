@@ -1,10 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { type ProjectState, useProjectStore } from "@/stores/projectStore";
+import { selectionStore } from "@/stores/selectionStore";
 import { useUiStore } from "@/stores/uiStore";
 
 import type { Action } from "./actions";
-import { findShortcut, handleShortcut, isInOverlay, isTextEntry, type KeyInput } from "./shortcuts";
+import {
+  findShortcut,
+  handleShortcut,
+  isInLocalScope,
+  isInOverlay,
+  isTextEntry,
+  type KeyInput,
+} from "./shortcuts";
 
 const key = (k: string, mods: Partial<KeyInput> = {}): KeyInput => ({
   key: k,
@@ -39,6 +47,19 @@ describe("findShortcut", () => {
     expect(findShortcut(key("I", { ctrlKey: true, shiftKey: true }))).toBeUndefined();
   });
 
+  it("finds the timeline edit shortcuts", () => {
+    expect(findShortcut(key("b", { ctrlKey: true }))?.id).toBe("split");
+    expect(findShortcut(key("Delete"))?.id).toBe("delete");
+    expect(findShortcut(key("Delete", { shiftKey: true }))?.id).toBe("ripple-delete");
+    expect(findShortcut(key("q"))?.id).toBe("trim-left");
+    expect(findShortcut(key("W"))?.id).toBe("trim-right");
+    expect(findShortcut(key("x", { ctrlKey: true }))?.id).toBe("cut");
+    expect(findShortcut(key("c", { ctrlKey: true }))?.id).toBe("copy");
+    expect(findShortcut(key("v", { ctrlKey: true }))?.id).toBe("paste");
+    expect(findShortcut(key("d", { ctrlKey: true }))?.id).toBe("duplicate");
+    expect(findShortcut(key("q", { ctrlKey: true }))).toBeUndefined();
+  });
+
   it("ignores plain keys", () => {
     expect(findShortcut(key("z"))).toBeUndefined();
   });
@@ -64,6 +85,7 @@ describe("isTextEntry", () => {
 describe("handleShortcut", () => {
   const state = {
     history: { canUndo: false, canRedo: false, undoLabel: null, redoLabel: null, entries: [], current: 0 },
+    project: { magnetic: false, tracks: [] },
   } as unknown as ProjectState;
 
   const press = (k: string, mods: Partial<KeyInput> = {}, target: EventTarget = document.body) => {
@@ -117,6 +139,58 @@ describe("handleShortcut", () => {
     expect(blocking.run).not.toHaveBeenCalled();
   });
 
+  it("leaves an event alone that something already handled", () => {
+    const action = fake({ shortcuts: [{ key: "Escape" }] });
+    const event = press("Escape");
+    event.preventDefault();
+    handleShortcut(event, [action]);
+    expect(action.run).not.toHaveBeenCalled();
+  });
+
+  it("selects every clip with Ctrl+A and deselects with Escape", () => {
+    useProjectStore.setState({
+      state: {
+        ...state,
+        project: {
+          tracks: [
+            { id: "t1", locked: false, clips: [{ id: "a" }, { id: "b" }] },
+            { id: "t2", locked: true, clips: [{ id: "c" }] },
+          ],
+        },
+      } as unknown as ProjectState,
+    });
+    useUiStore.setState({ view: "editor" });
+    handleShortcut(press("a", { ctrlKey: true }));
+    expect(selectionStore.getState().clips).toEqual(["a", "b"]);
+    handleShortcut(press("Escape"));
+    expect(selectionStore.getState().clips).toEqual([]);
+  });
+
+  it("ignores timeline shortcuts while focus is in a panel with its own keys", () => {
+    const panel = document.createElement("section");
+    panel.dataset.shortcutScope = "media-bin";
+    const button = document.createElement("button");
+    panel.append(button);
+    const timeline = fake({ shortcuts: [{ key: "Delete" }], scope: "timeline" });
+    const global = fake({ shortcuts: [{ key: "Delete" }] });
+
+    const inPanel = press("Delete", {}, button);
+    handleShortcut(inPanel, [timeline]);
+    expect(timeline.run).not.toHaveBeenCalled();
+    expect(inPanel.defaultPrevented).toBe(false);
+
+    handleShortcut(press("Delete", {}, button), [global]);
+    expect(global.run).toHaveBeenCalledOnce();
+    handleShortcut(press("Delete"), [timeline]);
+    expect(timeline.run).toHaveBeenCalledOnce();
+  });
+
+  it("does not trim with Q or W while typing", () => {
+    const action = fake({ shortcuts: [{ key: "q" }], scope: "timeline" });
+    handleShortcut(press("q", {}, document.createElement("input")), [action]);
+    expect(action.run).not.toHaveBeenCalled();
+  });
+
   it("opens the shortcut reference on ? from the registry", () => {
     handleShortcut(press("?", { shiftKey: true }));
     expect(useUiStore.getState().shortcutsOpen).toBe(true);
@@ -125,6 +199,18 @@ describe("handleShortcut", () => {
   it("does not open the shortcut reference while typing ?", () => {
     handleShortcut(press("?", { shiftKey: true }, document.createElement("textarea")));
     expect(useUiStore.getState().shortcutsOpen).toBe(false);
+  });
+});
+
+describe("isInLocalScope", () => {
+  it("detects elements inside a data-shortcut-scope panel", () => {
+    const panel = document.createElement("div");
+    panel.setAttribute("data-shortcut-scope", "media-bin");
+    const item = document.createElement("div");
+    panel.append(item);
+    expect(isInLocalScope(item)).toBe(true);
+    expect(isInLocalScope(document.body)).toBe(false);
+    expect(isInLocalScope(null)).toBe(false);
   });
 });
 

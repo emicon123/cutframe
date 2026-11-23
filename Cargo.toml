@@ -39,6 +39,8 @@ tauri-plugin-single-instance = "2.5"
 tauri-plugin-window-state = "2.5"
 tauri-specta = { version = "=2.0.0-rc.29", features = ["derive", "typescript"] }
 thiserror = "2.0"
+# Delete = move to the Recycle Bin (home screen); MIT.
+trash = "5.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1.29", features = ["v7", "serde"] }

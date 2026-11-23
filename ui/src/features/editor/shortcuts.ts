@@ -34,11 +34,27 @@ export function isInOverlay(target: EventTarget | null): boolean {
   );
 }
 
-/** Runs the action of a matching shortcut. Disabled actions only block the WebView default. */
+/**
+ * Whether `target` is inside a panel with its own keyboard handling (`data-shortcut-scope`, e.g.
+ * the media bin). Timeline-scoped shortcuts are ignored there, so the keys follow focus.
+ */
+export function isInLocalScope(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest("[data-shortcut-scope]") !== null;
+}
+
+/**
+ * Runs the action of a matching shortcut. Disabled actions only block the WebView default. An
+ * event something else already handled (`defaultPrevented`) is left alone.
+ */
 export function handleShortcut(event: KeyboardEvent, actions: readonly Action[] = ACTIONS): void {
+  // Already handled, e.g. Escape cancelling a drag (ipc/gesture.ts): it must not also deselect.
+  if (event.defaultPrevented) return;
   const action = findShortcut(event, actions);
   if (!action) return;
-  const ignored = isTextEntry(event.target) || isInOverlay(event.target);
+  const ignored =
+    isTextEntry(event.target) ||
+    isInOverlay(event.target) ||
+    (action.scope === "timeline" && isInLocalScope(event.target));
   if (ignored && !action.blockDefault) return;
   event.preventDefault();
   if (!ignored && isEnabled(action, currentActionContext())) action.run();

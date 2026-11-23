@@ -30,6 +30,35 @@ pub fn place_clip(track: &mut Track, clip: Clip) -> Result<usize, CommandError> 
     Ok(index)
 }
 
+/// Where a new track of `kind` goes for a requested `index`: clamped into the overlay section
+/// (video, text: `0..=main`) or the audio section (`main + 1..=len`). `None` is the bottom of the
+/// section.
+pub fn section_index(project: &Project, kind: TrackKind, index: Option<usize>) -> usize {
+    let len = project.tracks.len();
+    let main = project.main_index().unwrap_or(len);
+    let (first, last) = match kind {
+        TrackKind::Audio => ((main + 1).min(len), len),
+        TrackKind::Video | TrackKind::Text => (0, main),
+    };
+    index.unwrap_or(last).clamp(first, last)
+}
+
+/// Removes the overlay and audio tracks that held clips in `before` and hold none in `after`
+/// (F1.28). Tracks that were already empty, new tracks and the main track are kept. Commands call
+/// it on commit only, so the layout does not jump under the pointer during a drag.
+pub fn remove_emptied_tracks(before: &Project, after: &mut Project) {
+    let had_clips: std::collections::HashSet<TrackId> = before
+        .tracks
+        .iter()
+        .filter(|t| !t.clips.is_empty())
+        .map(|t| t.id)
+        .collect();
+    let main = after.main_track;
+    after
+        .tracks
+        .retain(|t| t.id == main || !t.clips.is_empty() || !had_clips.contains(&t.id));
+}
+
 /// While `project.magnetic` is on, recomputes the main track's starts in list order so its clips
 /// are contiguous from 0. Does nothing when magnetic is off.
 pub fn repack_main(project: &mut Project) {
@@ -58,6 +87,110 @@ pub fn normalize_links(project: &mut Project) {
             clip.link = None;
         }
     }
+}
+
+/// `ids` and every clip linked to one of them (design §3.5), each once, in track order then
+/// clip order. Fails with [`CommandError::ClipNotFound`] for an id that is not in the project.
+pub fn expand_links(project: &Project, ids: &[ClipId]) -> Result<Vec<ClipId>, CommandError> {
+    let mut links = std::collections::HashSet::new();
+    for &id in ids {
+        let (_, clip) = project.clip(id).ok_or(CommandError::ClipNotFound(id))?;
+        links.extend(clip.link);
+    }
+    Ok(project
+        .clips()
+        .filter(|c| ids.contains(&c.id) || c.link.is_some_and(|l| links.contains(&l)))
+        .map(|c| c.id)
+        .collect())
+}
+
+/// Keeps a clip's props valid after its duration or content changed: keyframe offsets move by
+/// `-content_shift` (a start trim by `d` shifts the content under the clip start by `d`), those that
+/// end up outside `0..=duration` are dropped, and fades are shortened to fit the new duration.
+/// Tier 1 writes no keyframes, so only the fades ever change; task 0520 adds interpolated boundary
+/// keyframes here.
+pub fn retime_keyframes(clip: &mut Clip, content_shift: Time) {
+    fn retime<T>(animated: &mut crate::props::Animated<T>, shift: Time, duration: Time) {
+        for keyframe in &mut animated.keyframes {
+            keyframe.time = keyframe.time - shift;
+        }
+        animated
+            .keyframes
+            .retain(|k| Time::ZERO <= k.time && k.time <= duration);
+    }
+    let duration = clip.duration;
+    if let Some(visual) = &mut clip.visual {
+        retime(&mut visual.position, content_shift, duration);
+        retime(&mut visual.scale, content_shift, duration);
+        retime(&mut visual.rotation, content_shift, duration);
+        retime(&mut visual.opacity, content_shift, duration);
+        retime(&mut visual.crop, content_shift, duration);
+    }
+    if let Some(audio) = &mut clip.audio {
+        retime(&mut audio.volume, content_shift, duration);
+        audio.fade_in = audio.fade_in.min(duration);
+        audio.fade_out = audio.fade_out.min(duration - audio.fade_in);
+    }
+}
+
+/// Whether the main track's clips differ in position or content range between `before` and
+/// `after`: the test for "followers must follow" (§3.7).
+pub fn main_changed(before: &Project, after: &Project) -> bool {
+    let key = |c: &Clip| (c.id, c.start, c.duration, c.source_in());
+    match (before.main(), after.main()) {
+        (Some(a), Some(b)) => !a.clips.iter().map(key).eq(b.clips.iter().map(key)),
+        _ => false,
+    }
+}
+
+/// The clip boundary of `clips` (a start or an end, or 0) nearest `at`; ties go to the earlier
+/// one. Where an insert into the magnetic main track lands.
+pub fn nearest_boundary(clips: &[Clip], at: Time) -> Time {
+    clips
+        .iter()
+        .flat_map(|c| [c.start, c.end()])
+        .chain([Time::ZERO])
+        .min_by_key(|b| ((*b - at).flicks().unsigned_abs(), *b))
+        .unwrap_or(Time::ZERO)
+}
+
+/// The ids of the clips in `after` that are not in `before`, in track order then clip order: the
+/// clips an edit created (e.g. the right halves of a split).
+pub fn added_clips(before: &Project, after: &Project) -> Vec<ClipId> {
+    let old: std::collections::HashSet<ClipId> = before.clips().map(|c| c.id).collect();
+    after
+        .clips()
+        .filter(|c| !old.contains(&c.id))
+        .map(|c| c.id)
+        .collect()
+}
+
+/// Moves each clip in `deltas` by its delta and puts it back on its own track. Fails with
+/// [`CommandError::Overlap`] (leaving `project` partly changed, so callers work on a copy) when a
+/// clip would start before 0 or overlap a clip that stays or was placed before it.
+pub fn shift_clips(
+    project: &mut Project,
+    deltas: &HashMap<ClipId, Time>,
+) -> Result<(), CommandError> {
+    let mut moving: Vec<(TrackId, Clip)> = Vec::new();
+    for track in &mut project.tracks {
+        let (out, kept): (Vec<Clip>, Vec<Clip>) = std::mem::take(&mut track.clips)
+            .into_iter()
+            .partition(|c| deltas.contains_key(&c.id));
+        track.clips = kept;
+        moving.extend(out.into_iter().map(|mut c| {
+            c.start = c.start + deltas[&c.id];
+            (track.id, c)
+        }));
+    }
+    moving.sort_by_key(|(_, c)| (c.start, c.id));
+    for (track, clip) in moving {
+        if clip.start < Time::ZERO {
+            return Err(CommandError::Overlap);
+        }
+        place_clip(track_mut(project, track), clip)?;
+    }
+    Ok(())
 }
 
 /// Ids handed out in a fixed order, so a redo of a command recreates the same ids as its first

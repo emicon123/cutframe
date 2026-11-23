@@ -27,6 +27,10 @@ const ctx = (overrides: Partial<ActionContext> = {}): ActionContext => ({
   historyPanelOpen: false,
   mediaBinOpen: true,
   inspectorOpen: true,
+  editorOpen: true,
+  magnetic: true,
+  clipsSelected: false,
+  gapSelected: false,
   ...overrides,
 });
 
@@ -67,6 +71,7 @@ describe("menuModel", () => {
   it("shows the file actions with their shortcuts and separators", () => {
     const file = menus[0];
     expect(actionItems(file).map((i) => [i.label, i.shortcut])).toEqual([
+      [t.file.home, ""],
       [t.file.new, "Ctrl+N"],
       [t.file.open, "Ctrl+O"],
       [t.file.save, "Ctrl+S"],
@@ -75,7 +80,7 @@ describe("menuModel", () => {
       [t.file.projectSettings, ""],
       [t.file.exit, ""],
     ]);
-    expect(file?.items.filter((i) => i.kind === "separator")).toHaveLength(4);
+    expect(file?.items.filter((i) => i.kind === "separator")).toHaveLength(5);
   });
 
   it("names the undo and redo entries and disables them when there is nothing to do", () => {
@@ -101,7 +106,7 @@ describe("menuModel", () => {
   it("disables project actions before a project is loaded", () => {
     const file = actionItems(menuModel(ctx({ loaded: false }))[0]);
     const disabled = file.filter((i) => i.disabled).map((i) => i.id);
-    expect(disabled).toEqual(["save", "save-as", "import-media", "project-settings"]);
+    expect(disabled).toEqual(["go-home", "save", "save-as", "import-media", "project-settings"]);
   });
 
   it("checks the history panel toggle when the panel is open", () => {
@@ -146,6 +151,17 @@ describe("shortcutGroups", () => {
     expect(groups[1]?.rows).toEqual([
       { id: "undo", label: t.edit.undo, keys: ["Ctrl+Z"] },
       { id: "redo", label: t.edit.redo, keys: ["Ctrl+Shift+Z", "Ctrl+Y"] },
+      { id: "cut", label: t.edit.cut, keys: ["Ctrl+X"] },
+      { id: "copy", label: t.edit.copy, keys: ["Ctrl+C"] },
+      { id: "paste", label: t.edit.paste, keys: ["Ctrl+V"] },
+      { id: "duplicate", label: t.edit.duplicate, keys: ["Ctrl+D"] },
+      { id: "split", label: t.edit.split, keys: ["Ctrl+B"] },
+      { id: "delete", label: t.edit.delete, keys: ["Del"] },
+      { id: "ripple-delete", label: t.edit.rippleDelete, keys: ["Shift+Del"] },
+      { id: "trim-left", label: t.edit.trimLeft, keys: ["Q"] },
+      { id: "trim-right", label: t.edit.trimRight, keys: ["W"] },
+      { id: "select-all", label: t.edit.selectAll, keys: ["Ctrl+A"] },
+      { id: "deselect", label: t.edit.deselect, keys: [t.keys.escape] },
       { id: "preferences", label: t.edit.preferences, keys: ["Ctrl+,"] },
     ]);
     expect(groups[2]?.rows).toEqual([
@@ -184,8 +200,80 @@ describe("panel and preferences actions", () => {
 
 describe("actionContext", () => {
   it("is empty before the first project state", () => {
-    expect(actionContext(null, { historyPanelOpen: true, mediaBinOpen: false, inspectorOpen: true })).toEqual(
-      ctx({ loaded: false, historyPanelOpen: true, mediaBinOpen: false }),
-    );
+    expect(
+      actionContext(null, {
+        historyPanelOpen: true,
+        mediaBinOpen: false,
+        inspectorOpen: true,
+        editorOpen: true,
+      }),
+    ).toEqual(ctx({ loaded: false, historyPanelOpen: true, mediaBinOpen: false, magnetic: false }));
+  });
+});
+
+describe("home screen", () => {
+  it("File → Home is the first File item, has no shortcut and needs the editor", () => {
+    const file = menuModel(ctx())[0];
+    expect(file?.items[0]).toMatchObject({ kind: "action", id: "go-home", label: t.file.home, shortcut: "" });
+    expect(file?.items[1]).toEqual({ kind: "separator" });
+    const onHome = actionItems(menuModel(ctx({ editorOpen: false }))[0]);
+    const disabled = (id: string) => onHome.find((item) => item.id === id)?.disabled;
+    expect(disabled("go-home")).toBe(true);
+    expect(disabled("save")).toBe(true);
+    expect(disabled("import-media")).toBe(true);
+    expect(disabled("new-project")).toBe(false);
+    expect(disabled("open-project")).toBe(false);
+  });
+});
+
+describe("timeline edit actions", () => {
+  const edit = (c: ActionContext) => actionItems(menuModel(c)[1]);
+  const item = (c: ActionContext, id: string) => edit(c).find((i) => i.id === id);
+
+  it("lists split, delete, trim and clipboard actions in the Edit menu with their shortcuts", () => {
+    const shortcuts = Object.fromEntries(edit(ctx()).map((i) => [i.id, i.shortcut]));
+    expect(shortcuts).toMatchObject({
+      split: "Ctrl+B",
+      delete: "Del",
+      "ripple-delete": "Shift+Del",
+      "trim-left": "Q",
+      "trim-right": "W",
+      cut: "Ctrl+X",
+      copy: "Ctrl+C",
+      paste: "Ctrl+V",
+      duplicate: "Ctrl+D",
+      magnetic: "",
+    });
+  });
+
+  it("needs a selection for delete and the clip clipboard actions, not for split, Q, W or paste", () => {
+    const none = ctx();
+    for (const id of ["delete", "ripple-delete", "cut", "copy", "duplicate"])
+      expect(item(none, id)?.disabled).toBe(true);
+    for (const id of ["split", "trim-left", "trim-right", "paste", "magnetic"])
+      expect(item(none, id)?.disabled).toBe(false);
+    const clips = ctx({ clipsSelected: true });
+    for (const id of ["delete", "ripple-delete", "cut", "copy", "duplicate"])
+      expect(item(clips, id)?.disabled).toBe(false);
+    const gap = ctx({ gapSelected: true });
+    expect(item(gap, "delete")?.disabled).toBe(false);
+    expect(item(gap, "copy")?.disabled).toBe(true);
+  });
+
+  it("disables every edit on the home screen", () => {
+    const home = ctx({ editorOpen: false, clipsSelected: true });
+    for (const id of ["split", "delete", "trim-left", "copy", "paste", "magnetic"])
+      expect(item(home, id)?.disabled).toBe(true);
+  });
+
+  it("shows the magnetic main track as a toggle", () => {
+    expect(item(ctx({ magnetic: true }), "magnetic")?.checked).toBe(true);
+    expect(item(ctx({ magnetic: false }), "magnetic")?.checked).toBe(false);
+  });
+
+  it("lists the new shortcuts in the reference panel under Edit", () => {
+    const rows = shortcutGroups().find((g) => g.id === "edit")?.rows ?? [];
+    expect(rows.find((r) => r.id === "ripple-delete")?.keys).toEqual(["Shift+Del"]);
+    expect(rows.find((r) => r.id === "split")?.label).toBe(t.edit.split);
   });
 });

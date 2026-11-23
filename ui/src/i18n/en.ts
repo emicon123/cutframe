@@ -22,7 +22,7 @@ export const en = {
     windowTitle: (name: string, dirty: boolean) => `${dirty ? "*" : ""}${name} - ${APP_NAME}`,
   },
   /** Key names used to display shortcuts, e.g. "Ctrl+Shift+S". */
-  keys: { ctrl: "Ctrl", shift: "Shift", separator: "+", delete: "Del" },
+  keys: { ctrl: "Ctrl", shift: "Shift", separator: "+", delete: "Del", escape: "Esc" },
   /** Main menu bar titles. */
   menu: {
     bar: "Main menu",
@@ -32,6 +32,8 @@ export const en = {
     help: "Help",
   },
   file: {
+    /** File → Home: closes the project (unsaved prompt) and shows the home screen. */
+    home: "Home",
     new: "New",
     open: "Open…",
     save: "Save",
@@ -50,6 +52,46 @@ export const en = {
     save: "Save",
     discard: "Don't save",
     cancel: "Cancel",
+  },
+  home: {
+    title: "Projects",
+    newProject: "New project",
+    open: "Open…",
+    recent: "Recent projects",
+    empty: "No recent projects yet",
+    emptyHint: "Create a new project or open one from a folder.",
+    /** Placeholder label of a card whose cover could not be loaded. */
+    noCover: "No cover",
+    missing: "Missing",
+    missingHint: "The file was moved or deleted",
+    modified: (date: string) => `Modified ${date}`,
+    /** Name of a duplicated project, passed to `duplicateProjectFile`. */
+    copyName: (name: string) => `${name} copy`,
+    cardMenu: (name: string) => `Actions for “${name}”`,
+    openItem: (name: string) => `Open “${name}”`,
+    actions: {
+      open: "Open",
+      rename: "Rename…",
+      duplicate: "Duplicate",
+      reveal: "Show in Explorer",
+      delete: "Delete…",
+      remove: "Remove from list",
+    },
+    rename: {
+      title: "Rename project",
+      description: "Renames the project and its file.",
+      label: "Name",
+      apply: "Rename",
+      cancel: "Cancel",
+      /** `invalidEdit` from `renameProjectFile`. */
+      conflict: "A project with this name already exists or the name is empty",
+    },
+    delete: {
+      title: (name: string) => `Move “${name}” to the Recycle Bin?`,
+      description: "You can restore it from the Recycle Bin.",
+      confirm: "Move to Recycle Bin",
+      cancel: "Cancel",
+    },
   },
   recovery: {
     title: "Recover unsaved work",
@@ -93,6 +135,18 @@ export const en = {
     /** Menu item and tooltip naming the entry, e.g. "Undo Add Track". */
     undoAction: (label: string) => `Undo ${label}`,
     redoAction: (label: string) => `Redo ${label}`,
+    selectAll: "Select all clips",
+    deselect: "Deselect",
+    split: "Split at playhead",
+    delete: "Delete",
+    rippleDelete: "Ripple delete",
+    trimLeft: "Delete left of playhead",
+    trimRight: "Delete right of playhead",
+    cut: "Cut",
+    copy: "Copy",
+    paste: "Paste",
+    duplicate: "Duplicate",
+    magnetic: "Magnetic main track",
   },
   view: {
     historyPanel: "History panel",
@@ -228,6 +282,18 @@ export const en = {
       importMedia: "Import Media",
       removeMedia: "Remove Media",
       relinkMedia: "Relink Media",
+      addClips: "Add Clips",
+      moveClips: "Move Clips",
+      trimClip: "Trim Clip",
+      splitClips: "Split",
+      deleteClips: "Delete",
+      rippleDeleteClips: "Ripple Delete",
+      cutClips: "Cut",
+      deleteGap: "Delete Gap",
+      trimToPlayhead: "Trim to Playhead",
+      setMagnetic: "Toggle Magnetic Track",
+      pasteClips: "Paste",
+      duplicateClips: "Duplicate",
     } satisfies Record<HistoryLabel, string>,
     /** Shown for a key this UI build does not know. */
     unknown: "Last Action",
@@ -244,6 +310,8 @@ export const en = {
       invalidProject: "This project file contains errors and cannot be opened",
       io: "The file could not be read or written",
       cancelled: "Cancelled",
+      overlap: "There is already a clip there",
+      trackLocked: "That track is locked",
     } satisfies Record<IpcError["kind"], string>,
     /** Shown for an unknown kind or a failure that is not an `IpcError`. */
     unknown: "Something went wrong",
@@ -334,10 +402,24 @@ export const en = {
       title: (n: number, name: string) => (n === 1 ? `Remove “${name}”?` : `Remove ${n} media items?`),
       description: "The files stay on disk. Undo (Ctrl+Z) brings them back.",
       more: (n: number) => `and ${n} more`,
+      used: (n: number) =>
+        n === 1
+          ? "Used in 1 clip on the timeline; it will be removed too."
+          : `Used in ${n} clips on the timeline; they will be removed too.`,
       confirm: "Remove",
       cancel: "Cancel",
     },
     background: "Generating previews in the background",
+    used: {
+      tip: (n: number) => (n === 1 ? "Used in 1 clip on the timeline" : `Used in ${n} clips on the timeline`),
+    },
+    add: {
+      button: (name: string) => `Add “${name}” to the timeline`,
+      tip: "Add to the end of the timeline (Alt: insert at the playhead)",
+      append: "Add to timeline",
+      insert: "Insert at playhead",
+      dragMany: (n: number) => `${n} items`,
+    },
     status: {
       badge: { offline: "Missing", changed: "Changed" } satisfies Record<
         Exclude<MediaStatus, "online">,
@@ -408,6 +490,15 @@ export const en = {
     addTextTrack: "Add text track",
     removeTrack: (name: string) => `Remove ${name}`,
     zoomHint: "Ctrl + wheel to zoom, wheel to scroll",
+    mainTrack: "Main",
+    mainTrackTip: "Main track: clips play one after another",
+    locked: "Locked",
+    /** Drawn on clips whose media file is missing. */
+    offline: "Media offline",
+    dropFiles: "Drop to import and add to the timeline",
+    snapping: "Snapping",
+    snappingOn: "Snapping on (hold Alt while dragging to bypass)",
+    snappingOff: "Snapping off",
     kinds: { video: "Video", audio: "Audio", text: "Text" },
   },
   status: {

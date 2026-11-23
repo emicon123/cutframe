@@ -36,3 +36,13 @@ export function formatDuration(flicks: number): string {
   const seconds = String(totalSeconds % 60).padStart(2, "0");
   return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}` : `${minutes}:${seconds}`;
 }
+
+/**
+ * A clip's length on its timeline label: tenths of a second below one minute ("4.2s"), otherwise
+ * like `formatDuration` ("1:05"). Truncated, not rounded, so a label never claims more than is there.
+ */
+export function formatClipDuration(flicks: number): string {
+  const tenths = Math.floor((Math.max(0, flicks) * 10) / FLICKS_PER_SECOND);
+  if (tenths < 600) return `${(tenths / 10).toFixed(1)}s`;
+  return formatDuration(Math.floor(tenths / 10) * FLICKS_PER_SECOND);
+}

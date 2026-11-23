@@ -1,5 +1,19 @@
 //! Edit commands. Every change to a [`Project`] is a command so it can be undone.
 
+mod arrange;
+mod clipboard;
+mod clips;
+mod cut;
+#[cfg(test)]
+mod sequence_tests;
+#[cfg(test)]
+mod test_support;
+
+pub use arrange::{Edge, MoveClips, TrimClip};
+pub use clipboard::{ClipboardContent, ClipboardItem, PasteClips};
+pub use clips::{AddClips, NewClipSource, Placement, RemoveClipsOfMedia, TrackTarget};
+pub use cut::{DeleteClips, DeleteGap, SetMagnetic, Side, SplitClips, TrimToPlayhead};
+
 use serde::{Deserialize, Serialize};
 
 use crate::media::{MediaAsset, MediaId, MediaKind, MediaProblem, validate_asset};
@@ -25,6 +39,30 @@ pub enum HistoryLabel {
     RemoveMedia,
     /// Pointing media at another file: one relinked item, or every item a folder relink found.
     RelinkMedia,
+    /// Putting media or colour cards on the timeline (one drop, `+` click or insert).
+    AddClips,
+    /// Dragging clips in time or to another track (one drag or nudge).
+    MoveClips,
+    /// Dragging a clip edge (one drag or nudge).
+    TrimClip,
+    /// Splitting clips at the playhead (Ctrl+B).
+    SplitClips,
+    /// Deleting clips (Delete); closes the gap on the magnetic main track.
+    DeleteClips,
+    /// Deleting clips and closing the gaps they leave (Shift+Delete).
+    RippleDeleteClips,
+    /// Cutting clips to the clipboard (Ctrl+X).
+    CutClips,
+    /// Closing a gap on one track.
+    DeleteGap,
+    /// Deleting the part of clips left or right of the playhead (Q / W).
+    TrimToPlayhead,
+    /// Turning the magnetic main track on or off.
+    SetMagnetic,
+    /// Pasting the clipboard (Ctrl+V).
+    PasteClips,
+    /// Duplicating clips (Ctrl+D).
+    DuplicateClips,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -65,6 +103,8 @@ pub enum CommandError {
     /// A history jump to a point that is not in the history ([`crate::Document::jump_to`]).
     #[error("history point {index} is out of range (0..={len})")]
     HistoryOutOfRange { index: usize, len: usize },
+    #[error("clip {0:?} does not exist")]
+    ClipNotFound(crate::model::ClipId),
     /// The main track cannot be removed or moved.
     #[error("the main track cannot be removed or moved")]
     MainTrack,
@@ -74,6 +114,23 @@ pub enum CommandError {
     /// The clip would overlap another clip on its track.
     #[error("the clip would overlap another clip")]
     Overlap,
+    /// The clip cannot live on that track (e.g. audio-only media on a video track).
+    #[error("the clip does not fit that track")]
+    TrackKindMismatch,
+    /// An edit was given nothing to work on (e.g. no sources to add).
+    #[error("nothing to edit")]
+    NothingToEdit,
+    /// A split found no clip whose interior contains the split time (with both halves at least
+    /// one frame long).
+    #[error("no clip to split there")]
+    NothingToSplit,
+    /// A delete-gap found no gap at that time on the track.
+    #[error("no gap there")]
+    NoGap,
+    /// The edit would leave an invalid project (e.g. past the largest supported time). Commands
+    /// that build clips check their result, so this never leaves the project broken.
+    #[error("the edit would make the project invalid: {0}")]
+    InvalidResult(ValidationError),
 }
 
 /// A reversible edit.
@@ -164,15 +221,7 @@ impl Command for AddTrack {
     fn apply(&mut self, project: &mut Project) -> Result<(), CommandError> {
         let mut track = Track::new(self.kind, project.next_track_name(self.kind));
         track.id = self.id;
-        let main = project.main_index().unwrap_or(project.tracks.len());
-        let section = match self.kind {
-            TrackKind::Audio => (main + 1).min(project.tracks.len())..=project.tracks.len(),
-            TrackKind::Video | TrackKind::Text => 0..=main,
-        };
-        let index = self
-            .index
-            .unwrap_or(*section.end())
-            .clamp(*section.start(), *section.end());
+        let index = crate::timeline::section_index(project, self.kind, self.index);
         project.tracks.insert(index, track);
         self.inserted_at = Some(index);
         Ok(())

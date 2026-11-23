@@ -6,6 +6,7 @@ import { recovery } from "@/features/project/recovery";
 import { playheadStore } from "@/stores/playheadStore";
 import { type ProjectState, useProjectStore } from "@/stores/projectStore";
 import { useAppStore } from "@/stores/appStore";
+import { useUiStore } from "@/stores/uiStore";
 
 import { startProjectSync } from "./projectSync";
 
@@ -36,6 +37,7 @@ afterEach(() => {
   useProjectStore.setState({ state: null });
   useAppStore.setState({ info: null, lastError: null, gpuNotice: null });
   playheadStore.setState({ time: 0, seekGeneration: null });
+  useUiStore.setState({ view: "home", started: false });
 });
 
 function mockStartup(
@@ -136,6 +138,33 @@ describe("startProjectSync", () => {
     stop = startProjectSync();
     await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(1));
     expect(calls.slice(-3)).toEqual(["takeLaunchPath", "openProject D:\\v\\a.cutframe", "recovery"]);
+  });
+
+  it("a launch path opens the editor directly, without showing Home first", async () => {
+    const views: string[] = [];
+    mockStartup(() => null, [], {
+      takeLaunchPath: () => "D:\\v\\a.cutframe",
+      openProject: () => {
+        const { view, started } = useUiStore.getState();
+        views.push(`${view} started=${started}`);
+        return null;
+      },
+    });
+    vi.spyOn(recovery, "load").mockResolvedValue();
+
+    stop = startProjectSync();
+    await vi.waitFor(() => expect(useUiStore.getState().started).toBe(true));
+    expect(views).toEqual(["home started=false"]);
+    expect(useUiStore.getState().view).toBe("editor");
+  });
+
+  it("without a launch path the home screen is shown", async () => {
+    mockStartup(() => null, []);
+    const load = vi.spyOn(recovery, "load").mockResolvedValue();
+
+    stop = startProjectSync();
+    await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(1));
+    expect(useUiStore.getState()).toMatchObject({ view: "home", started: true });
   });
 
   it("still offers recovery when there is no launch path or taking it fails", async () => {

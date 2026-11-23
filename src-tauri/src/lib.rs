@@ -13,6 +13,7 @@ mod preview;
 mod previews;
 mod project_file;
 mod protocol;
+mod recent;
 mod recovery;
 mod relink;
 mod smoke_test;
@@ -36,6 +37,7 @@ use crate::ipc::events::{
 use crate::jobs::{JobManager, Priority, TauriJobHost};
 use crate::preview::Preview;
 use crate::previews::Previews;
+use crate::recent::RecentStore;
 use crate::recovery::RecoveryStore;
 use crate::state::{AppState, PreferencesState};
 
@@ -51,6 +53,18 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
         .commands(collect_commands![
             commands::get_project,
             commands::add_track,
+            commands::add_clips,
+            commands::move_clips,
+            commands::trim_clip,
+            commands::split_clips,
+            commands::delete_clips,
+            commands::delete_gap,
+            commands::trim_to_playhead,
+            commands::set_magnetic,
+            commands::copy_clips,
+            commands::cut_clips,
+            commands::paste_clips,
+            commands::duplicate_clips,
             commands::remove_track,
             commands::rename_track,
             commands::rename_project,
@@ -83,6 +97,12 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             commands::set_preferences,
             commands::get_cache_info,
             commands::clear_cache,
+            commands::list_recent_projects,
+            commands::remove_recent_project,
+            commands::rename_project_file,
+            commands::duplicate_project_file,
+            commands::trash_project_file,
+            commands::reveal_project_file,
         ])
         .events(collect_events![
             ProjectChanged,
@@ -175,10 +195,9 @@ pub fn run() {
                 .get_webview_window(MAIN_WINDOW)
                 .ok_or("main window missing from tauri.conf.json")?;
             let project = Project::new(commands::DEFAULT_PROJECT_NAME);
-            let recovery = RecoveryStore::new(
-                app.path().app_data_dir()?.join("recovery"),
-                uuid::Uuid::now_v7(),
-            );
+            let app_data_dir = app.path().app_data_dir()?;
+            let recent = RecentStore::new(&app_data_dir);
+            let recovery = RecoveryStore::new(app_data_dir.join("recovery"), uuid::Uuid::now_v7());
             let jobs = JobManager::new(Arc::new(TauriJobHost::new(app.handle().clone())));
             let preferences = load_preferences(app.handle())?;
             let interval = preferences.get().autosave_duration();
@@ -195,6 +214,7 @@ pub fn run() {
                 app.handle(),
                 Arc::clone(&previews),
                 spawner,
+                recent.covers_dir().to_path_buf(),
             )));
             // Runtime offline detection: a preview generator that finds the file gone.
             let handle = app.handle().clone();
@@ -210,7 +230,8 @@ pub fn run() {
                 state
                     .with_preview(preview)
                     .with_preferences(preferences)
-                    .with_launch_path(launch_path),
+                    .with_launch_path(launch_path)
+                    .with_recent(recent),
             );
             start_autosave(app.handle(), recovery, interval);
 

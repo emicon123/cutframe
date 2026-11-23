@@ -57,7 +57,7 @@ impl Product {
 
 /// True for a fingerprint hash as the model stores it: 32 lowercase hex characters. Anything else
 /// would let a crafted hash escape the cache folder.
-fn valid_hash(hash: &str) -> bool {
+pub fn valid_hash(hash: &str) -> bool {
     hash.len() == 32 && hash.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 

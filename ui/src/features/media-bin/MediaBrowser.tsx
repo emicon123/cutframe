@@ -1,5 +1,5 @@
-import { FolderSearch, Link, Trash2, Upload } from "lucide-react";
-import { type KeyboardEvent, type MouseEvent, useRef, useState } from "react";
+import { FolderSearch, Link, ListStart, Plus, Trash2, Upload } from "lucide-react";
+import { type KeyboardEvent, type MouseEvent, type PointerEvent, useEffect, useRef, useState } from "react";
 
 import type { MediaId, MediaView_Serialize } from "@/bindings";
 import {
@@ -12,10 +12,13 @@ import {
 } from "@/components/ui/context-menu";
 import { usePreviewOccluder } from "@/features/preview/occlusion";
 import { t } from "@/i18n";
+import { appendMedia, insertMediaAtPlayhead } from "@/features/timeline/addActions";
 import { cn } from "@/lib/utils";
+import { cancelMediaDrag, finishMediaDrag, moveMediaDrag, startMediaDrag } from "@/stores/mediaDragStore";
 import type { MediaLayout } from "@/stores/uiStore";
 
 import { importFromDialog, revealMedia } from "./importActions";
+import { MediaDragChip } from "./MediaDragChip";
 import { MediaItem } from "./MediaItem";
 import { needsRelink } from "./relink";
 import { openRelink } from "./relinkStore";
@@ -33,6 +36,18 @@ const idOf = (target: EventTarget | null): MediaId | null =>
     ? (target.closest<HTMLElement>("[data-media-id]")?.dataset.mediaId ?? null)
     : null;
 
+const isAddButton = (target: EventTarget | null) =>
+  target instanceof Element && target.closest("[data-action='append']") !== null;
+
+/** Pointer travel (CSS px) before a press on an item becomes a drag. */
+const DRAG_THRESHOLD = 4;
+
+type DragState = {
+  pending: { id: MediaId; x: number; y: number } | null;
+  dragging: boolean;
+  suppressClick: boolean;
+};
+
 /** Columns of the grid as laid out, so Up/Down move by a row. */
 function gridColumns(element: HTMLElement | null): number {
   if (!element) return 1;
@@ -49,7 +64,18 @@ export function MediaBrowser({ media, layout }: { media: MediaView_Serialize[]; 
   const [selection, setSelection] = useState<Selection>(emptySelection);
   const [menuOpen, setMenuOpen] = useState(false);
   const [removing, setRemoving] = useState<MediaView_Serialize[] | null>(null);
+  const drag = useRef<DragState>({ pending: null, dragging: false, suppressClick: false });
   usePreviewOccluder(menuOpen);
+
+  useEffect(() => {
+    // Switching windows mid-drag drops nothing.
+    const onBlur = () => {
+      if (drag.current.dragging) cancelMediaDrag();
+      drag.current = { pending: null, dragging: false, suppressClick: false };
+    };
+    window.addEventListener("blur", onBlur);
+    return () => window.removeEventListener("blur", onBlur);
+  }, []);
 
   const order = media.map((item) => item.id);
   const selectedIds = liveSelection(selection, order);
@@ -71,8 +97,20 @@ export function MediaBrowser({ media, layout }: { media: MediaView_Serialize[]; 
     if (items.length > 0) setRemoving(items);
   };
 
+  /** The items an action on `id` is about: the selection if `id` is in it, else just `id`. */
+  const targetsOf = (id: MediaId) => (selected.has(id) ? selectedIds : [id]);
+
   const onClick = (event: MouseEvent) => {
+    if (drag.current.suppressClick) {
+      drag.current.suppressClick = false;
+      return;
+    }
     const id = idOf(event.target);
+    if (id !== null && isAddButton(event.target)) {
+      const ids = targetsOf(id);
+      void (event.altKey ? insertMediaAtPlayhead(ids) : appendMedia(ids));
+      return;
+    }
     if (id === null) {
       apply({ type: "clear" });
       return;
@@ -85,7 +123,55 @@ export function MediaBrowser({ media, layout }: { media: MediaView_Serialize[]; 
     apply(id === null ? { type: "clear" } : { type: "context", id });
   };
 
+  // Dragging items to the timeline: pointer events only (media design §2), no HTML5 drag-and-drop.
+  const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
+    const id = idOf(event.target);
+    if (event.button !== 0 || id === null || isAddButton(event.target)) return;
+    drag.current = {
+      pending: { id, x: event.clientX, y: event.clientY },
+      dragging: false,
+      suppressClick: false,
+    };
+  };
+
+  const onPointerMove = (event: PointerEvent<HTMLDivElement>) => {
+    const state = drag.current;
+    if (state.dragging) {
+      moveMediaDrag(event.clientX, event.clientY, event.altKey);
+      return;
+    }
+    const pending = state.pending;
+    if (!pending || (event.buttons & 1) === 0) return;
+    if (Math.hypot(event.clientX - pending.x, event.clientY - pending.y) < DRAG_THRESHOLD) return;
+    state.dragging = true;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    if (!selected.has(pending.id)) apply({ type: "click", id: pending.id, ctrl: false, shift: false, order });
+    startMediaDrag(targetsOf(pending.id), event.clientX, event.clientY, event.altKey);
+  };
+
+  const onPointerUp = () => {
+    const state = drag.current;
+    if (state.dragging) {
+      finishMediaDrag();
+      // The click after a drag lands on the list (pointer capture); it must not clear the selection.
+      state.suppressClick = true;
+    }
+    state.pending = null;
+    state.dragging = false;
+  };
+
+  const endDrag = () => {
+    if (drag.current.dragging) cancelMediaDrag();
+    drag.current = { pending: null, dragging: false, suppressClick: false };
+  };
+
   const onKeyDown = (event: KeyboardEvent) => {
+    if (event.key === "Escape" && drag.current.dragging) {
+      endDrag();
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     if (event.altKey) return;
     const ctrl = event.ctrlKey || event.metaKey;
     const row = layout === "grid" ? gridColumns(list.current) : 1;
@@ -132,6 +218,13 @@ export function MediaBrowser({ media, layout }: { media: MediaView_Serialize[]; 
             onClick={onClick}
             onContextMenu={onContextMenu}
             onKeyDown={onKeyDown}
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            onPointerCancel={endDrag}
+            onLostPointerCapture={() => {
+              if (drag.current.dragging) endDrag();
+            }}
           >
             {media.map((item) => (
               <MediaItem
@@ -148,6 +241,18 @@ export function MediaBrowser({ media, layout }: { media: MediaView_Serialize[]; 
           <ContextMenuItem onSelect={() => void importFromDialog()}>
             <Upload aria-hidden />
             {t.file.importMedia}
+          </ContextMenuItem>
+          <ContextMenuSeparator />
+          <ContextMenuItem disabled={selectedIds.length === 0} onSelect={() => void appendMedia(selectedIds)}>
+            <Plus aria-hidden />
+            {t.mediaBin.add.append}
+          </ContextMenuItem>
+          <ContextMenuItem
+            disabled={selectedIds.length === 0}
+            onSelect={() => void insertMediaAtPlayhead(selectedIds)}
+          >
+            <ListStart aria-hidden />
+            {t.mediaBin.add.insert}
           </ContextMenuItem>
           <ContextMenuSeparator />
           <ContextMenuItem disabled={toRelink.length === 0} onSelect={relink}>
@@ -171,6 +276,7 @@ export function MediaBrowser({ media, layout }: { media: MediaView_Serialize[]; 
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
+      <MediaDragChip media={media} />
       <RemoveMediaDialog
         items={removing}
         onClose={(removed) => {

@@ -3,6 +3,10 @@
 **Tier:** 1 · **Agents:** `backend`, `frontend` · **Depends on:** `0250`, `0230`
 **Spec:** `docs/feature-catalog.md` (feature IDs below), `docs/adr/`, `docs/design/`, `CLAUDE.md`
 
+> **Closed 2026-11-23 without the manual check (user's standing decision).** `pnpm check` passed on
+> Windows and Linux (PR #5); the drag-and-drop flows in `pnpm dev` (media panel and Explorer drops, `+` button,
+> drop over the native preview window, offline clips) were not done by hand.
+
 ## Why
 
 Core MVP step: media panel → timeline.

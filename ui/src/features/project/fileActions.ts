@@ -4,6 +4,7 @@ import { commands, PROJECT_FILE_EXTENSION } from "@/bindings";
 import { t } from "@/i18n";
 import { useAppStore } from "@/stores/appStore";
 import { useProjectStore } from "@/stores/projectStore";
+import { useUiStore, type View } from "@/stores/uiStore";
 
 import { askUnsaved, type UnsavedChoice } from "./unsavedPrompt";
 
@@ -56,6 +57,8 @@ export type FileActionDeps = {
   pickSavePath: (defaultPath: string) => Promise<string | null>;
   reportError: (error: unknown) => void;
   clearError: () => void;
+  /** Switches between the home screen and the editor. */
+  showView: (view: View) => void;
 };
 
 export type FileActions = {
@@ -78,6 +81,11 @@ export type FileActions = {
    * shows it), not reported to the status bar.
    */
   replaceGuarded: (action: () => Promise<unknown>) => Promise<boolean>;
+  /**
+   * File → Home: behind the unsaved-changes prompt, replaces the project with a fresh untitled one
+   * (the model always holds one document) and shows the home screen. Cancel stays in the editor.
+   */
+  goHome: () => Promise<void>;
 };
 
 const FAILED: unique symbol = Symbol("failed");
@@ -138,16 +146,28 @@ export function createFileActions(deps: FileActionDeps): FileActions {
     return choice === "discard" || (await save());
   }
 
+  /** Opens `path` and shows the editor once it succeeded. */
+  async function openInEditor(path: string): Promise<void> {
+    await deps.openProject(path);
+    deps.showView("editor");
+  }
+
   return {
-    newProject: () => exclusive(undefined, () => guardUnsaved(() => deps.newProject())),
+    newProject: () =>
+      exclusive(undefined, () =>
+        guardUnsaved(async () => {
+          await deps.newProject();
+          deps.showView("editor");
+        }),
+      ),
     openProject: () =>
       exclusive(undefined, () =>
         guardUnsaved(async () => {
           const path = await deps.pickOpenPath();
-          if (path !== null) await deps.openProject(path);
+          if (path !== null) await openInEditor(path);
         }),
       ),
-    openPath: (path) => exclusive(undefined, () => guardUnsaved(() => deps.openProject(path))),
+    openPath: (path) => exclusive(undefined, () => guardUnsaved(() => openInEditor(path))),
     save: () => exclusive(false, save),
     saveAs: () => exclusive(false, saveAs),
     requestClose: () => exclusive(undefined, () => guardUnsaved(() => deps.confirmClose())),
@@ -157,6 +177,13 @@ export function createFileActions(deps: FileActionDeps): FileActions {
         await action();
         return true;
       }),
+    goHome: () =>
+      exclusive(undefined, () =>
+        guardUnsaved(async () => {
+          await deps.newProject();
+          deps.showView("home");
+        }),
+      ),
   };
 }
 
@@ -178,4 +205,5 @@ export const fileActions = createFileActions({
   pickSavePath: (defaultPath) => saveDialog({ defaultPath, filters: projectFilter() }),
   reportError: (error) => useAppStore.getState().reportError(error),
   clearError: () => useAppStore.getState().clearError(),
+  showView: (view) => useUiStore.getState().setView(view),
 });

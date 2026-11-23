@@ -14,6 +14,7 @@ describe("historyLabelText", () => {
     ["importMedia", "Import Media"],
     ["removeMedia", "Remove Media"],
     ["relinkMedia", "Relink Media"],
+    ["addClips", "Add Clips"],
   ])("translates %s", (label, text) => {
     expect(historyLabelText(label)).toBe(text);
     expect(t.edit.undoAction(historyLabelText(label))).toBe(`Undo ${text}`);
@@ -36,6 +37,8 @@ describe("errorKindText", () => {
     "invalidProject",
     "io",
     "cancelled",
+    "overlap",
+    "trackLocked",
   ])("translates %s", (kind) => {
     expect(errorKindText(kind)).toBe(t.errors.kinds[kind]);
     expect(errorKindText(kind)).not.toBe(kind);
