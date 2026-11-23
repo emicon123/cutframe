@@ -3,6 +3,7 @@ import type { ClipId, ClipView, MediaId, TrackId, TrackKind, TrackView } from "@
 
 import type { DropPreview } from "./drop";
 import { normalizeRect, type Rect } from "./hitTest";
+import { trackDimmed } from "./tracks";
 import {
   RULER_HEIGHT,
   TRACK_HEIGHT,
@@ -79,6 +80,11 @@ export type Scene = {
   durationText: (flicks: number) => string;
 };
 
+/** Opacity of the clips on a muted or hidden track (`trackDimmed`). */
+const DIMMED_ALPHA = 0.4;
+/** Clips narrower than this get no link marker. */
+const LINK_MARK_MIN_WIDTH = 40;
+
 export function drawTimeline(ctx: CanvasRenderingContext2D, scene: Scene) {
   const { width, height, tracks, viewport, theme } = scene;
   ctx.fillStyle = theme.background;
@@ -153,11 +159,13 @@ function clipFill(clip: ClipView, kind: TrackKind, theme: TimelineTheme): string
 
 function drawClips(ctx: CanvasRenderingContext2D, track: TrackView, top: number, scene: Scene) {
   const { width, viewport, theme } = scene;
+  const alpha = trackDimmed(track) ? DIMMED_ALPHA : 1;
   for (const clip of track.clips) {
     const x = timeToX(clip.start, viewport);
     const w = clip.duration / viewport.flicksPerPixel;
     if (x > width || x + w < 0) continue;
     const offline = clip.source.kind === "media" && scene.offline.has(clip.source.media);
+    ctx.globalAlpha = alpha;
     ctx.fillStyle = offline ? theme.offline : clipFill(clip, track.kind, theme);
     ctx.beginPath();
     ctx.roundRect(x + 0.5, top + 3, Math.max(2, w - 1), TRACK_HEIGHT - 6, 6);
@@ -173,15 +181,18 @@ function drawClips(ctx: CanvasRenderingContext2D, track: TrackView, top: number,
     ctx.fillText(clip.name, left, top + 9);
     const duration = scene.durationText(clip.duration);
     ctx.font = "500 11px 'Inter Variable', sans-serif";
-    ctx.globalAlpha = 0.75;
+    ctx.globalAlpha = 0.75 * alpha;
     ctx.fillText(duration, left, top + 27);
-    ctx.globalAlpha = 1;
+    ctx.globalAlpha = alpha;
     if (offline) {
       ctx.fillStyle = theme.invalid;
       ctx.font = "600 11px 'Inter Variable', sans-serif";
       ctx.fillText(scene.offlineLabel, left + ctx.measureText(duration).width + 8, top + 27);
     }
+    if (clip.link && w >= LINK_MARK_MIN_WIDTH)
+      drawLinkMark(ctx, Math.min(x + w, width) - 10, top + 13, theme.clipText);
     ctx.restore();
+    ctx.globalAlpha = 1;
     if (scene.selected.has(clip.id)) {
       ctx.strokeStyle = theme.selected;
       ctx.lineWidth = 2;
@@ -190,6 +201,20 @@ function drawClips(ctx: CanvasRenderingContext2D, track: TrackView, top: number,
       ctx.stroke();
     }
   }
+}
+
+/** Two interlocking rings at the clip's top-right corner: the clip is linked (§3.5). */
+function drawLinkMark(ctx: CanvasRenderingContext2D, right: number, y: number, color: string) {
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.globalAlpha *= 0.85;
+  ctx.lineWidth = 1.5;
+  for (const cx of [right - 7, right - 2]) {
+    ctx.beginPath();
+    ctx.roundRect(cx - 4, y - 2.5, 8, 5, 2.5);
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 /** The selected gap: a translucent fill with an outline in the selection colour. */

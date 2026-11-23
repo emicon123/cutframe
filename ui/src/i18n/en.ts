@@ -147,6 +147,11 @@ export const en = {
     paste: "Paste",
     duplicate: "Duplicate",
     magnetic: "Magnetic main track",
+    /** Static name of the link toggle (shortcut reference); the menu shows `link` or `unlink`. */
+    linkToggle: "Link / unlink clips",
+    link: "Link clips",
+    unlink: "Unlink clips",
+    detachAudio: "Detach audio",
   },
   view: {
     historyPanel: "History panel",
@@ -509,6 +514,28 @@ export const en = {
     snappingOn: "Snapping on (hold Alt while dragging to bypass)",
     snappingOff: "Snapping off",
     kinds: { video: "Video", audio: "Audio", text: "Text" },
+    /** Track header toggles; `on` is the pressed state's tooltip. */
+    flags: {
+      muted: { label: (name: string) => `Mute ${name}`, menu: "Mute", on: "Muted", off: "Mute" },
+      hidden: { label: (name: string) => `Hide ${name}`, menu: "Hide", on: "Hidden", off: "Hide" },
+      locked: { label: (name: string) => `Lock ${name}`, menu: "Lock", on: "Locked", off: "Lock" },
+    },
+    /** Shown on track headers that can be dragged. */
+    reorderTip: "Drag to reorder",
+    moveTrackUp: "Move track up",
+    moveTrackDown: "Move track down",
+    deleteTrack: "Delete track",
+    /** Drawn on clips that are linked to others. */
+    linked: "Linked",
+    replaceMedia: {
+      action: "Replace media…",
+      title: (clip: string) => `Replace media of ${clip}`,
+      description: "The clip keeps its place, length and properties.",
+      list: "Compatible media",
+      /** No media in the panel fits the clip. */
+      none: "No media in the media panel can replace this clip. It needs media of the same kind that is at least as long as the clip.",
+      cancel: "Cancel",
+    },
   },
   status: {
     gpu: (adapter: string, backend: string) => `${adapter} · ${backend}`,
