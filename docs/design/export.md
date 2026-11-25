@@ -921,8 +921,8 @@ applied with this design on 2026-11-22. Items 3 and 7 are done by task 0390.
    fallback"): the chain is now NVENC → QSV → AMF → Media Foundation (hardware, then Microsoft's
    software encoder) → OpenH264. A one-line dated amendment would keep the ADR accurate.
 5. **docs/architecture-review.md F28:** resolved by this design (Decisions, "F28: OpenH264").
-6. **docs/architecture.md:** add `engine::export` and the `export` thread to the module and
-   thread overview.
+6. **docs/architecture/:** add `engine::export` to `00-repository-and-stack.md` and the export
+   thread to `01-system-context.md` §3 when the pipeline lands.
 7. **docs/feature-catalog.md** (by 0390 when it updates the rows): F1.91 becomes "HEVC export in
    MP4" (MOV dropped, hobby scope); F1.87's "2K" is 1440p.
 

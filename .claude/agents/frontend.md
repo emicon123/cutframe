@@ -12,7 +12,7 @@ draws state.
 
 ## Before writing code
 
-1. Read `CLAUDE.md`, `docs/architecture.md` (modules and data flow, today vs target), the ADRs in
+1. Read `CLAUDE.md`, `docs/architecture/README.md` (modules and data flow, today vs target), the ADRs in
    `docs/adr/` (especially 0001 tech stack, 0003 IPC conventions, 0005 preview, 0006 edit
    transactions) and the design doc in `docs/design/` if the task has one (written by agent
    `architect`).

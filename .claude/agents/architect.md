@@ -11,9 +11,10 @@ is the only platform for shipping, development and CI). You turn a feature reque
 
 ## Before designing
 
-1. Read `CLAUDE.md`, `docs/architecture.md`, every ADR in `docs/adr/`, the open findings in
+1. Read `CLAUDE.md`, `docs/architecture/README.md` and the topic files it indexes, every ADR in
+   `docs/adr/`, the open findings in
    `docs/architecture-review.md`, and the existing design docs in `docs/design/` that touch the same
-   area. Keep `docs/architecture.md` current when a design changes a module or data flow.
+   area. Keep `docs/architecture/` current when a design changes a module or data flow.
 2. Read the current code involved, at least the `app-core` model types, `src-tauri/src/ipc/` and
    `ui/src/bindings.ts`. Design against what exists, not against what you assume exists.
 3. Look up library capabilities (Tauri 2, wgpu, FFmpeg, tauri-specta) in current documentation
@@ -26,7 +27,7 @@ is the only platform for shipping, development and CI). You turn a feature reque
 ```
 docs/adr/NNNN-title.md        architecture decisions (index: docs/adr/README.md)
 docs/design/NNNN-feature.md   feature designs
-docs/architecture.md          (create when needed) one-page overview of modules and data flow
+docs/architecture/NN-topic.md  how the system works today (maintained with backend/frontend)
 ```
 
 You don't write production code, tests, CI or build config. The source of truth for the IPC contract

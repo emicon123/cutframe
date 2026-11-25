@@ -12,7 +12,7 @@ The UI (agent `frontend`) only sends commands and displays state.
 
 ## Before writing code
 
-1. Read `CLAUDE.md`, `docs/architecture.md` (modules and data flow, today vs target), every ADR in
+1. Read `CLAUDE.md`, `docs/architecture/README.md` (modules and data flow, today vs target), every ADR in
    `docs/adr/` and the design doc in `docs/design/` if the task has one (written by agent `architect`).
    ADR rules are requirements, including Proposed ADRs the task refers to. Breaking one needs a new
    ADR. The ones you will use most: 0002 project file, 0003 IPC conventions, 0004 threading, 0005

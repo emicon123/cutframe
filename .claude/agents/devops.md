@@ -12,7 +12,7 @@ and updates itself afterwards. Developers get a working Windows environment with
 
 ## Before changing anything
 
-1. Read `CLAUDE.md`, `docs/architecture.md` and `docs/adr/` (especially `0001-tech-stack.md` and
+1. Read `CLAUDE.md`, `docs/architecture/README.md` and `docs/adr/` (especially `0001-tech-stack.md` and
    `0005-preview-presentation-per-platform.md` for the smoke test). Open devops findings (FFmpeg
    provisioning, updater, Windows lint) are in `docs/architecture-review.md`.
 2. Look up GitHub Actions, `tauri-apps/tauri-action`, the Tauri 2 bundler/updater config
