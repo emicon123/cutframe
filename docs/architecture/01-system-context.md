@@ -181,9 +181,9 @@ prompt appear on the next start.
 |---|---|
 | Project model, undo/redo, gestures, timeline editing | implemented |
 | Media import, probe, posters, filmstrips, waveforms, relink | implemented |
-| Native preview of a test pattern | implemented (no decoded project frame yet) |
+| Native preview of the composed timeline at the playhead (render graph, hardware decode, HDR tone map, `seek`) | implemented (task 0320) |
 | Project files, autosave, recovery, recent list, preferences | implemented |
-| Playback, audio output, render graph, effects, export | **Target** (`docs/design/playback.md`, `render-graph.md`, `export.md`) |
+| Playback, audio output, effects, export | **Target** (`docs/design/playback.md`, `render-graph.md`, `export.md`) |
 | Updater and code signing | **Target** (task 0170) |
 
 ## Links

@@ -117,19 +117,19 @@ Every product is generated in the calling job worker, in software, with its own 
 stops soon after the job's cancel flag is set.
 
 - `engine::media::decode` opens a decoder for a stream and defines the timing rule shared with the
-  future render graph: nothing locates frames by index; a frame carries its own timestamp and the
+  render graph's readers: nothing locates frames by index; a frame carries its own timestamp and the
   frame for media time `t` is the last one with `pts <= t` (sample and hold). Variable-frame-rate
   phone footage therefore stays in sync.
 - `engine::media::reader::VideoReader` decodes forward from wherever it last seeked, drops at most
   `MAX_SKIPPED_TO_KEY = 600` frames while looking for a keyframe after a seek, and calls a stream
-  damaged after `MAX_BAD_PACKETS = 64` undecodable packets in a row. It is `pub(crate)`: only the
-  preview generators use it today.
+  damaged after `MAX_BAD_PACKETS = 64` undecodable packets in a row. It is `pub(crate)`; the preview
+  generators use it directly and the render graph's reader threads (`engine::media::readers`,
+  [07](07-preview-and-render.md) §9) build on it.
 - `engine::media::still` decodes HEIF tile grids and `engine::media::heif` reads the `irot`/`imir`
   rotation that FFmpeg 7.1 does not expose, so a portrait phone photo comes out upright.
-- `engine::media::tonemap` maps HDR thumbnails to SDR on the CPU: HLG and PQ to display light
-  against a 203-nit SDR white (BT.2408), a knee at 0.8, BT.2020 → BT.709 and the sRGB curve. It
-  exists for posters and filmstrips only; the render graph's WGSL tone map is designed in
-  `docs/design/render-graph.md` and must end up sharing this definition.
+- `engine::media::tonemap` maps HDR thumbnails to SDR on the CPU with the render graph's operator
+  from `engine::color` (BT.2390 EETF to 203-nit SDR white, BT.2020 → BT.709, BT.1886 encode), so
+  posters and the preview agree.
 - `JOB_DECODER_THREADS = 2` per decoder in import and preview jobs, so several probes on the pool do
   not oversubscribe a small machine.
 
@@ -271,11 +271,11 @@ and then `job-finished`; relinking is one undo step.
 
 ## 11. What is not here yet
 
-The pipeline above is the **implemented** import/preview/relink path. Playback, audio output,
-decode-on-demand for the preview and export are designed in `docs/design/` but not coded: the decode
-layer of §5.1 only serves poster, filmstrip and waveform jobs, there is no render graph reading media
-frames per frame yet, and `MediaInfo` is the only decode result stored. The `/preview/frame` route
-serves the test pattern of [07](07-preview-and-render.md), not media.
+The pipeline above is the **implemented** import/preview/relink path. Decode-on-demand for the
+preview (reader threads, D3D12VA hardware decode) is part of the render graph and described in
+[07](07-preview-and-render.md) §9; the `/preview/frame` route serves its composited frame. Playback,
+audio output and export encoding are designed in `docs/design/` but not coded, and `MediaInfo` is the
+only decode result stored in the project.
 
 ## Links
 

@@ -1,32 +1,34 @@
 # 07 — Preview and render
 
 > **Audience:** `backend` (engine + shell) and `frontend`. How a frame reaches the screen, what the
-> preview thread does today, the rules that keep a native window from covering the UI, GPU fallback
-> and device-loss recovery, and the render graph the preview and export will share.
+> preview thread does, the rules that keep a native window from covering the UI, GPU fallback and
+> device-loss recovery, and the render graph that preview, export and tests share.
 
 ---
 
-## 1. What the preview is today
+## 1. What the preview is
 
-The engine has a working GPU preview of a **test pattern** — a letterboxed, animated card. It is the
-stage-0 renderer: the thread, the window, the surface, the device-loss recovery and the offscreen
-read-back all exist and are tested; only the content is a placeholder. Timeline content is designed
-in `docs/design/render-graph.md` ([§9](#9-target-the-render-graph)) and not coded yet.
+The preview shows the **composed timeline at the playhead**, drawn by the shared render graph
+(task 0320, `docs/design/render-graph.md`, [§9](#9-the-render-graph)): background, main track and
+overlays, SDR and HDR sources, decoded in hardware where the GPU can. The UI drives the playhead with
+`seek`; playback (transport, clock, audio) is task 0330.
 
 | Piece | Where | State |
 |---|---|---|
-| Preview thread, messages, device loss | `crates/engine/src/preview.rs` | implemented |
-| GPU context, adapter order, WARP fallback | `crates/engine/src/render/gpu.rs` | implemented |
-| Test-pattern renderer | `crates/engine/src/render/test_pattern.rs` + `shaders/test_pattern.wgsl` | implemented |
+| Preview thread, messages, render on change, device loss | `crates/engine/src/preview.rs` | implemented |
+| Playhead and seek generation | `crates/engine/src/transport.rs` (`TransportShared`) | implemented (seek only) |
+| GPU context, adapter order, WARP fallback, optional `NV12`/`P010`/`16BIT_NORM` | `crates/engine/src/render/gpu.rs` | implemented |
+| `build_plan` (pure) | `crates/engine/src/render/plan.rs` | implemented |
+| `Compositor`, source cache, layer and present passes | `render/compositor.rs`, `present.rs`, `shaders/layer.wgsl`, `present.wgsl` | implemented |
+| Source convert + HDR tone map | `render/convert.rs`, `shaders/convert.wgsl`, `crates/engine/src/color.rs` | implemented |
+| Video readers, hardware decode (D3D12VA zero-copy) | `crates/engine/src/media/readers/`, `media/d3d12.rs` | implemented |
+| `OfflineRenderer` (export entry point) | `render/offline.rs` | implemented (no encoder yet, 0390) |
 | Offscreen read-back | `crates/engine/src/render/offscreen.rs` | implemented |
 | Native child window | `src-tauri/src/preview/windows.rs` | implemented (Windows) |
 | Visibility rules, `frames` mode | `src-tauri/src/preview/mod.rs` | implemented |
 | Smoke test through the real path | `src-tauri/src/smoke_test.rs` | implemented |
-| Render graph, compositor, playback and export decode | `docs/design/render-graph.md` | **target only** |
-
-Job-side software decode already exists for posters and filmstrips (`engine::media::decode`,
-`reader`, `still`, `tonemap`, [06](06-media-pipeline.md) §5.1); what is missing is the render graph
-that consumes it per frame.
+| Golden-frame tests (WARP) | `crates/engine/tests/golden.rs`, `tests/golden/*.png` | implemented |
+| Transport, clock, audio, quality and zoom | `docs/design/playback.md`, render-graph §8 | **target** (0330, 0340) |
 
 ## 2. Two ways to put a frame on screen
 
@@ -82,18 +84,28 @@ block on rendering.
 |---|---|
 | `Resize { width, height }` | new surface configuration (physical pixels); resets the present-rate window |
 | `SetVisible(bool)` | pauses/resumes drawing; a pause is not counted as a dropped frame |
-| `SetCanvasAspect(f32)` | project width / height, used by the test pattern |
-| `RenderFrame { width, height, reply }` | one offscreen frame, answered on the same channel |
+| `SnapshotChanged` | sent by `AppState::publish` after it stores a new project in the shared `ArcSwap` |
+| `Seek { generation, mode }` | sent by `PreviewHandle::seek` after it updates `TransportShared` |
+| `FrameReady` | a reader decoded a frame a lookup was waiting for (coalesced by an `AtomicBool`) |
+| `Redraw` | an explicit redraw request (smoke test) |
+| `RenderFrame { width, height, reply }` | one offscreen frame through the compositor, answered on the same channel |
 | `DeviceLost { generation }` | sent by that context's device-lost callback; stale generations are ignored |
 | `Shutdown` | the thread exits; dropping the handle sends it and joins |
 
-The loop blocks on the channel whenever it is not drawing (`!visible` or no window), so a hidden
-preview costs no CPU and no presents. When it is drawing it drains pending messages and presents one
-frame per iteration.
+**Render on change** (render-graph §7). The loop blocks on the channel; each batch of wake messages
+(above, plus device recreation) produces at most one draw: `build_plan` at the playhead, the
+compositor with `FetchPolicy::BestAvailable`, and a present. When the plan and the frame identities
+equal the last composite there is no acquire and no present, so a paused, idle preview costs no CPU
+and presents nothing (`--smoke-test` logs `idle_presents=0`). A layer whose frame is missing (not
+just stale) keeps the previous canvas for up to 250 ms, then is left out. The render thread owns the
+compositor and its own `ReaderPool`; `MediaUnavailable` from a reader goes to the shell, which calls
+`AppState::report_missing`.
 
-**Present configuration.** `AutoVsync`, `desired_maximum_frame_latency = 2`, sRGB surface format when
-the adapter offers one. `Timeout`/`Occluded` sleeps 16 ms and resets the stats; `Outdated`/`Lost`
-reconfigures; `Suboptimal` presents and then reconfigures.
+**Present configuration.** `AutoVsync`, `desired_maximum_frame_latency = 2`, a **non-sRGB** surface
+format (`Bgra8Unorm`, else `Rgba8Unorm`, else the first non-sRGB one): working values are already
+display-referred R'G'B'. The present pass scales the `Rgba16Float` canvas bilinearly into the surface
+with a black letterbox. A failed acquire is retried after 16 ms (`Timeout`, `Outdated`, `Lost`) or
+100 ms (`Occluded`, validation); `Suboptimal` presents and then reconfigures.
 
 **Present statistics.** Once per `PRESENT_STATS_WINDOW = 5 s` of continuous drawing, the thread logs
 `frames`, `avg_fps`, `max_gap`, `p99_gap` and `long_gaps` (an interval above 1.5× the window's
@@ -131,7 +143,9 @@ A driver reset (TDR) or a crash in the device is caught by `set_device_lost_call
 Every successful recovery marks `fallback = deviceLost`, publishes the new `GpuInfo`, and emits
 `AppInfoChanged` with `available = true`. Giving up emits it with `available = false`. The surface is
 dropped before a new context is created (one swap chain at a time) and recreated at the last known
-size. A device-lost message from an old context carries an old `generation` and is ignored.
+size. A device-lost message from an old context carries an old `generation` and is ignored. The context is
+an `Arc<GpuContext>`; recovery publishes a new one (`PreviewHandle::gpu`) and drops the compositor,
+readers and caches made on the old device.
 
 The preview never panics on a GPU error: uncaptured errors are logged.
 
@@ -140,9 +154,9 @@ The preview never panics on a GPU error: uncaptured errors are logged.
 `render_frame(width, height)` sends `RenderFrame` and waits up to 5 s. The shell clamps the request
 to `MAX_FRAME_SIZE = 1920 × 1080` before it reaches the engine.
 
-`render_offscreen` renders into an `Rgba8UnormSrgb` texture, copies it to a buffer whose rows are
-padded to wgpu's 256-byte alignment, polls the device, maps the buffer and strips the padding into a
-tightly packed `OffscreenFrame { width, height, rgba }`.
+The frame is composited by the same compositor at the playhead, converted to `Rgba8Unorm` R'G'B'
+(`OUTPUT_FORMAT`, non-sRGB), copied to a buffer whose rows are padded to wgpu's 256-byte alignment,
+read back and stripped into a tightly packed `OffscreenFrame { width, height, rgba }`.
 
 `/preview/frame?w=&h=` returns that as `application/octet-stream`: `u32` width, `u32` height (little
 endian), then RGBA8 rows. `Cache-Control: no-store`; it is a live frame, never cached. A missing GPU
@@ -157,71 +171,70 @@ and not in the shell.
 status code:
 
 1. one offscreen frame (all platforms);
-2. Windows: show the native child window through the same calls the UI makes and wait for
-   `FRAMES_TO_PRESENT = 30` presents within `PRESENT_TIMEOUT = 20 s`.
+2. Windows: show the native child window through the same calls the UI makes, request redraws until
+   `FRAMES_TO_PRESENT = 30` presents within `PRESENT_TIMEOUT = 20 s` (the compositor's output for
+   the startup project), then check that nothing is presented while idle (`idle_presents`).
 
 A watchdog exits with `Timeout` after `OVERALL_TIMEOUT = 90 s`. Codes: `0` passed, `1` no offscreen
 frame, `2` no GPU, `3` no preview surface, `4` too few frames, `5` timeout, `6` the release build
 refused a non-LGPL FFmpeg (`ffmpeg_check`).
 
-## 9. Target: the render graph
+## 9. The render graph
 
-`docs/design/render-graph.md` specifies the renderer that replaces the test pattern. The parts that
-constrain every other document:
+`docs/design/render-graph.md` is the spec; §5.4 records the zero-copy spike and its "as built" notes
+record where 0320 differs. The parts that constrain every other document:
 
 - **One graph for preview and export.** A pure `build_plan(project, t, render_size) -> RenderPlan`
-  on the CPU; one `Compositor::render(plan, frames, canvas)` on the GPU. Preview, export,
-  `--smoke-test` and golden tests call the same two functions and differ only in the frame-fetch
-  policy (`BestAvailable` vs `Exact`) and the output pass.
+  on the CPU; one `Compositor::render(plan, frames, canvas)` on the GPU. Preview, `OfflineRenderer`
+  (export, 0390), `--smoke-test` and golden tests call the same two functions and differ only in the
+  fetch policy (`BestAvailable` vs `Exact`, a `CompositorConfig` setting) and the output pass.
 - **Working colour** is `Rgba16Float`, premultiplied alpha, Rec.709, display-referred R'G'B'. HDR
-  sources are tone-mapped per layer (BT.2390 EETF to 203 nits, BT.2020 → BT.709) inside the source
-  convert pass, so the rest of the graph is SDR.
-- **Passes per frame:** background → one source-convert pass per distinct source (YUV → R'G'B',
-  tone map, rotation, downscale, cached as `Rgba16Float`) → layer pass per clip bottom to top (crop,
-  fit, transform, opacity, premultiplied over) → present pass (scale, letterbox, engine overlays) or
-  offline output pass.
+  sources (HLG, PQ, Dolby Vision 8.x base layer) are tone-mapped per source (BT.2390 EETF to 203
+  nits, BT.2020 to BT.709) inside the convert pass; 10-bit stays 10-bit up to it. `engine::color`
+  holds the reference functions the shader is tested against, and HDR posters use the same operator.
+- **Passes per frame:** background, then one convert pass per distinct source frame (YUV to R'G'B',
+  tone map, rotation, coded-padding exclusion, downscale; cached as `Rgba16Float` in an LRU keyed by
+  frame id, size and `ConvertParams`), then a layer pass per clip bottom to top (fit, opacity,
+  premultiplied over; colour clips; striped placeholders for offline and decode error), then the
+  present pass or the offline output pass.
 - **Time and sampling.** `build_plan` quantises the playhead to the project frame grid and samples a
   video at the **centre** of that frame (`source_time + frame_duration/2`) with sample-and-hold, so
   a 29.97 fps clip in a 30 fps project does not repeat frames. Images have no time.
-- **Redraw on change while paused**, vsync-paced while playing, composite only when the project frame
-  or the plan changed, never present while hidden.
-- **Threads.** The preview thread owns the GPU and the compositor; reader threads decode per media
-  with the shared device; `AppState.snapshot` becomes an `Arc<ArcSwap<Project>>` so the engine never
-  takes the document lock (ADR-0004). Export runs an `OfflineRenderer` on a job worker with its own
-  readers and compositor state on the same device.
+- **Decode.** One reader thread per (media, stream), at most 8 (4 in hardware): D3D12VA on wgpu's own
+  `ID3D12Device`, frames sampled in place as `NV12`/`P010`; per-stream fallback to hardware decode
+  with download, then software; `CUTFRAME_HWDECODE=off` forces software. A sampled hardware frame is
+  transitioned back to `COMMON` and released only after its submission completed.
+- **Threads.** `AppState.snapshot` is an `Arc<ArcSwap<Project>>` shared with the engine, so engine
+  threads never take the document lock (ADR-0004). The preview thread owns its compositor and reader
+  pool; an `OfflineRenderer` has its own on the same device.
 
 ```mermaid
 flowchart TB
   snap["AppState snapshot (ArcSwap)"]
   render["preview-render thread: build_plan + Compositor"]
-  readers["reader thread per media"]
-  gpu["GpuContext (one device)"]
-  export["OfflineRenderer on a job worker"]
+  readers["reader threads (ReaderPool)"]
+  gpu["Arc GpuContext (one D3D12 device)"]
+  export["OfflineRenderer (export, tests)"]
   snap -. "lock-free load" .-> render
-  snap -. "lock-free load" .-> readers
-  render --> readers
+  render -- "decode from time s" --> readers
+  readers -- "frames, FrameReady" --> render
   readers --> gpu
   render --> gpu
   export --> gpu
 ```
 
-> **Drift:** the current `preview.rs` owns the GPU on its own thread and renders the test pattern; the
-> design moves `GpuContext` into an `Arc` shared with readers and export. Until task 0320 lands, the
-> "one render graph" rule (CLAUDE.md architecture rule 3) holds only in the design, not in code.
-> HDR thumbnails are already tone-mapped, but by a CPU operator in `engine::media::tonemap`; the
-> render graph's WGSL tone map must be defined once for both when 0320 lands.
-
 ## 10. Failure handling summary
 
-| Failure | Behaviour today | Target |
-|---|---|---|
-| No adapter at all | `Preview::create` returns `None`; `previewMode = unavailable`; the app still runs | same |
-| Adapter cannot present | offscreen only, `fallback = preferredCannotPresent` | same |
-| Device lost | recover per `after_device_loss`; report via `AppInfoChanged` | same |
-| Repeated device loss | give up, `previewMode = unavailable` | same |
-| Offscreen render timeout | `503` from `/preview/frame`; `render_frame` returns `None` | same |
-| Missing media in a layer | not applicable yet | `Offline` placeholder, one `MediaUnavailable` report |
-| Corrupt frame | not applicable yet | hold the previous frame; three failures in 1 s stop that reader |
+| Failure | Behaviour |
+|---|---|
+| No adapter at all | `Preview::create` returns `None`; `previewMode = unavailable`; the app still runs |
+| Adapter cannot present | offscreen only, `fallback = preferredCannotPresent` |
+| Device lost | recover per `after_device_loss`; compositor, readers and caches are recreated; report via `AppInfoChanged` |
+| Repeated device loss | give up, `previewMode = unavailable` |
+| Offscreen render timeout | `503` from `/preview/frame`; `render_frame` returns `None` |
+| Missing media in a layer | `Offline` placeholder; one `MediaUnavailable` per media, then `AppState::report_missing` |
+| Corrupt frame | the previous frame is held; three failures in 1 s stop that reader (`DecodeError` placeholder) |
+| Hardware decoder fails or cannot wrap | that stream reopens with download or software decode, remembered for the session |
 
 ## Links
 

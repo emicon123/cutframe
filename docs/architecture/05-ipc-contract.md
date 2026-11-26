@@ -164,6 +164,16 @@ to touch arbitrary files.
 
 These are called by a `ResizeObserver` in `PreviewArea`, not by a user action, and are infallible.
 
+### 4.6 Playhead
+
+| Command | Arguments | Returns | Notes |
+|---|---|---|---|
+| `seek` | `time: Time`, `mode: SeekMode` (`exact` / `scrub`) | `u32` seek generation | Never blocks; clamps to `0..=duration`; `invalidEdit` outside ±2^53 flicks, `unavailable` without a preview engine |
+
+The UI owns the playhead until task 0330 and mirrors it to the engine: `playheadStore.seekTo` sends
+`scrub` at most once per animation frame while the ruler is dragged and `exact` on press, release and
+jumps (playback.md §8).
+
 ## 5. Errors
 
 Every fallible command rejects with `IpcError`, serialized as `{ kind, message }`:
