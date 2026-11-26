@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type EditPhase, type IpcError, mockCommands } from "@/bindings";
 import { t } from "@/i18n";
-import { useAppStore } from "@/stores/appStore";
+import { useToastStore } from "@/stores/toastStore";
 
 import { beginGesture, type Gesture, startPointerGesture } from "./gesture";
 
@@ -67,7 +67,6 @@ afterEach(async () => {
   gesture = undefined;
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
-  useAppStore.setState({ lastError: null });
 });
 
 describe("gesture updates", () => {
@@ -161,7 +160,7 @@ describe("gesture commit", () => {
 
     await expect(gesture.commit(2)).resolves.toBe(false);
     expect(log).toEqual(["update 1", "commit 2", "cancel"]);
-    expect(useAppStore.getState().lastError).toBe(t.errors.kinds.invalidEdit);
+    expect(useToastStore.getState().toasts.at(-1)?.text).toBe(t.errors.kinds.invalidEdit);
   });
 
   it("does nothing after the gesture ended", async () => {

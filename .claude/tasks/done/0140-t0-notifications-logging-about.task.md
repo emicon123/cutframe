@@ -3,6 +3,9 @@
 **Tier:** 0 · **Agents:** `frontend`, `backend`, `devops` · **Depends on:** `0130`
 **Spec:** `docs/feature-catalog.md` (feature IDs below), `docs/adr/`, `docs/design/`, `CLAUDE.md`
 
+> **Closed 2026-11-26 without the manual check (user's standing decision).** `pnpm check` passed on
+> Windows (e41ab5f); the toast, error dialog, logs folder and About/licences flows in `pnpm dev` were not done by hand.
+
 ## Why
 
 Errors only show as one line in the status bar, logs go to stdout, and the LGPL notice required for FFmpeg has nowhere to live.

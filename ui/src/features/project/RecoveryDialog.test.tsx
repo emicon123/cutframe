@@ -36,7 +36,7 @@ function setup(entries: RecoveryEntry[]) {
     pickOpenPath: () => Promise.resolve(null),
     pickSavePath: () => Promise.resolve(null),
     reportError: () => undefined,
-    clearError: () => undefined,
+    showFailure: () => undefined,
     showView: () => undefined,
   });
   const calls: string[] = [];

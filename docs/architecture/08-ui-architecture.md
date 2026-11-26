@@ -27,7 +27,8 @@ flowchart LR
   boot["main.tsx"] --> app["App"]
   app -->|"view === editor"| editor["EditorLayout (TopBar, panels, StatusBar)"]
   app -->|"view === home"| home["HomeScreen (recent projects)"]
-  app --> dialogs["ProjectSettings, Preferences, Shortcuts, Recovery, UnsavedChanges"]
+  app --> dialogs["ProjectSettings, Preferences, Shortcuts, Recovery, UnsavedChanges, About, ErrorDialog"]
+  app --> toaster["Toaster (toastStore)"]
 ```
 
 - **Home is a view, not a document.** The Rust model always holds one project; Home shows the recent
@@ -47,7 +48,7 @@ flowchart LR
 │ │           │ │                             │ │ + History  │                 │
 │ └───────────┘ └─────────────────────────────┘ └────────────┘                 │
 ├ Timeline (toolbar, track headers, canvas) ────────────────────────────────────┤
-└ StatusBar: GPU, preview mode, GPU notice, last error ─────────────────────────┘
+└ StatusBar: GPU, preview mode, GPU notice, version ────────────────────────────┘
 ```
 
 - Panels are `react-resizable-panels`: two groups (rows and columns), media bin and inspector
@@ -60,7 +61,7 @@ flowchart LR
   groups with default sizes.
 - `StatusBar` sits **below** the timeline, so no tooltip from it can reach the native preview. It
   shows the adapter and backend, `previewMode`, a warning for a software adapter, a dismissible
-  runtime GPU notice, and the translated text of the last failed command.
+  runtime GPU notice and the version. Failed commands are toasts (§9), not a status-bar line.
 - `TopBar` shows the project name, the main menu and undo/redo buttons built from the action
   registry. Export is a disabled placeholder until the export feature lands.
 
@@ -72,10 +73,12 @@ directly, so a drag or a playhead move does not re-render React.
 | Store | File | Kind | Holds |
 |---|---|---|---|
 | `projectStore` | `stores/projectStore.ts` | `create` | the last `ProjectState` from Rust; `apply` ignores an older `revision` |
-| `appStore` | `stores/appStore.ts` | `create` | `AppInfo`, `lastError`, `previewOccluders`, `gpuNotice`; `run()` wraps a command and reports a rejection |
+| `appStore` | `stores/appStore.ts` | `create` | `AppInfo`, `previewOccluders`, `gpuNotice`; `reportError` logs a failure and shows an error toast; `run()` wraps a command and reports a rejection |
+| `toastStore` | `stores/toastStore.ts` | `create` | the shown toasts (oldest first, at most 4; a repeated message moves to the end with a count) |
 | `uiStore` | `stores/uiStore.ts` | `create` | `view`, `started`, dialog flags, media panel layout/sort/filter, panel collapse mirror, `layoutVersion`, timeline `snapping` (persisted) |
 | `selectionStore` | `stores/selectionStore.ts` | `createStore` | selected clip ids **or** one selected gap; pruned after every `project-changed` |
 | `playheadStore` | `stores/playheadStore.ts` | `createStore` | playhead time in flicks (UI-owned until playback) |
+| `timelineViewStore` | `stores/timelineViewStore.ts` | `createStore` | timeline viewport (scroll, zoom) and lane width; read by the canvas, the zoom slider and the navigation/zoom actions |
 | `importStore` | `stores/importStore.ts` | `create` | running import/background jobs, per-file results, the last import summary |
 | `mediaDragStore` | `stores/mediaDragStore.ts` | `create` | the media item being dragged from the panel to the timeline |
 | `relinkStore` | `features/media-bin/relinkStore.ts` | `create` | the relink dialog's target and per-file outcomes |
@@ -159,7 +162,8 @@ Shortcut dispatch rules (`shortcuts.ts`):
 
 Actions: File (home, new, open, save, save as, import, project settings, exit), Edit (undo, redo,
 cut, copy, paste, duplicate, split, delete, ripple delete, trim left/right, magnetic, select all,
-deselect, history panel, preferences), View (media bin, inspector, history panel, reset panel layout,
+deselect, history panel, preferences), View (media bin, inspector, history panel, zoom in/out/to fit,
+go to start/end, previous/next edit point, frame step back/forward by 1 and 10, reset panel layout,
 keyboard shortcuts), Help (keyboard shortcuts). An action may appear in several menus but is
 registered once.
 
@@ -169,7 +173,9 @@ registered once.
 
 | Module | Responsibility |
 |---|---|
-| `geometry.ts` | time ↔ pixel, zoom limits, viewport; all time in integer flicks |
+| `geometry.ts` | time ↔ pixel, zoom limits, viewport, zoom anchor, zoom to fit, logarithmic slider mapping, reveal a time; all time in integer flicks |
+| `navigation.ts` | frame step on the project frame grid, last frame, edit points (0, end, clip boundaries on all tracks), previous/next edit |
+| `navActions.ts` | the navigation and zoom actions: seek through `setPlayhead`, then scroll the playhead into view |
 | `hitTest.ts` | what is under the pointer: ruler, clip body/edge, lane, gap; drag threshold |
 | `selection.ts` | click / Ctrl-click / Shift-click / marquee selection, link expansion, pruning |
 | `gap.ts` | find the gap under the pointer; describe a selected gap |
@@ -179,7 +185,9 @@ registered once.
 | `drop.ts` | file and media-panel drops: target track, start, placement |
 | `addActions.ts` | add media / colour at the playhead, append, drop placement |
 | `editActions.ts` | split, delete, ripple delete, trim to playhead, copy/cut/paste/duplicate, magnetic |
-| `renderer.ts` | canvas 2D drawing: ruler, lanes, clips, gap, offline hatch, drop ghost, snap line, marquee |
+| `renderer.ts` | canvas 2D drawing: ruler, lanes, clips (filmstrip, waveform, label shade), gap, offline hatch, drop ghost, snap line, marquee |
+| `clipVisuals.ts` | source range → filmstrip frame/tile mapping, waveform zoom levels (`buildPeakLevels`), filmstrip and waveform drawing |
+| `productCache.ts` / `clipMedia.ts` | bounded LRU caches of decoded filmstrip tiles (`ImageBitmap`) and waveform levels, keyed by media id + `previewVersion` + tile; loads off the draw path, `503` backoff |
 | `Timeline.tsx` | track headers, toolbar, canvas, subscriptions, `ResizeObserver` |
 
 ```mermaid
@@ -208,6 +216,15 @@ stateDiagram-v2
   history entry for the placement.
 - Tracks are drawn top to bottom as the model orders them; a clip's `visual`/`audio` are `null` where
   the model has none, and offline media is hatched.
+- Clip pictures: video clips show filmstrip frames for their source range
+  (`sourceIn .. sourceIn + duration`), audio clips and video clips that still play their sound show
+  the waveform (under the filmstrip on video clips). The draw path only calls `ProductCache.get`
+  (no decoding, no awaiting, no allocation on a hit); a miss queues a load, the most recently drawn
+  products load first (at most 4 at once), products scrolled away before loading are dropped from
+  the queue, and a finished load requests a redraw. Tiles hold at most 128 MB, waveform levels 48 MB.
+- Zoom: Ctrl+wheel anchors at the pointer; the toolbar slider (logarithmic) and `+`/`-` anchor at the
+  playhead while it is visible, else the lanes' middle; zoom to fit (Shift+Z, toolbar) shows 0 to the
+  timeline end.
 
 ## 7. Gestures
 
@@ -259,16 +276,34 @@ comes back from `set_preferences`.
   the raw key, so an older UI build cannot display `addTrack`.
 - Adding a new backend key means adding a translation in the same change; a missing one is a bug, not
   a crash.
-- `describeError` is the only user-facing error text; diagnostics stay in the console.
+- `describeError` is the only user-facing error text; diagnostics stay in the console (and Rust
+  writes every failed command with its kind and message to the log file).
+- **Toasts** (`features/notifications/Toaster.tsx`, F0.08): non-blocking, stacked bottom-right above
+  the status bar (the timeline/inspector corner, never over the native preview in the default
+  layout, so no occluder). Info and success go after 4 s, errors after 10 s; hover or focus keeps
+  one. `errorToast` builds the toast for a failure: the kind's text, and for a failure Rust logged
+  (any `IpcError` except the self-explaining `invalidEdit`, `overlap`, `trackLocked`,
+  `mediaTooShort`, `cancelled`) "Details are in the log file." with an **Open logs** button.
+- **Error dialog** (`features/notifications/ErrorDialog.tsx`) for failures that leave a decision:
+  `fileActions` routes a failed **open** (File → Open, a recent project, a double-clicked file) and a
+  failed **save** (Save, Save As, the save inside the unsaved-changes prompt) to it; a failed save
+  offers Save As…. A failed file picker, New project or close stays a toast.
+- **Help** menu: Open logs folder (`openLogsFolder` → toast on `unavailable`/`io`) and About.
+  `AboutDialog` (`features/about/`) shows `getAboutInfo` and the licences from
+  `src/generated/licenses.json` (made by `pnpm gen:licenses`, gitignored), loaded through
+  `import.meta.glob` so it is its own chunk and a missing file still builds; the package list is
+  searchable and paged (50 rows), and a licence text renders only when its row is expanded. URLs are
+  shown as text with a copy button: the webview has no permission to open external links.
 
 ## 10. Tests
 
 Vitest (`ui/`), colocated `*.test.ts(x)`:
 
 - pure modules are tested directly: geometry, hit testing, selection, snapping, drag planning, drop,
-  gap, browse, skim, waveform drawing, import summaries, relink, layout storage, shortcuts, actions;
+  gap, navigation, zoom math, filmstrip/waveform mapping, the product cache, browse, skim, waveform drawing, import summaries, relink, layout storage, shortcuts, actions;
 - components are tested with Testing Library: `MediaBin`, `HomeScreen`, `PreviewArea`, the dialogs,
-  `StatusBar`, `MainMenu`, `HistoryPanel`;
+  `StatusBar`, `MainMenu`, `HistoryPanel`, `Toaster`, `ErrorDialog`, `AboutDialog`; the toast queue,
+  error-toast mapping and licence search/paging are pure and tested directly;
 - `bindings.ts` mocks (`commands.*.mock`) come from tauri-specta's `.mocks()`; no test invents a Rust
   type.
 

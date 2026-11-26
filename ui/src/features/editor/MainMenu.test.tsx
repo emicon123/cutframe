@@ -109,6 +109,22 @@ describe("MainMenu", () => {
   });
 });
 
+describe("Help menu", () => {
+  it("opens the logs folder and the About dialog", async () => {
+    const calls: string[] = [];
+    mockCommands({ openLogsFolder: () => (calls.push("logs"), null) });
+    render(<MainMenu />);
+    let menu = await openMenu(t.menu.help);
+    fireEvent.click(within(menu).getByRole("menuitem", { name: t.help.openLogs }));
+    await waitFor(() => expect(calls).toEqual(["logs"]));
+
+    menu = await openMenu(t.menu.help);
+    fireEvent.click(within(menu).getByRole("menuitem", { name: t.help.about }));
+    expect(useUiStore.getState().aboutOpen).toBe(true);
+    useUiStore.setState({ aboutOpen: false });
+  });
+});
+
 describe("ShortcutsDialog", () => {
   it("lists the registered shortcuts by menu and hides the preview", async () => {
     useUiStore.setState({ shortcutsOpen: true });

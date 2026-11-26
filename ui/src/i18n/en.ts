@@ -1,4 +1,5 @@
 import {
+  type BuildProfile,
   type GpuDeviceType,
   type GpuFallback,
   type HdrTransfer,
@@ -22,7 +23,19 @@ export const en = {
     windowTitle: (name: string, dirty: boolean) => `${dirty ? "*" : ""}${name} - ${APP_NAME}`,
   },
   /** Key names used to display shortcuts, e.g. "Ctrl+Shift+S". */
-  keys: { ctrl: "Ctrl", shift: "Shift", separator: "+", delete: "Del", escape: "Esc" },
+  keys: {
+    ctrl: "Ctrl",
+    shift: "Shift",
+    separator: "+",
+    delete: "Del",
+    escape: "Esc",
+    left: "Left",
+    right: "Right",
+    up: "Up",
+    down: "Down",
+    home: "Home",
+    end: "End",
+  },
   /** Main menu bar titles. */
   menu: {
     bar: "Main menu",
@@ -159,6 +172,17 @@ export const en = {
     inspector: "Inspector",
     resetPanelLayout: "Reset panel layout",
     keyboardShortcuts: "Keyboard shortcuts",
+    zoomIn: "Zoom in",
+    zoomOut: "Zoom out",
+    zoomToFit: "Zoom to fit",
+    goToStart: "Go to start",
+    goToEnd: "Go to end",
+    previousEdit: "Previous edit point",
+    nextEdit: "Next edit point",
+    frameBack: "Previous frame",
+    frameForward: "Next frame",
+    frameBack10: "Back 10 frames",
+    frameForward10: "Forward 10 frames",
   },
   preferences: {
     title: "Preferences",
@@ -329,6 +353,77 @@ export const en = {
     } satisfies Record<IpcError["kind"], string>,
     /** Shown for an unknown kind or a failure that is not an `IpcError`. */
     unknown: "Something went wrong",
+  },
+  /** Non-blocking notifications (F0.08). */
+  toasts: {
+    region: "Notifications",
+    dismiss: "Dismiss notification",
+    openLogs: "Open logs",
+    /** Second line of an error toast whose details Rust wrote to the log file. */
+    detailsInLog: "Details are in the log file.",
+    /** Badge of a message that arrived several times while shown. */
+    repeated: (n: number) => `×${n}`,
+  },
+  /** Dialogs for failures that need a decision (F0.08). */
+  errorDialog: {
+    openTitle: "The project could not be opened",
+    saveTitle: "The project could not be saved",
+    saveHint: "Your changes are still in the editor. Try saving to another folder or under another name.",
+    detailsInLog: "Details are in the log file.",
+    saveAs: "Save As…",
+    openLogs: "Open logs folder",
+    close: "OK",
+    /** Accessible name of the dialog's ✕ button. */
+    dismiss: "Close",
+  },
+  help: {
+    openLogs: "Open logs folder",
+    about: `About ${APP_NAME}`,
+  },
+  /** F0.09. */
+  logs: {
+    openFailed: "The logs folder could not be opened",
+    /** `unavailable` from `openLogsFolder`: the app logs to the console only. */
+    unavailable: "This build writes its log to the console only",
+  },
+  /** F0.10. */
+  about: {
+    title: `About ${APP_NAME}`,
+    description: "Version, build and third-party licences.",
+    close: "Close",
+    tabs: { about: "About", licenses: "Third-party licences" },
+    loading: "Loading…",
+    version: "Version",
+    build: "Build",
+    buildProfiles: { debug: "Debug", release: "Release" } satisfies Record<BuildProfile, string>,
+    commit: "Commit",
+    ffmpeg: "FFmpeg",
+    ffmpegLicense: "FFmpeg licence",
+    logFolder: "Log folder",
+    noLogFolder: "None (console only)",
+    openLogs: "Open logs folder",
+    copyLink: (what: string) => `Copy link: ${what}`,
+    copyPath: "Copy path",
+    copied: "Copied to the clipboard",
+    copyFailed: "Could not copy to the clipboard",
+    licenses: {
+      missing: "Licence notices were not generated for this build. Run pnpm gen:licenses.",
+      failed: "The licence notices could not be loaded",
+      ffmpegHeading: "FFmpeg",
+      sourceOffer: "Source code offer",
+      sourceCode: "FFmpeg source code",
+      buildScripts: "Build scripts",
+      packagesHeading: "Packages",
+      search: "Search packages by name or licence",
+      searchPlaceholder: "Search packages",
+      count: (shown: number, total: number) => `${shown} of ${total} packages`,
+      none: "No package matches the search",
+      showMore: (n: number) => `Show ${n} more`,
+      showLicense: (name: string) => `Show licence text of ${name}`,
+      licenseText: "Licence text",
+      noLicenseText: "No licence text was found for this package.",
+      ecosystems: { rust: "Rust", cargo: "Crate", npm: "npm" },
+    },
   },
   mediaBin: {
     title: "Media",
@@ -504,6 +599,7 @@ export const en = {
     addTextTrack: "Add text track",
     removeTrack: (name: string) => `Remove ${name}`,
     zoomHint: "Ctrl + wheel to zoom, wheel to scroll",
+    zoom: "Timeline zoom",
     mainTrack: "Main",
     mainTrackTip: "Main track: clips play one after another",
     locked: "Locked",

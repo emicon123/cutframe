@@ -6,6 +6,7 @@ mod import;
 mod ipc;
 mod jobs;
 mod launch;
+mod logging;
 mod media_paths;
 mod media_status;
 mod preferences;
@@ -27,7 +28,6 @@ use app_core::Project;
 use tauri::{AppHandle, Manager, Window, WindowEvent};
 use tauri_plugin_window_state::StateFlags;
 use tauri_specta::{Builder, Event, collect_commands, collect_events};
-use tracing_subscriber::EnvFilter;
 
 use crate::ipc::commands;
 use crate::ipc::events::{
@@ -79,6 +79,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             commands::redo,
             commands::jump_to_history,
             commands::get_app_info,
+            commands::get_about_info,
+            commands::open_logs_folder,
             commands::set_preview_rect,
             commands::set_preview_visible,
             commands::seek,
@@ -155,12 +157,9 @@ pub fn export_bindings() -> Result<(), specta_typescript::Error> {
 }
 
 pub fn run() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info,wgpu_core=warn,wgpu_hal=warn,naga=warn")),
-        )
-        .init();
+    let context = tauri::generate_context!();
+    // First: the FFmpeg check and early panics already go to the log file.
+    let log_dir = logging::init(logging::log_dir(&context.config().identifier));
 
     // LGPL-only rule: log the linked FFmpeg, refuse a GPL/nonfree build in release.
     ffmpeg_check::check();
@@ -203,6 +202,8 @@ pub fn run() {
         .register_asynchronous_uri_scheme_protocol(protocol::SCHEME, protocol::handle)
         .setup(move |app| {
             ipc.mount_events(app);
+            check_log_dir(app.handle(), log_dir.as_deref());
+            app.manage(logging::LogDir(log_dir));
 
             let main = app
                 .get_webview_window(MAIN_WINDOW)
@@ -253,8 +254,20 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running the application");
+}
+
+/// The log folder is resolved before Tauri starts; warns if Tauri would put it elsewhere.
+fn check_log_dir(app: &AppHandle, log_dir: Option<&Path>) {
+    match (app.path().app_log_dir(), log_dir) {
+        (Ok(tauri_dir), Some(dir)) if tauri_dir != dir => tracing::warn!(
+            log_dir = %dir.display(),
+            app_log_dir = %tauri_dir.display(),
+            "the log folder differs from Tauri's app_log_dir"
+        ),
+        _ => {}
+    }
 }
 
 /// Reads the preferences (defaults when missing or invalid) and creates the cache root. A < 1 KB

@@ -19,6 +19,8 @@ bytemuck = { version = "1.25", features = ["derive"] }
 # Audio output (WASAPI on Windows; Apache-2.0).
 cpal = "0.18"
 crossbeam-channel = "0.5"
+# The per-user local app data folder, resolved before Tauri starts (MIT OR Apache-2.0).
+dirs = "7"
 pollster = "1.0"
 raw-window-handle = "0.6"
 # Wait-free SPSC ring between the audio feeder and the audio callback (MIT OR Apache-2.0).
@@ -46,6 +48,8 @@ thiserror = "2.0"
 # Delete = move to the Recycle Bin (home screen); MIT.
 trash = "5.4"
 tracing = "0.1"
+# Rolling log files in the app log folder (MIT).
+tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1.29", features = ["v7", "serde"] }
 wgpu = "30"

@@ -3,6 +3,10 @@
 **Tier:** 1 · **Agents:** `frontend`, `backend` · **Depends on:** `0270`, `0230`
 **Spec:** `docs/feature-catalog.md` (feature IDs below), `docs/adr/`, `docs/design/`, `CLAUDE.md`
 
+> **Closed 2026-11-26 without the manual check (user's standing decision).** `pnpm check` passed on
+> Linux (PR #10); the zoom, keyboard navigation, filmstrip and waveform flows in `pnpm dev` and the 60 fps
+> measurement with 200 clips on an integrated GPU were not done.
+
 ## Why
 
 Finish timeline ergonomics: zoom controls, keyboard navigation and clip thumbnails/waveforms.

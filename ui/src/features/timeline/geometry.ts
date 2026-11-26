@@ -78,3 +78,65 @@ export function formatRulerLabel(time: number, step: number): string {
   const s = String(whole % 60).padStart(2, "0");
   return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${s}` : `${m}:${s}`;
 }
+
+/** Sets the zoom to `flicksPerPixel` (clamped) keeping the time under `anchorX` fixed. */
+export function zoomTo(viewport: Viewport, flicksPerPixel: number, anchorX: number): Viewport {
+  return zoomAt(viewport, flicksPerPixel / viewport.flicksPerPixel, anchorX);
+}
+
+/**
+ * Where keyboard and slider zooms are anchored (F1.32): at the playhead while it is in view, so
+ * it stays put, otherwise at the middle of the lanes.
+ */
+export function zoomAnchor(viewport: Viewport, width: number, playhead: number): number {
+  const x = timeToX(playhead, viewport);
+  return x >= 0 && x <= width ? x : width / 2;
+}
+
+/** Empty space left on each side of the content by zoom to fit, in CSS px. */
+export const FIT_PADDING = 24;
+
+/**
+ * Zoom to fit (F1.32): the whole timeline (0 to `duration`) fills `width` with `FIT_PADDING` to
+ * spare at the right. An empty timeline gets the default zoom; both scroll to 0.
+ */
+export function zoomToFit(duration: number, width: number): Viewport {
+  if (duration <= 0 || width <= FIT_PADDING * 2) return { ...DEFAULT_VIEWPORT };
+  const flicksPerPixel = Math.min(
+    MAX_FLICKS_PER_PIXEL,
+    Math.max(MIN_FLICKS_PER_PIXEL, duration / (width - FIT_PADDING)),
+  );
+  return { scroll: 0, flicksPerPixel };
+}
+
+/** Slider positions run from 0 (zoomed out the most) to `ZOOM_SLIDER_STEPS` (zoomed in the most). */
+export const ZOOM_SLIDER_STEPS = 1000;
+
+const ZOOM_RANGE = Math.log(MAX_FLICKS_PER_PIXEL / MIN_FLICKS_PER_PIXEL);
+
+/** The slider position of a zoom level; logarithmic, so each step zooms by the same factor. */
+export function zoomToSlider(flicksPerPixel: number): number {
+  const position = (Math.log(MAX_FLICKS_PER_PIXEL / flicksPerPixel) / ZOOM_RANGE) * ZOOM_SLIDER_STEPS;
+  return Math.min(ZOOM_SLIDER_STEPS, Math.max(0, Math.round(position)));
+}
+
+/** The zoom level of a slider position (the inverse of `zoomToSlider`). */
+export function sliderToZoom(position: number): number {
+  const clamped = Math.min(ZOOM_SLIDER_STEPS, Math.max(0, position));
+  return MAX_FLICKS_PER_PIXEL * Math.exp((-clamped / ZOOM_SLIDER_STEPS) * ZOOM_RANGE);
+}
+
+/** One zoom-in or zoom-out key press (+ / -) or toolbar click. */
+export const ZOOM_STEP = 1.5;
+
+/**
+ * The viewport scrolled just enough that `time` is in view, `margin` px from the nearer edge;
+ * unchanged when it already is. For keyboard seeks (F1.54) that land off screen.
+ */
+export function revealTime(viewport: Viewport, width: number, time: number, margin = 48): Viewport {
+  const x = timeToX(time, viewport);
+  const inset = Math.min(margin, width / 4);
+  if (x >= inset && x <= width - inset) return viewport;
+  const target = x < inset ? inset : width - inset;
+  return { ...viewport, scroll: Math.max(0, Math.round(time - target * viewport.flicksPerPixel)) };
+}

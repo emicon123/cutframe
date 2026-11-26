@@ -23,6 +23,7 @@
   --accent-foreground: oklch(0.97 0.005 285);
   --destructive: oklch(0.64 0.21 25);
   --warning: oklch(0.8 0.15 80);
+  --success: oklch(0.72 0.15 155);
   --border: oklch(0.28 0.01 285);
   --input: oklch(0.3 0.01 285);
   --ring: oklch(0.68 0.19 292);
@@ -39,6 +40,10 @@
   --clip-video: oklch(0.55 0.15 292);
   --clip-audio: oklch(0.6 0.13 165);
   --clip-text: oklch(0.7 0.14 75);
+  /* Waveform bars on clips, the strip behind them under a filmstrip, and the label shade. */
+  --clip-wave: oklch(0.95 0.03 165 / 0.8);
+  --clip-wave-band: oklch(0.16 0.02 285 / 0.75);
+  --clip-label-shade: oklch(0.1 0.005 285 / 0.7);
   /* Outline of selected clips and the marquee, and the snap indicator line. */
   --clip-selected: oklch(0.97 0.005 285);
   --snap-line: oklch(0.86 0.16 95);
@@ -63,6 +68,7 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-warning: var(--warning);
+  --color-success: var(--success);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -75,6 +81,10 @@
   --spacing-media-tile: 7.5rem;
   /* Smallest width of a home-screen project card. */
   --spacing-project-card: 13rem;
+  /* Width of a toast notification. */
+  --spacing-toast: 22rem;
+  /* Height of the About dialog. */
+  --spacing-about-dialog: 80vh;
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
