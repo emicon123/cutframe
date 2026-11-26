@@ -6,8 +6,10 @@
 //! ([`color`]): transfer curves, the HDR tone map, YCbCr matrices and range expansion, which the
 //! source-convert shader is tested against. The render graph, readers and audio come next.
 
+pub mod audio;
 pub mod color;
 pub mod media;
+pub mod playback;
 pub mod preview;
 pub mod render;
 pub mod transport;

@@ -18,9 +18,10 @@ use tauri_plugin_dialog::DialogExt;
 use uuid::Uuid;
 
 use super::IpcError;
+use super::events::PlaybackTick;
 use super::types::{
     AppInfo, CacheInfo, JobId, PreviewMode, PreviewRect, ProjectState, RecentProject,
-    RecoveryEntry, SeekMode,
+    RecoveryEntry, SeekMode, ShuttleKey,
 };
 use crate::import;
 use crate::media_paths;
@@ -610,15 +611,68 @@ pub fn set_preview_visible(app: AppHandle, state: State<'_, AppState>, visible: 
     }
 }
 
-/// Moves the preview to `time` and redraws it: `scrub` while the playhead is dragged, `exact` for
-/// a click and at the end of a drag. `time` is clamped to `0..=` the timeline duration. Returns the
-/// seek generation, which increases with every seek (playback ticks of an older generation are
-/// stale, task 0330). Fails with `invalidEdit` for a time outside ±2^53 flicks and with
-/// `unavailable` when there is no preview engine. Never blocks.
+/// Moves the playhead to `time` and redraws the preview: `scrub` while the playhead is dragged
+/// (pauses playback, plays a short audio snippet), `exact` for a click, Home/End and the end of a
+/// drag (while playing, playback continues from there). `time` is clamped to `0..=` the timeline
+/// duration. Returns the seek generation, which increases with every seek and step: ignore
+/// `playbackTick`s with an older `seek`. Fails with `invalidEdit` for a time outside ±2^53 flicks
+/// and with `unavailable` when there is no preview engine. Never blocks.
 #[tauri::command]
 #[specta::specta]
 pub fn seek(state: State<'_, AppState>, time: Time, mode: SeekMode) -> Result<u32, IpcError> {
     state.seek(time, mode.into())
+}
+
+/// Space and the Play button: plays at 1x from the playhead (from 0 when the playhead is on the
+/// last frame or past it), or pauses. Pausing puts the playhead on the start of the frame on
+/// screen. An empty timeline does not play. The new state arrives as a `playbackTick`. Fails
+/// with `unavailable` when there is no preview engine. Never blocks.
+#[tauri::command]
+#[specta::specta]
+pub fn toggle_playback(state: State<'_, AppState>) -> Result<(), IpcError> {
+    state.toggle_playback()
+}
+
+/// Pauses (on the start of the frame on screen); nothing happens when already paused. Fails with
+/// `unavailable` when there is no preview engine.
+#[tauri::command]
+#[specta::specta]
+pub fn pause_playback(state: State<'_, AppState>) -> Result<(), IpcError> {
+    state.pause_playback()
+}
+
+/// J/K/L. `forward` plays at 1x from pause or reverse, else doubles the speed up to 8x;
+/// `reverse` mirrors it with negative rates (from pause at 0 nothing happens); `pause` pauses.
+/// Only 1x has sound. Fails with `unavailable` when there is no preview engine.
+#[tauri::command]
+#[specta::specta]
+pub fn shuttle(state: State<'_, AppState>, key: ShuttleKey) -> Result<(), IpcError> {
+    state.shuttle(key.into())
+}
+
+/// Left/Right (`frames` = -1, 1; with Shift -10, 10): pauses, then moves the playhead by whole
+/// frames from the current frame, clamped to the first and last frame. Returns the new seek
+/// generation, like `seek`. Fails with `unavailable` when there is no preview engine.
+#[tauri::command]
+#[specta::specta]
+pub fn step_frames(state: State<'_, AppState>, frames: i32) -> Result<u32, IpcError> {
+    state.step_frames(frames)
+}
+
+/// The loop button: while on, playback wraps from the end of the timeline to 0. A setting of
+/// this session (not saved). Confirmed by a `playbackTick`.
+#[tauri::command]
+#[specta::specta]
+pub fn set_loop(state: State<'_, AppState>, on: bool) {
+    state.set_loop(on);
+}
+
+/// The transport now, as in `playbackTick`. Call once on startup (and after a webview reload);
+/// afterwards listen to `playbackTick`. Without a preview engine: paused at 0.
+#[tauri::command]
+#[specta::specta]
+pub fn get_playback(state: State<'_, AppState>) -> PlaybackTick {
+    state.playback_tick()
 }
 
 /// Replaces the open project with an empty one (default tracks) with `settings`, or the default

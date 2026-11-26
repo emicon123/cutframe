@@ -24,7 +24,7 @@ pub mod ffmpeg;
 pub mod fingerprint;
 pub(crate) mod frame;
 mod heif;
-mod input;
+pub(crate) mod input;
 pub mod picture;
 pub mod previews;
 pub mod probe;

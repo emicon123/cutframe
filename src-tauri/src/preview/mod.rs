@@ -11,15 +11,16 @@ mod windows;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use app_core::{Project, Time};
+use app_core::Project;
 use arc_swap::ArcSwap;
-use engine::preview::{GpuChanged, MediaUnavailable, PreviewHandle};
+use engine::playback::{Playback, PlaybackTicks};
+use engine::preview::{GpuChanged, MediaUnavailable, PreviewHandle, PreviewSetup};
 use engine::render::{GpuError, GpuInfo, OffscreenFrame};
-use engine::transport::SeekMode;
+use engine::transport::PlayState;
 use tauri::{AppHandle, Manager, WebviewWindow};
 use tauri_specta::Event;
 
-use crate::ipc::events::AppInfoChanged;
+use crate::ipc::events::{AppInfoChanged, PlaybackTick};
 use crate::ipc::types::{AppInfo, PreviewMode, PreviewRect};
 
 /// Largest frame served to the UI in `frames` mode.
@@ -41,8 +42,13 @@ impl Preview {
     /// available; the app keeps working without a preview.
     pub fn create(main: &WebviewWindow, snapshot: Arc<ArcSwap<Project>>) -> Option<Self> {
         let visibility = Mutex::new(Visibility::INITIAL);
-        let on_gpu_changed = report_gpu_changes(main.app_handle().clone());
-        let on_media_unavailable = report_missing_media(main.app_handle().clone());
+        let app = main.app_handle().clone();
+        let setup = PreviewSetup {
+            on_gpu_changed: report_gpu_changes(app.clone()),
+            on_media_unavailable: report_missing_media(app.clone()),
+            on_tick: report_ticks(app),
+            ..PreviewSetup::with_sound(snapshot)
+        };
 
         #[cfg(windows)]
         {
@@ -59,11 +65,9 @@ impl Preview {
             // engine (the app exits when the main window closes).
             let engine = unsafe {
                 PreviewHandle::spawn_with_window(
-                    snapshot,
+                    setup,
                     child.raw_window_handle(),
                     Some(windows::raw_display_handle()),
-                    on_gpu_changed,
-                    on_media_unavailable,
                 )
             };
             // If the engine fails, the hidden child window is left behind; it is harmless.
@@ -78,11 +82,7 @@ impl Preview {
         #[cfg(not(windows))]
         {
             let _ = main;
-            let engine = start(PreviewHandle::spawn(
-                snapshot,
-                on_gpu_changed,
-                on_media_unavailable,
-            ))?;
+            let engine = start(PreviewHandle::spawn(setup))?;
             Some(Self { engine, visibility })
         }
     }
@@ -126,9 +126,9 @@ impl Preview {
         self.engine.snapshot_changed();
     }
 
-    /// Moves the engine's playhead (clamped to the timeline) and returns the seek generation.
-    pub fn seek(&self, time: Time, mode: SeekMode) -> u32 {
-        self.engine.seek(time, mode)
+    /// The transport (play, pause, shuttle, step, seek, loop).
+    pub fn playback(&self) -> &Arc<Playback> {
+        self.engine.playback()
     }
 
     /// Moves the preview over `rect`. Shows it only if the UI has requested it; an empty `rect`
@@ -270,6 +270,21 @@ fn report_gpu_changes(app: AppHandle) -> GpuChanged {
         });
         if let Err(err) = event.emit(&app) {
             tracing::error!(%err, "cannot report the GPU change to the UI");
+        }
+    })
+}
+
+/// The engine's tick callback (render thread): pauses background preview jobs while the
+/// transport plays (media-import.md §6.1) and emits `playback-tick`, which never blocks.
+fn report_ticks(app: AppHandle) -> PlaybackTicks {
+    Box::new(move |status| {
+        if let Some(state) = app.try_state::<crate::state::AppState>() {
+            state
+                .jobs
+                .pause_background(status.state != PlayState::Paused);
+        }
+        if let Err(err) = PlaybackTick::from(status).emit(&app) {
+            tracing::warn!(%err, "cannot emit playback-tick");
         }
     })
 }

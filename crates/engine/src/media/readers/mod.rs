@@ -37,7 +37,7 @@ use self::decode_path::{
 };
 use self::image::{ImageCache, ImageJob};
 use self::queue::{CPU_QUEUE_BYTES, Mode};
-use self::worker::{Reader, ReaderConfig, ReaderSource};
+use self::worker::{Reader, ReaderConfig, ReaderSource, Steering};
 use super::error::{MediaError, MediaErrorKind};
 use crate::render::GpuContext;
 use crate::render::frames::{FetchPolicy, FrameLookup, FrameProvider, PlaceholderKind};
@@ -175,6 +175,9 @@ impl Notifier {
     }
 }
 
+/// One source frame when the stream's frame rate is unknown.
+const DEFAULT_SOURCE_FRAME: Time = Time(app_core::FLICKS_PER_SECOND / 30);
+
 /// What the pool knows about one media of the snapshot.
 #[derive(Debug, Clone)]
 struct Binding {
@@ -198,6 +201,19 @@ impl Binding {
             video,
             source: hasher.finish(),
         }
+    }
+
+    /// One source frame, from the stream's average frame rate.
+    fn source_frame(&self) -> Time {
+        self.video
+            .as_ref()
+            .and_then(|video| video.frame_rate)
+            .filter(|rate| rate.num() > 0)
+            .map_or(DEFAULT_SOURCE_FRAME, |rate| {
+                let flicks =
+                    app_core::FLICKS_PER_SECOND * i64::from(rate.den()) / i64::from(rate.num());
+                Time(flicks.max(1))
+            })
     }
 
     /// The source id of the image decoded with long side at most `max_long_side`.
@@ -231,7 +247,12 @@ pub struct ReaderPool {
     readers: Vec<Reader>,
     images: ImageCache,
     mode: Mode,
+    /// Shuttle above 2x: readers decode keyframes only (playback.md §7).
+    keyframes_only: bool,
     frame: u64,
+    /// Slows every reader down (catch-up tests).
+    #[cfg(test)]
+    decode_delay: Duration,
 }
 
 impl std::fmt::Debug for ReaderPool {
@@ -290,7 +311,10 @@ impl ReaderPool {
             canvas_long_side: 0,
             readers: Vec::new(),
             mode: Mode::Paused,
+            keyframes_only: false,
             frame: 0,
+            #[cfg(test)]
+            decode_delay: Duration::ZERO,
         }
     }
 
@@ -316,6 +340,93 @@ impl ReaderPool {
     /// exact frame plus 2 ahead, then they stop.
     pub fn set_playing(&mut self, playing: bool) {
         self.mode = if playing { Mode::Playing } else { Mode::Paused };
+    }
+
+    /// Shuttle above 2x: playing readers decode keyframes only and sample and hold shows the
+    /// latest one (playback.md §7). Back to every frame costs a seek to the next keyframe.
+    pub fn set_keyframes_only(&mut self, on: bool) {
+        self.keyframes_only = on;
+    }
+
+    /// How lookups steer their readers now: catch-up while playing every frame.
+    fn steering(&self, policy: FetchPolicy) -> Steering {
+        let playing = self.mode == Mode::Playing;
+        Steering {
+            mode: self.mode,
+            keyframes_only: playing && self.keyframes_only,
+            catch_up: playing && !self.keyframes_only && policy == FetchPolicy::BestAvailable,
+        }
+    }
+
+    /// The playback scheduler (playback.md §7): a clip of `media` starts soon and needs
+    /// `sample_time` first. Call after the lookups of the current frame. A reader already
+    /// primed for it is kept; else an idle reader of the media decodes towards it now (without
+    /// a seek when it gets there by decoding forward), else a new reader opens within the
+    /// limits, else the least recently used idle reader is reassigned. Readers that serve the
+    /// current frame are never taken.
+    pub fn prime(&mut self, media: MediaId, sample_time: Time) {
+        let Some(binding) = self.bindings.get(&media).cloned() else {
+            return;
+        };
+        if binding.video.is_none() {
+            return;
+        }
+        let source = binding.source;
+        let frame = self.frame;
+        let steering = self.steering(FetchPolicy::BestAvailable);
+        let mine = |r: &Reader| r.serves(media, source) && r.failed().is_none();
+        // Free: not serving this frame and not primed for another clip in this pass.
+        let free = |r: &Reader| r.used_in_frame != frame && r.primed_in_frame != frame;
+        if let Some(reader) = self
+            .readers
+            .iter_mut()
+            .find(|r| mine(r) && r.primed == Some(sample_time))
+        {
+            reader.primed_in_frame = frame;
+            reader.last_used = Instant::now();
+            return;
+        }
+        let reachable = self
+            .readers
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| mine(r) && free(r))
+            .filter_map(|(index, r)| r.distance(sample_time).map(|d| (d, index)))
+            .min()
+            .map(|(_, index)| index);
+        let index = reachable
+            .or_else(|| lru(&self.readers, &|r| mine(r) && free(r)))
+            .or_else(|| {
+                if self.readers.len() >= self.options.max_readers {
+                    let index = lru(&self.readers, &free)?;
+                    self.readers.remove(index);
+                }
+                let reader = self.spawn(media, &binding)?;
+                self.readers.push(reader);
+                Some(self.readers.len() - 1)
+            });
+        if let Some(index) = index {
+            tracing::trace!(%media, ?sample_time, "priming a video reader");
+            self.readers[index].prime(sample_time, steering, frame);
+        }
+    }
+
+    /// Seeks the readers of `media` started so far (diagnostics, tests).
+    pub fn seek_count(&self, media: MediaId) -> u32 {
+        self.readers
+            .iter()
+            .filter(|r| r.media() == media)
+            .map(Reader::seeks)
+            .sum()
+    }
+
+    /// Catch-up jumps of the readers of `media` so far (diagnostics, tests).
+    pub fn catch_up_count(&self, media: MediaId) -> u32 {
+        self.readers
+            .iter()
+            .filter(|r| r.media() == media)
+            .map(Reader::catch_ups)
+            .sum()
     }
 
     /// Closes every reader and forgets every decoded image (e.g. when the preview is hidden).
@@ -380,6 +491,7 @@ impl ReaderPool {
                 path: binding.path.clone(),
                 stream: video.stream_index,
                 origin: binding.origin,
+                frame: binding.source_frame(),
             },
             path,
             #[cfg(windows)]
@@ -390,6 +502,8 @@ impl ReaderPool {
             memory: Arc::clone(&self.memory),
             notifier: Arc::clone(&self.notifier),
             below_normal_priority: self.options.below_normal_priority,
+            #[cfg(test)]
+            decode_delay: self.decode_delay,
         };
         Reader::spawn(config)
             .inspect_err(|err| tracing::error!(%err, "cannot start a video reader thread"))
@@ -444,14 +558,6 @@ impl ReaderPool {
         if let Some((_, index)) = nearest {
             return Some(index);
         }
-        let lru = |readers: &[Reader], filter: &dyn Fn(&Reader) -> bool| {
-            readers
-                .iter()
-                .enumerate()
-                .filter(|(_, r)| filter(r))
-                .min_by_key(|(_, r)| r.last_used)
-                .map(|(index, _)| index)
-        };
         if let Some(index) = lru(&self.readers, &|r| mine(r) && idle(r)) {
             return Some(index);
         }
@@ -466,6 +572,20 @@ impl ReaderPool {
         self.readers.push(reader);
         Some(self.readers.len() - 1)
     }
+}
+
+/// The least recently used reader that passes `filter`, preferring readers the scheduler has
+/// not primed for an upcoming clip.
+fn lru(readers: &[Reader], filter: &dyn Fn(&Reader) -> bool) -> Option<usize> {
+    let pick = |primed: bool| {
+        readers
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| filter(r) && r.primed.is_some() == primed)
+            .min_by_key(|(_, r)| r.last_used)
+            .map(|(index, _)| index)
+    };
+    pick(false).or_else(|| pick(true))
 }
 
 impl FrameProvider for ReaderPool {
@@ -486,12 +606,12 @@ impl FrameProvider for ReaderPool {
         let Some(index) = self.pick(media, &binding, sample_time) else {
             return FrameLookup::Missing;
         };
-        let mode = self.mode;
+        let steering = self.steering(policy);
         let frame = self.frame;
         let reader = &mut self.readers[index];
         reader.last_used = Instant::now();
         reader.used_in_frame = frame;
-        reader.lookup(sample_time, mode, policy)
+        reader.lookup(sample_time, steering, policy)
     }
 
     fn image(&mut self, media: MediaId, policy: FetchPolicy) -> FrameLookup {

@@ -31,8 +31,8 @@ use tracing_subscriber::EnvFilter;
 
 use crate::ipc::commands;
 use crate::ipc::events::{
-    AppInfoChanged, JobFinished, JobProgress, MediaJobReport, OpenFileRequested, ProjectChanged,
-    QuitRequested,
+    AppInfoChanged, JobFinished, JobProgress, MediaJobReport, OpenFileRequested, PlaybackTick,
+    ProjectChanged, QuitRequested,
 };
 use crate::jobs::{JobManager, Priority, TauriJobHost};
 use crate::preview::Preview;
@@ -82,6 +82,12 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             commands::set_preview_rect,
             commands::set_preview_visible,
             commands::seek,
+            commands::toggle_playback,
+            commands::pause_playback,
+            commands::shuttle,
+            commands::step_frames,
+            commands::set_loop,
+            commands::get_playback,
             commands::new_project,
             commands::open_project,
             commands::save_project,
@@ -117,7 +123,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             JobFinished,
             MediaJobReport,
             OpenFileRequested,
-            AppInfoChanged
+            AppInfoChanged,
+            PlaybackTick
         ])
         // The only place the UI gets the project file extension from (ADR-0002 amendment §1).
         .constant("PROJECT_FILE_EXTENSION", app_core::PROJECT_FILE_EXTENSION)

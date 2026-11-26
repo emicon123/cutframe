@@ -71,6 +71,18 @@ ff -f lavfi -i "$A:sample_rate=96000" -ac 2 -c:a flac "${EXACT[@]}" stereo-96k.f
 ff -f lavfi -i "$A:sample_rate=48000" -ac 2 -c:a libopus -b:a 24k "${EXACT[@]}" opus.ogg
 ff -f lavfi -i "$A:sample_rate=44100" -c:a aac -b:a 24k "${EXACT[@]}" aac.m4a
 
+# Mixer and audio reader fixtures (playback.md §12): a full-scale 1 kHz stereo sine at 48 kHz
+# (peaks are whole samples), a half-scale mono one at 44.1 kHz (resampling, dual mono), and an
+# MPEG-TS (origin 1.4 s) with VFR video whose MP2 audio starts about 0.25 s after the video.
+ff -f lavfi -i "aevalsrc=sin(2*PI*1000*t)|sin(2*PI*1000*t):s=48000:d=1" -c:a flac -sample_fmt s16 \
+  "${EXACT[@]}" sine-1k-48k.flac
+ff -f lavfi -i "aevalsrc=0.5*sin(2*PI*1000*t):s=44100:d=1" -c:a flac -sample_fmt s16 \
+  "${EXACT[@]}" sine-1k-44k-mono.flac
+ff -f lavfi -i "testsrc2=size=32x32:rate=30:duration=1" \
+  -itsoffset 0.25 -f lavfi -i "aevalsrc=0.5*sin(2*PI*1000*t):s=48000:d=0.75" -map 0:v -map 1:a \
+  -vf "select='not(between(n\,10\,19))'" -fps_mode passthrough -c:v mpeg4 -q:v 20 \
+  -c:a mp2 -b:a 192k "${EXACT[@]}" -f mpegts vfr-audio-offset.ts
+
 # --- Images -------------------------------------------------------------------------------------
 I="testsrc2=size=64x48:rate=1"
 ff -f lavfi -i "$I" -frames:v 1 -c:v mjpeg -q:v 5 -pix_fmt yuvj420p "${EXACT[@]}" "$tmp/plain.jpg"

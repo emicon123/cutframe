@@ -497,6 +497,45 @@ impl From<SeekMode> for engine::transport::SeekMode {
     }
 }
 
+/// J, K and L (`shuttle`, playback.md §4.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ShuttleKey {
+    /// J: reverse at -1x, then faster (-2x, -4x, -8x) on repeated presses.
+    Reverse,
+    /// K: pause.
+    Pause,
+    /// L: forward at 1x, then faster (2x, 4x, 8x) on repeated presses.
+    Forward,
+}
+
+impl From<ShuttleKey> for engine::playback::ShuttleKey {
+    fn from(key: ShuttleKey) -> Self {
+        match key {
+            ShuttleKey::Reverse => Self::Reverse,
+            ShuttleKey::Pause => Self::Pause,
+            ShuttleKey::Forward => Self::Forward,
+        }
+    }
+}
+
+/// Whether the transport plays (playback.md §8). Preroll (frames and sound being prepared,
+/// usually well under 250 ms) already counts as playing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum TransportStateView {
+    Paused,
+    Playing,
+}
+
+/// What the preview plays. Only the timeline so far; a media item (source preview) comes with
+/// task 0340.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum PlaybackTarget {
+    Timeline,
+}
+
 /// The GPU capability report (status bar, Preferences → Performance).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]

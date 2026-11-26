@@ -239,13 +239,48 @@ export const commands = {
 	 */
 	setPreviewVisible: (visible: boolean, options?: InvokeOptions) => __TAURI_INVOKE<void>("set_preview_visible", { visible }, options),
 	/**
-	 *  Moves the preview to `time` and redraws it: `scrub` while the playhead is dragged, `exact` for
-	 *  a click and at the end of a drag. `time` is clamped to `0..=` the timeline duration. Returns the
-	 *  seek generation, which increases with every seek (playback ticks of an older generation are
-	 *  stale, task 0330). Fails with `invalidEdit` for a time outside ±2^53 flicks and with
-	 *  `unavailable` when there is no preview engine. Never blocks.
+	 *  Moves the playhead to `time` and redraws the preview: `scrub` while the playhead is dragged
+	 *  (pauses playback, plays a short audio snippet), `exact` for a click, Home/End and the end of a
+	 *  drag (while playing, playback continues from there). `time` is clamped to `0..=` the timeline
+	 *  duration. Returns the seek generation, which increases with every seek and step: ignore
+	 *  `playbackTick`s with an older `seek`. Fails with `invalidEdit` for a time outside ±2^53 flicks
+	 *  and with `unavailable` when there is no preview engine. Never blocks.
 	 */
 	seek: (time: Time, mode: SeekMode, options?: InvokeOptions) => __TAURI_INVOKE<number>("seek", { time, mode }, options),
+	/**
+	 *  Space and the Play button: plays at 1x from the playhead (from 0 when the playhead is on the
+	 *  last frame or past it), or pauses. Pausing puts the playhead on the start of the frame on
+	 *  screen. An empty timeline does not play. The new state arrives as a `playbackTick`. Fails
+	 *  with `unavailable` when there is no preview engine. Never blocks.
+	 */
+	togglePlayback: (options?: InvokeOptions) => __TAURI_INVOKE<null>("toggle_playback", undefined, options),
+	/**
+	 *  Pauses (on the start of the frame on screen); nothing happens when already paused. Fails with
+	 *  `unavailable` when there is no preview engine.
+	 */
+	pausePlayback: (options?: InvokeOptions) => __TAURI_INVOKE<null>("pause_playback", undefined, options),
+	/**
+	 *  J/K/L. `forward` plays at 1x from pause or reverse, else doubles the speed up to 8x;
+	 *  `reverse` mirrors it with negative rates (from pause at 0 nothing happens); `pause` pauses.
+	 *  Only 1x has sound. Fails with `unavailable` when there is no preview engine.
+	 */
+	shuttle: (key: ShuttleKey, options?: InvokeOptions) => __TAURI_INVOKE<null>("shuttle", { key }, options),
+	/**
+	 *  Left/Right (`frames` = -1, 1; with Shift -10, 10): pauses, then moves the playhead by whole
+	 *  frames from the current frame, clamped to the first and last frame. Returns the new seek
+	 *  generation, like `seek`. Fails with `unavailable` when there is no preview engine.
+	 */
+	stepFrames: (frames: number, options?: InvokeOptions) => __TAURI_INVOKE<number>("step_frames", { frames }, options),
+	/**
+	 *  The loop button: while on, playback wraps from the end of the timeline to 0. A setting of
+	 *  this session (not saved). Confirmed by a `playbackTick`.
+	 */
+	setLoop: (on: boolean, options?: InvokeOptions) => __TAURI_INVOKE<void>("set_loop", { on }, options),
+	/**
+	 *  The transport now, as in `playbackTick`. Call once on startup (and after a webview reload);
+	 *  afterwards listen to `playbackTick`. Without a preview engine: paused at 0.
+	 */
+	getPlayback: (options?: InvokeOptions) => __TAURI_INVOKE<PlaybackTick>("get_playback", undefined, options),
 	/**
 	 *  Replaces the open project with an empty one (default tracks) with `settings`, or the default
 	 *  settings. The history is cleared and the project is clean. Ask about unsaved changes first.
@@ -416,6 +451,7 @@ export const events = {
 	jobProgress: makeEvent<JobProgress_Serialize, JobProgress_Deserialize>("job-progress"),
 	mediaJobReport: makeEvent<MediaJobReport, MediaJobReport>("media-job-report"),
 	openFileRequested: makeEvent<OpenFileRequested, OpenFileRequested>("open-file-requested"),
+	playbackTick: makeEvent<PlaybackTick, PlaybackTick>("playback-tick"),
 	projectChanged: makeEvent<ProjectChanged_Serialize, ProjectChanged_Deserialize>("project-changed"),
 	quitRequested: makeEvent<QuitRequested, QuitRequested>("quit-requested"),
 };
@@ -1119,6 +1155,35 @@ export type Placement =
  */
 { kind: "drop"; track: TrackTarget; start: Time };
 
+/**
+ *  What the preview plays. Only the timeline so far; a media item (source preview) comes with
+ *  task 0340.
+ */
+export type PlaybackTarget = { kind: "timeline" };
+
+/**
+ *  The transport (playback.md §8): at most 60 Hz while playing, and once after every change
+ *  (play, pause, shuttle, seek, step, loop toggle, end of playback, project replaced), so the
+ *  last state always arrives. Ignore a tick whose `seek` is older than the generation the last
+ *  `seek` or `stepFrames` returned. `getPlayback` returns the same payload.
+ */
+export type PlaybackTick = {
+	/**
+	 *  Timeline time of the frame on screen (its start) while playing; the playhead while
+	 *  paused. Between ticks the UI may extrapolate `time + elapsed x rate` for drawing.
+	 */
+	time: Time,
+	state: TransportStateView,
+	/**  -8..=8 (1, 2, 4, 8 forward, negative reverse), 0 while paused. */
+	rate: number,
+	looping: boolean,
+	/**  The newest seek generation the engine has applied. */
+	seek: number,
+	/**  Frames dropped since the last play start (skipped or shown late). */
+	droppedFrames: number,
+	target: PlaybackTarget,
+};
+
 export type Preferences = Preferences_Serialize | Preferences_Deserialize;
 
 export type Preferences_Deserialize = {
@@ -1373,6 +1438,15 @@ export type SeekMode =
 /**  While the playhead is dragged: show the nearest ready frame at once. */
 "scrub";
 
+/**  J, K and L (`shuttle`, playback.md §4.2). */
+export type ShuttleKey = 
+/**  J: reverse at -1x, then faster (-2x, -4x, -8x) on repeated presses. */
+"reverse" | 
+/**  K: pause. */
+"pause" | 
+/**  L: forward at 1x, then faster (2x, 4x, 8x) on repeated presses. */
+"forward";
+
 /**  Which part of a clip [`TrimToPlayhead`] deletes. */
 export type Side = 
 /**  Delete left of the playhead (Q): the start edge moves to the playhead. */
@@ -1430,6 +1504,12 @@ export type TrackView_Serialize = {
 	locked: boolean,
 	clips: ClipView_Serialize[],
 };
+
+/**
+ *  Whether the transport plays (playback.md §8). Preroll (frames and sound being prepared,
+ *  usually well under 250 ms) already counts as playing.
+ */
+export type TransportStateView = "paused" | "playing";
 
 /**  UI language. The UI picks its translation table by this key. */
 export type UiLanguage = "en";
@@ -1547,6 +1627,12 @@ export type MockCommandHandlers = {
     setPreviewRect: (args: { rect: PreviewRect }) => void | Promise<void>,
     setPreviewVisible: (args: { visible: boolean }) => void | Promise<void>,
     seek: (args: { time: Time; mode: SeekMode }) => number | Promise<number>,
+    togglePlayback: () => null | Promise<null>,
+    pausePlayback: () => null | Promise<null>,
+    shuttle: (args: { key: ShuttleKey }) => null | Promise<null>,
+    stepFrames: (args: { frames: number }) => number | Promise<number>,
+    setLoop: (args: { on: boolean }) => void | Promise<void>,
+    getPlayback: () => PlaybackTick | Promise<PlaybackTick>,
     newProject: (args: { settings: ProjectSettings | null }) => null | Promise<null>,
     openProject: (args: { path: string }) => null | Promise<null>,
     saveProject: () => boolean | Promise<boolean>,
@@ -1631,6 +1717,12 @@ export function mockCommands(handlers: Partial<MockCommandHandlers> = {}): void 
             case "set_preview_rect": return mockCommandHandler(mockHandlers.setPreviewRect, "set_preview_rect", args);
             case "set_preview_visible": return mockCommandHandler(mockHandlers.setPreviewVisible, "set_preview_visible", args);
             case "seek": return mockCommandHandler(mockHandlers.seek, "seek", args);
+            case "toggle_playback": return mockCommandHandler(mockHandlers.togglePlayback, "toggle_playback", args);
+            case "pause_playback": return mockCommandHandler(mockHandlers.pausePlayback, "pause_playback", args);
+            case "shuttle": return mockCommandHandler(mockHandlers.shuttle, "shuttle", args);
+            case "step_frames": return mockCommandHandler(mockHandlers.stepFrames, "step_frames", args);
+            case "set_loop": return mockCommandHandler(mockHandlers.setLoop, "set_loop", args);
+            case "get_playback": return mockCommandHandler(mockHandlers.getPlayback, "get_playback", args);
             case "new_project": return mockCommandHandler(mockHandlers.newProject, "new_project", args);
             case "open_project": return mockCommandHandler(mockHandlers.openProject, "open_project", args);
             case "save_project": return mockCommandHandler(mockHandlers.saveProject, "save_project", args);
