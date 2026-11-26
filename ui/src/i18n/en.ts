@@ -350,6 +350,7 @@ export const en = {
       overlap: "There is already a clip there",
       trackLocked: "That track is locked",
       mediaTooShort: "That media is shorter than the clip",
+      updateRejected: "The update could not be verified and was not installed",
     } satisfies Record<IpcError["kind"], string>,
     /** Shown for an unknown kind or a failure that is not an `IpcError`. */
     unknown: "Something went wrong",

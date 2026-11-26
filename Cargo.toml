@@ -13,12 +13,15 @@ app-core = { path = "crates/app-core" }
 engine = { path = "crates/engine" }
 
 arc-swap = "1.9"
+# Updater public-key check, the same decoding as tauri-plugin-updater (both MIT OR Apache-2.0 / MIT).
+base64 = "0.23"
 # Media fingerprints (CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception).
 blake3 = "1.8"
 bytemuck = { version = "1.25", features = ["derive"] }
 crossbeam-channel = "0.5"
 # The per-user local app data folder, resolved before Tauri starts (MIT OR Apache-2.0).
 dirs = "7"
+minisign-verify = "0.3"
 pollster = "1.0"
 raw-window-handle = "0.6"
 # FFmpeg 7.1 bindings (LGPL shared build, dynamically linked; pin in scripts/ffmpeg.json). 0.18 targets
@@ -38,6 +41,10 @@ tauri-plugin-dialog = "2.8"
 # registered, so the webview gets no opener permissions.
 tauri-plugin-opener = "2.7"
 tauri-plugin-single-instance = "2.5"
+# Self-update (F0.12): Rust side only, the UI goes through typed commands. No `zip`: the v2 NSIS
+# updater artifact is the `-setup.exe` itself. Minor version pinned: `configure_client` hands us its
+# reqwest builder (MIT OR Apache-2.0).
+tauri-plugin-updater = { version = "~2.14", default-features = false, features = ["rustls-tls", "system-proxy"] }
 tauri-plugin-window-state = "2.5"
 tauri-specta = { version = "=2.0.0-rc.29", features = ["derive", "typescript"] }
 thiserror = "2.0"

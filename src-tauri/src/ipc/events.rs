@@ -57,3 +57,21 @@ pub struct OpenFileRequested {
 /// `AppInfo` from `getAppInfo`. Rare.
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type, Event)]
 pub struct AppInfoChanged(pub AppInfo);
+
+/// Progress of the download that `installUpdate` started (F0.12). `downloading` comes at most
+/// 10 Hz; each download ends with exactly one `ready` or `failed`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type, Event)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum UpdateProgress {
+    /// Byte counts are decimal strings (64-bit, ADR-0003 §3). `total` is `None` when the server
+    /// does not send a length.
+    Downloading {
+        downloaded: String,
+        total: Option<String>,
+    },
+    /// Downloaded and the signature verified: `restartApp` installs it and starts the new version.
+    Ready,
+    /// The download or the verification failed; `installUpdate` may be called again. `error.kind`
+    /// is `unavailable` (network), `updateRejected` (bad signature or file) or `io`/`internal`.
+    Failed { error: IpcError },
+}

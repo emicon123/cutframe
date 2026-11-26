@@ -27,6 +27,12 @@ allow = [
   "Zlib",
 ]
 
+# Mozilla's CA bundle as data, pulled in by rustls-platform-verifier only on wasm32 (never built
+# here); it appears because cargo-deny checks every target. Permissive data licence.
+[[licenses.exceptions]]
+crate = "webpki-root-certs"
+allow = ["CDLA-Permissive-2.0"]
+
 [licenses.private]
 # Our own crates are unpublished (publish = false).
 ignore = true

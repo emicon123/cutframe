@@ -19,6 +19,7 @@ mod recovery;
 mod relink;
 mod smoke_test;
 mod state;
+mod updater;
 
 use std::path::Path;
 use std::sync::Arc;
@@ -32,7 +33,7 @@ use tauri_specta::{Builder, Event, collect_commands, collect_events};
 use crate::ipc::commands;
 use crate::ipc::events::{
     AppInfoChanged, JobFinished, JobProgress, MediaJobReport, OpenFileRequested, ProjectChanged,
-    QuitRequested,
+    QuitRequested, UpdateProgress,
 };
 use crate::jobs::{JobManager, Priority, TauriJobHost};
 use crate::preview::Preview;
@@ -111,6 +112,9 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             commands::duplicate_project_file,
             commands::trash_project_file,
             commands::reveal_project_file,
+            commands::check_for_update,
+            commands::install_update,
+            commands::restart_app,
         ])
         .events(collect_events![
             ProjectChanged,
@@ -119,7 +123,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             JobFinished,
             MediaJobReport,
             OpenFileRequested,
-            AppInfoChanged
+            AppInfoChanged,
+            UpdateProgress
         ])
         // The only place the UI gets the project file extension from (ADR-0002 amendment §1).
         .constant("PROJECT_FILE_EXTENSION", app_core::PROJECT_FILE_EXTENSION)
@@ -183,6 +188,8 @@ pub fn run() {
     }
     builder
         .plugin(tauri_plugin_dialog::init())
+        // Rust side only (`updater.rs`, typed commands); the UI gets no updater permission.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // Rust side only: restores the main window on creation and saves it on exit. The UI does
         // not call its JS API, so no capability permission is granted.
         .plugin(
@@ -197,6 +204,7 @@ pub fn run() {
             ipc.mount_events(app);
             check_log_dir(app.handle(), log_dir.as_deref());
             app.manage(logging::LogDir(log_dir));
+            app.manage(updater::Updates::default());
 
             let main = app
                 .get_webview_window(MAIN_WINDOW)

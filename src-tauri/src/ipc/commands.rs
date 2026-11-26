@@ -20,7 +20,7 @@ use uuid::Uuid;
 use super::IpcError;
 use super::types::{
     AboutInfo, AppInfo, BuildProfile, CacheInfo, JobId, PreviewMode, PreviewRect, ProjectState,
-    RecentProject, RecoveryEntry, SeekMode,
+    RecentProject, RecoveryEntry, SeekMode, UpdateInfo,
 };
 use crate::import;
 use crate::logging::LogDir;
@@ -30,6 +30,7 @@ use crate::project_file;
 use crate::recent::{self, RecentEntry, RecentStore};
 use crate::relink;
 use crate::state::{AppState, SaveSnapshot};
+use crate::updater;
 
 /// Name of a project made by `new_project` and of the one open at startup.
 pub const DEFAULT_PROJECT_NAME: &str = "Untitled project";
@@ -1330,4 +1331,37 @@ mod tests {
             "add #[tracing::instrument(skip_all, err(Debug, level = \"warn\"))] to: {missing:?}"
         );
     }
+}
+
+/// Asks the update server for a newer release (F0.12) and holds it for `installUpdate`. `null`
+/// means up to date. While a download runs or waits for `restartApp`, answers with that update
+/// without asking the server. Fails with `unavailable` when checks are off (debug build without
+/// `CUTFRAME_UPDATER=1`, no updater key configured) or the server cannot be reached; call it on
+/// startup and stay quiet on failure.
+#[tauri::command]
+#[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
+pub async fn check_for_update(app: AppHandle) -> Result<Option<UpdateInfo>, IpcError> {
+    updater::check(&app).await
+}
+
+/// Starts downloading the update the last `checkForUpdate` found and returns at once; progress
+/// and the end come as `updateProgress`. A second call during the download does nothing; after
+/// `ready` it sends `ready` again. Fails with `internal` when no update was found.
+#[tauri::command]
+#[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
+pub fn install_update(app: AppHandle) -> Result<(), IpcError> {
+    updater::install(&app)
+}
+
+/// Closes the app without asking and starts it again: with a `ready` update, the installer runs
+/// in between (passive, no admin) and starts the new version. Call it after the unsaved-changes
+/// prompt (Save succeeded, or Don't save), like `confirmClose`. Returns only on failure: the
+/// update stays ready (`updateRejected`, `io`, `internal`; `unavailable` outside Windows).
+#[tauri::command]
+#[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
+pub async fn restart_app(app: AppHandle) -> Result<(), IpcError> {
+    updater::restart(app).await
 }

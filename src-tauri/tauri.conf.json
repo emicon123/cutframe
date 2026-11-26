@@ -54,5 +54,15 @@
       "webviewInstallMode": { "type": "embedBootstrapper" },
       "nsis": { "installMode": "currentUser" }
     }
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/emicon123/cutframe-releases/releases/latest/download/latest.json"
+      ],
+      "pubkey": "PLACEHOLDER: paste the public key printed by `pnpm tauri signer generate` here",
+      "requireSignedVersion": true,
+      "windows": { "installMode": "passive" }
+    }
   }
 }

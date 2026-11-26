@@ -157,7 +157,19 @@ Every recent-project command is **guarded**: it only acts on a path the app reco
 the open project ([04](04-persistence-and-lifecycle.md) §7), so the webview cannot use these commands
 to touch arbitrary files.
 
-### 4.5 Preview placement
+### 4.5 Updates (F0.12)
+
+| Command | Arguments | Returns | Notes |
+|---|---|---|---|
+| `checkForUpdate` | — | `UpdateInfo \| null` | `unavailable` when checks are off (debug build without `CUTFRAME_UPDATER=1`, placeholder or invalid updater key) or the server cannot be reached; while a download runs or is ready it returns that update without a request |
+| `installUpdate` | — | — | Starts the download of the checked update and returns at once; progress via `update-progress`; a second call is a no-op (after `ready` it re-sends `ready`); `internal` when nothing was found |
+| `restartApp` | — | — (only on failure) | With a `ready` update: re-verifies, starts the NSIS installer (`passive`, `/R` restarts the app) and exits; otherwise a plain restart. No unsaved-changes check: the UI prompts first, as for `confirmClose` |
+
+Backend: `src-tauri/src/updater.rs` (`UpdateSlot`: idle → available → downloading → ready →
+installing; a failed download goes back to available, a failed install back to ready). The plugin's
+JS API has no capability; the endpoint and key are `plugins.updater` in `tauri.conf.json`.
+
+### 4.6 Preview placement
 
 | Command | Arguments | Returns | Notes |
 |---|---|---|---|
@@ -166,7 +178,7 @@ to touch arbitrary files.
 
 These are called by a `ResizeObserver` in `PreviewArea`, not by a user action, and are infallible.
 
-### 4.6 Playhead
+### 4.7 Playhead
 
 | Command | Arguments | Returns | Notes |
 |---|---|---|---|
@@ -193,6 +205,7 @@ Every fallible command rejects with `IpcError`, serialized as `{ kind, message }
 | `unavailable` | No GPU, file manager cannot start | Feature-specific message |
 | `internal` | A bug in the backend | "Report this"; log has the message |
 | `cancelled` | Only as a `job-finished` result | Remove the job's UI |
+| `updateRejected` | The downloaded update or its signature did not verify (or it is not an installer) | "Could not be verified"; nothing installed |
 
 `message` is English diagnostics for the log. It is **never** shown to the user: the UI translates
 `kind` (ADR-0003 §4-5). `ipc/error.rs` has a test that asserts the exact `kind` strings, so renaming
@@ -216,6 +229,7 @@ jobs are logged in `JobHandle::finish` (`warn`; `cancelled` at `info`). Log file
 | `open-file-requested` | `{ path }` | A second launch passed a `.cutframe` path |
 | `quit-requested` | — | Close was stopped because the project is dirty |
 | `app-info-changed` | `AppInfo` | The GPU was lost/restarted or the preview gave up |
+| `update-progress` | `{ state: "downloading", downloaded, total? }` \| `{ state: "ready" }` \| `{ state: "failed", error }` | During an `installUpdate` download, ≤ 10 Hz; byte counts are decimal strings; exactly one `ready` or `failed` per download |
 
 `quit-requested` and `confirmClose` are one protocol: the window's `CloseRequested` handler closes a
 clean project immediately and, for a dirty one, cancels the close and emits the event; the UI asks
