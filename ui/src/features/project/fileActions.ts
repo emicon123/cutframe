@@ -1,7 +1,7 @@
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 
 import { commands, PROJECT_FILE_EXTENSION } from "@/bindings";
-import { type FailureContext, showErrorDialog } from "@/features/notifications/errorDialog";
+import { type FailureContext, showErrorDialog } from "@/features/notifications/errorDialogStore";
 import { t } from "@/i18n";
 import { logError } from "@/ipc/errors";
 import { useAppStore } from "@/stores/appStore";

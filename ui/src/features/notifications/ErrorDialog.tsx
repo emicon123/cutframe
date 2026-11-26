@@ -13,7 +13,7 @@ import { usePreviewOccluder } from "@/features/preview/occlusion";
 import { fileActions } from "@/features/project/fileActions";
 import { t } from "@/i18n";
 
-import { closeErrorDialog, useErrorDialog } from "./errorDialog";
+import { closeErrorDialog, useErrorDialog } from "./errorDialogStore";
 import { openLogsFolder } from "./logs";
 
 /**

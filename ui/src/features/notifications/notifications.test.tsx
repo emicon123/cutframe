@@ -6,7 +6,7 @@ import { t } from "@/i18n";
 import { useAppStore } from "@/stores/appStore";
 import { showToast, TOAST_DURATION_MS, useToastStore } from "@/stores/toastStore";
 
-import { closeErrorDialog, errorDialogContent, showErrorDialog } from "./errorDialog";
+import { closeErrorDialog, errorDialogContent, showErrorDialog } from "./errorDialogStore";
 import { ErrorDialog } from "./ErrorDialog";
 import { openLogsFailedToast, openLogsFolder } from "./logs";
 import { Toaster } from "./Toaster";
