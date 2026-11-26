@@ -51,6 +51,8 @@ type UiStore = {
   /** Kinds the media panel shows; empty shows all. */
   mediaKinds: MediaKind[];
   preferencesOpen: boolean;
+  /** Help → About (F0.10). */
+  aboutOpen: boolean;
   /** Mirrors the panels' collapsed state (the panels own it), for the View menu check marks. */
   collapsedPanels: Readonly<Record<PanelKey, boolean>>;
   /** Changes when the panel layout is reset, so the panel groups remount with default sizes. */
@@ -64,6 +66,7 @@ type UiStore = {
   setShortcutsOpen: (open: boolean) => void;
   setProjectSettingsOpen: (open: boolean) => void;
   setPreferencesOpen: (open: boolean) => void;
+  setAboutOpen: (open: boolean) => void;
   setPanelCollapsed: (panel: PanelKey, collapsed: boolean) => void;
   bumpLayoutVersion: () => void;
   setMediaLayout: (layout: MediaLayout) => void;
@@ -82,6 +85,7 @@ export const useUiStore = create<UiStore>()((set) => ({
   mediaSortDirection: "asc",
   mediaKinds: [],
   preferencesOpen: false,
+  aboutOpen: false,
   collapsedPanels: { mediaBin: false, inspector: false },
   layoutVersion: 0,
   snapping: readSnapping(),
@@ -95,6 +99,7 @@ export const useUiStore = create<UiStore>()((set) => ({
   setShortcutsOpen: (shortcutsOpen) => set({ shortcutsOpen }),
   setProjectSettingsOpen: (projectSettingsOpen) => set({ projectSettingsOpen }),
   setPreferencesOpen: (preferencesOpen) => set({ preferencesOpen }),
+  setAboutOpen: (aboutOpen) => set({ aboutOpen }),
   setPanelCollapsed: (panel, collapsed) =>
     set((s) =>
       s.collapsedPanels[panel] === collapsed

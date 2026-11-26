@@ -126,7 +126,6 @@ export function beginGesture<V>(send: GestureSender<V>): Gesture<V> {
       return enqueue(async () => {
         try {
           await send(value, "commit");
-          useAppStore.getState().clearError();
           return true;
         } catch (error) {
           useAppStore.getState().reportError(error);

@@ -3,6 +3,7 @@ import { useShallow } from "zustand/react/shallow";
 
 import { type ClipId, commands } from "@/bindings";
 import { importFromDialog } from "@/features/media-bin/importActions";
+import { openLogsFolder } from "@/features/notifications/logs";
 import { fileActions } from "@/features/project/fileActions";
 import {
   copySelection,
@@ -113,6 +114,8 @@ export type ActionId =
   | "toggle-inspector"
   | "reset-panel-layout"
   | "keyboard-shortcuts"
+  | "open-logs-folder"
+  | "about"
   | "frame-back"
   | "frame-forward"
   | "frame-back-10"
@@ -386,6 +389,16 @@ export const ACTIONS: readonly Action[] = [
     ],
     run: () => ui().setShortcutsOpen(true),
   },
+  {
+    id: "open-logs-folder",
+    label: t.help.openLogs,
+    run: () => void openLogsFolder(),
+  },
+  {
+    id: "about",
+    label: t.help.about,
+    run: () => ui().setAboutOpen(true),
+  },
   // F1.54, playback design §2. Timeline-scoped, so the arrows keep moving the focus in the media
   // bin's grid and list; a focused slider or menu handles them first (`defaultPrevented`).
   {
@@ -568,7 +581,11 @@ export const MENUS: readonly Menu[] = [
       "keyboard-shortcuts",
     ],
   },
-  { id: "help", label: t.menu.help, items: ["keyboard-shortcuts"] },
+  {
+    id: "help",
+    label: t.menu.help,
+    items: ["keyboard-shortcuts", SEPARATOR, "open-logs-folder", SEPARATOR, "about"],
+  },
 ];
 
 const NO_UI_FLAGS: UiFlags = {

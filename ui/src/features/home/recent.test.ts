@@ -47,7 +47,6 @@ function fake(options: { failing?: Partial<Record<string, IpcError>> } = {}): Fa
       await Promise.resolve();
     },
     reportError: (error) => calls.push(`error ${(error as IpcError).kind}`),
-    clearError: () => undefined,
     logError: () => undefined,
   };
 }

@@ -1,4 +1,4 @@
-import { CircleAlert, Cpu, TriangleAlert, X } from "lucide-react";
+import { Cpu, TriangleAlert, X } from "lucide-react";
 
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { t } from "@/i18n";
@@ -9,7 +9,6 @@ import { gpuNoticeText, gpuWarningText } from "./gpuNotice";
 /** Below the timeline, so nothing here (tooltips included) can reach the native preview. */
 export function StatusBar() {
   const info = useAppStore((s) => s.info);
-  const lastError = useAppStore((s) => s.lastError);
   const notice = useAppStore((s) => s.gpuNotice);
   const dismissNotice = useAppStore((s) => s.dismissGpuNotice);
   const warning = gpuWarningText(info);
@@ -52,12 +51,6 @@ export function StatusBar() {
           >
             <X className="size-3.5" aria-hidden />
           </button>
-        </span>
-      )}
-      {lastError && (
-        <span role="alert" className="flex min-w-0 items-center gap-1.5 text-destructive">
-          <CircleAlert className="size-3.5 shrink-0" aria-hidden />
-          <span className="truncate">{lastError}</span>
         </span>
       )}
       {info && <span className="ml-auto">{t.status.version(info.version)}</span>}

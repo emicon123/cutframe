@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { type IpcError, mockCommands } from "@/bindings";
-import { useAppStore } from "@/stores/appStore";
+import { useToastStore } from "@/stores/toastStore";
 import { playheadStore, setPlayhead } from "@/stores/playheadStore";
 import { type ProjectState, useProjectStore } from "@/stores/projectStore";
 import { clearSelection, selectionStore, setGapSelection, setSelection } from "@/stores/selectionStore";
@@ -104,7 +104,7 @@ describe("edit actions over IPC", () => {
 
   afterEach(() => {
     useProjectStore.setState({ state: null });
-    useAppStore.getState().clearError();
+    useToastStore.setState({ toasts: [] });
     clearSelection();
     setPlayhead(0);
   });
@@ -145,7 +145,7 @@ describe("edit actions over IPC", () => {
   it("reports a failed paste and keeps the selection", async () => {
     setSelection(["a"]);
     await pasteAtPlayhead();
-    expect(useAppStore.getState().lastError).not.toBeNull();
+    expect(useToastStore.getState().toasts).not.toEqual([]);
     expect(selectionStore.getState().clips).toEqual(["a"]);
   });
 });

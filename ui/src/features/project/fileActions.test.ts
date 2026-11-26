@@ -42,7 +42,7 @@ function fake(options: {
     pickOpenPath: step("pickOpenPath", options.openPath === undefined ? "C:\\a.cutframe" : options.openPath),
     pickSavePath: step("pickSavePath", options.savePath === undefined ? "C:\\b.cutframe" : options.savePath),
     reportError: (error) => calls.push(`error ${String(error)}`),
-    clearError: () => undefined,
+    showFailure: (context, error) => calls.push(`${context} failed: ${String(error)}`),
     showView: (view) => calls.push(`show ${view}`),
   };
 }
@@ -78,10 +78,20 @@ describe("guardUnsaved (through newProject and requestClose)", () => {
     expect(deps.calls).not.toContain("newProject");
   });
 
-  it("Save: a failed save reports the error and aborts the action", async () => {
+  it("Save: a failed save shows the save error dialog and aborts the action", async () => {
     const deps = fake({ dirty: true, choice: "save", failing: "saveProject" });
     await createFileActions(deps).requestClose();
-    expect(deps.calls).toEqual(["askUnsaved", "saveProject", "error Error: saveProject failed"]);
+    expect(deps.calls).toEqual(["askUnsaved", "saveProject", "save failed: Error: saveProject failed"]);
+  });
+
+  it("Save As: a failed write shows the save error dialog; a failed picker is a toast", async () => {
+    const write = fake({ failing: "saveProjectAs" });
+    expect(await createFileActions(write).saveAs()).toBe(false);
+    expect(write.calls.at(-1)).toBe("save failed: Error: saveProjectAs failed");
+
+    const picker = fake({ failing: "pickSavePath" });
+    expect(await createFileActions(picker).saveAs()).toBe(false);
+    expect(picker.calls.at(-1)).toBe(`error Error: pickSavePath failed`);
   });
 
   it("Don't save: runs the action without saving", async () => {
@@ -133,10 +143,16 @@ describe("openProject", () => {
     expect(deps.calls).toEqual(["pickOpenPath"]);
   });
 
-  it("reports a failed open", async () => {
+  it("shows a failed open in the open error dialog", async () => {
     const deps = fake({ failing: "openProject" });
     await createFileActions(deps).openProject();
-    expect(deps.calls.at(-1)).toBe("error Error: openProject failed");
+    expect(deps.calls.at(-1)).toBe("open failed: Error: openProject failed");
+  });
+
+  it("reports a failed open dialog as a toast", async () => {
+    const deps = fake({ failing: "pickOpenPath" });
+    await createFileActions(deps).openProject();
+    expect(deps.calls.at(-1)).toBe("error Error: pickOpenPath failed");
   });
 });
 
@@ -153,10 +169,10 @@ describe("openPath", () => {
     expect(deps.calls).toEqual(["askUnsaved"]);
   });
 
-  it("reports a failed open like File → Open", async () => {
+  it("shows a failed open like File → Open", async () => {
     const deps = fake({ failing: "openProject" });
     await createFileActions(deps).openPath("D:\\missing.cutframe");
-    expect(deps.calls.at(-1)).toBe("error Error: openProject failed");
+    expect(deps.calls.at(-1)).toBe("open failed: Error: openProject failed");
   });
 
   it("is ignored while another file action is running", async () => {

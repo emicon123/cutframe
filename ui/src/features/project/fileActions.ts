@@ -1,7 +1,9 @@
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 
 import { commands, PROJECT_FILE_EXTENSION } from "@/bindings";
+import { type FailureContext, showErrorDialog } from "@/features/notifications/errorDialog";
 import { t } from "@/i18n";
+import { logError } from "@/ipc/errors";
 import { useAppStore } from "@/stores/appStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore, type View } from "@/stores/uiStore";
@@ -55,8 +57,10 @@ export type FileActionDeps = {
   pickOpenPath: () => Promise<string | null>;
   /** Native save dialog; `null` when cancelled. */
   pickSavePath: (defaultPath: string) => Promise<string | null>;
+  /** A failure that needs no decision: an error toast. */
   reportError: (error: unknown) => void;
-  clearError: () => void;
+  /** A failed open or save: the error dialog (F0.08). */
+  showFailure: (context: FailureContext, error: unknown) => void;
   /** Switches between the home screen and the editor. */
   showView: (view: View) => void;
 };
@@ -66,7 +70,7 @@ export type FileActions = {
   openProject: () => Promise<void>;
   /**
    * Opens the project at `path` (a double-clicked file, `takeLaunchPath`/`openFileRequested`)
-   * behind the unsaved-changes prompt; errors are reported like File → Open. Ignored while another
+   * behind the unsaved-changes prompt; a failure shows the error dialog like File → Open. Ignored while another
    * file action or prompt is running.
    */
   openPath: (path: string) => Promise<void>;
@@ -78,7 +82,7 @@ export type FileActions = {
   /**
    * Replaces the open project with `action` behind the same unsaved-changes prompt as New/Open.
    * Resolves `true` when `action` ran; a rejection of `action` is passed on to the caller (who
-   * shows it), not reported to the status bar.
+   * shows it), not reported as a toast.
    */
   replaceGuarded: (action: () => Promise<unknown>) => Promise<boolean>;
   /**
@@ -104,14 +108,16 @@ export function createFileActions(deps: FileActionDeps): FileActions {
     }
   }
 
-  /** Runs a step; a failure is reported and gives `FAILED`. */
-  async function attempt<T>(step: () => Promise<T>): Promise<T | typeof FAILED> {
+  /**
+   * Runs a step; a failure gives `FAILED` and is shown, as the error dialog for `context`
+   * (a project write or read) or else as a toast.
+   */
+  async function attempt<T>(step: () => Promise<T>, context?: FailureContext): Promise<T | typeof FAILED> {
     try {
-      const value = await step();
-      deps.clearError();
-      return value;
+      return await step();
     } catch (error) {
-      deps.reportError(error);
+      if (context) deps.showFailure(context, error);
+      else deps.reportError(error);
       return FAILED;
     }
   }
@@ -121,11 +127,11 @@ export function createFileActions(deps: FileActionDeps): FileActions {
     if (!state) return false;
     const path = await attempt(() => deps.pickSavePath(defaultSavePath(state.name, state.filePath)));
     if (path === FAILED || path === null) return false;
-    return (await attempt(() => deps.saveProjectAs(path))) !== FAILED;
+    return (await attempt(() => deps.saveProjectAs(path), "save")) !== FAILED;
   }
 
   async function save(): Promise<boolean> {
-    const written = await attempt(() => deps.saveProject());
+    const written = await attempt(() => deps.saveProject(), "save");
     if (written === FAILED) return false;
     return written || saveAs();
   }
@@ -146,10 +152,9 @@ export function createFileActions(deps: FileActionDeps): FileActions {
     return choice === "discard" || (await save());
   }
 
-  /** Opens `path` and shows the editor once it succeeded. */
+  /** Opens `path` and shows the editor once it succeeded; a failure shows the error dialog. */
   async function openInEditor(path: string): Promise<void> {
-    await deps.openProject(path);
-    deps.showView("editor");
+    if ((await attempt(() => deps.openProject(path), "open")) !== FAILED) deps.showView("editor");
   }
 
   return {
@@ -190,7 +195,7 @@ export function createFileActions(deps: FileActionDeps): FileActions {
 const projectFilter = () => [{ name: t.file.filterName, extensions: [PROJECT_FILE_EXTENSION] }];
 
 /** The app's file actions, wired to Rust commands and the native dialogs. */
-export const fileActions = createFileActions({
+export const fileActions: FileActions = createFileActions({
   newProject: () => commands.newProject(null),
   openProject: (path) => commands.openProject(path),
   saveProject: () => commands.saveProject(),
@@ -204,6 +209,9 @@ export const fileActions = createFileActions({
   pickOpenPath: () => openDialog({ multiple: false, directory: false, filters: projectFilter() }),
   pickSavePath: (defaultPath) => saveDialog({ defaultPath, filters: projectFilter() }),
   reportError: (error) => useAppStore.getState().reportError(error),
-  clearError: () => useAppStore.getState().clearError(),
+  showFailure: (context, error) => {
+    logError(error);
+    showErrorDialog(context, error);
+  },
   showView: (view) => useUiStore.getState().setView(view),
 });

@@ -6,6 +6,7 @@ import { recovery } from "@/features/project/recovery";
 import { playheadStore } from "@/stores/playheadStore";
 import { type ProjectState, useProjectStore } from "@/stores/projectStore";
 import { useAppStore } from "@/stores/appStore";
+import { useToastStore } from "@/stores/toastStore";
 import { useUiStore } from "@/stores/uiStore";
 
 import { startProjectSync } from "./projectSync";
@@ -35,7 +36,7 @@ afterEach(() => {
   stop = undefined;
   vi.restoreAllMocks();
   useProjectStore.setState({ state: null });
-  useAppStore.setState({ info: null, lastError: null, gpuNotice: null });
+  useAppStore.setState({ info: null, gpuNotice: null });
   playheadStore.setState({ time: 0, seekGeneration: null });
   useUiStore.setState({ view: "home", started: false });
 });
@@ -86,7 +87,7 @@ describe("startProjectSync", () => {
     stop = startProjectSync();
     await vi.waitFor(() => expect(useProjectStore.getState().state?.revision).toBe(3));
     expect(useAppStore.getState().info?.version).toBe("0.0.0");
-    expect(useAppStore.getState().lastError).toBeNull();
+    expect(useToastStore.getState().toasts).toEqual([]);
     expect(spy).toHaveBeenCalled();
   });
 
