@@ -108,6 +108,9 @@ flowchart LR
   subgraph cache["cache root — local"]
     media["media/v1/&lt;hash&gt;/{poster.jpg,filmstrip-N.jpg,waveform.bin}"]
   end
+  subgraph logs["app_log_dir — local"]
+    log["cutframe.YYYY-MM-DD.log"]
+  end
 ```
 
 | Path | Written by | Contents |
@@ -120,6 +123,7 @@ flowchart LR
 | `recovery/<uuid>.json` | autosave | project snapshot + metadata in one file |
 | `recovery/<uuid>.lock` | the running session | held open for the process lifetime; an unlocked lock file marks a crashed session |
 | `<cache root>/media/v1/…` | preview generation | content-addressed products; LRU eviction at 2 GiB |
+| `logs/cutframe.<date>.log` | `tracing` (`logging.rs`), from the first line of `run` | `%LOCALAPPDATA%\app.cutframe.editor\logs`; daily files, the newest 7 kept; filter from `RUST_LOG`, default `info` (GPU internals `warn`); IPC failures and panics included. `openLogsFolder` opens it in Explorer |
 
 The cache root is `<cacheDir or app_cache_dir>/cutframe-cache`, so Clear cache can only ever delete
 inside a folder this app created. Editor panel sizes live in WebView `localStorage`, not on disk in
@@ -136,7 +140,7 @@ sequenceDiagram
   participant Shell as Tauri setup
   participant UI as React
   OS->>Rust: launch (maybe with a project path)
-  Rust->>Rust: tracing, ffmpeg_check (release: exit 6 if not LGPL)
+  Rust->>Rust: tracing (stdout + log file, panic hook), ffmpeg_check (release: exit 6 if not LGPL)
   Rust->>Rust: debug build exports bindings.ts
   alt --smoke-test
     Rust->>Rust: start watchdog (90 s hard limit)

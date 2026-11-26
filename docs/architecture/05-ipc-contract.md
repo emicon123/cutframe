@@ -60,7 +60,7 @@ const ids = await commands.addClips(sources, { kind: "append" });
   `MediaFileOutcome`, `IpcError`, …); plain enums as lowerCamelCase strings (`"video"`,
   `"probing"`, `"invalidEdit"`).
 - A fallible command returns `Promise<T>` and rejects with an `IpcError`; an infallible one
-  (`getProject`, `getAppInfo`, `getPreferences`, `takeLaunchPath`, `setPreviewRect`,
+  (`getProject`, `getAppInfo`, `getAboutInfo`, `getPreferences`, `takeLaunchPath`, `setPreviewRect`,
   `setPreviewVisible`) returns `Promise<T>` directly.
 - Time is always `number` flicks. Never send seconds; never round to frames in TS.
 
@@ -123,6 +123,8 @@ released, and `edit` only publishes when the closure reports a change (`state.rs
 | `confirmClose` | — | — | Only after Save / Don't save |
 | `takeLaunchPath` | — | `string \| null` | Taken once at start-up |
 | `getAppInfo` | — | `AppInfo` | `version`, `gpu?`, `previewMode` |
+| `getAboutInfo` | — | `AboutInfo` | `version`, `buildProfile` (`debug`/`release`), `commit?`, `ffmpegVersion`, `ffmpegLicense`, `logDir?`; static, for the About dialog |
+| `openLogsFolder` | — | — | Opens the log folder in Explorer (created if missing); `unavailable` when logging to a file is off |
 
 ### 4.3 Media
 
@@ -195,6 +197,13 @@ Every fallible command rejects with `IpcError`, serialized as `{ kind, message }
 `message` is English diagnostics for the log. It is **never** shown to the user: the UI translates
 `kind` (ADR-0003 §4-5). `ipc/error.rs` has a test that asserts the exact `kind` strings, so renaming
 one fails the build rather than silently breaking translations.
+
+**Logged at the boundary.** Every fallible command carries
+`#[tracing::instrument(skip_all, err(Debug, level = "warn"))]`, so each failure lands in the log file
+as `<command>: … error=<Kind>("<message>")` (the message carries the cause). The gesture commands
+`moveClips` and `trimClip` log at `debug`, because a drag over an occupied spot is rejected many
+times a second. A test in `commands.rs` fails when a new fallible command lacks the attribute. Failed
+jobs are logged in `JobHandle::finish` (`warn`; `cancelled` at `info`). Log files: [01](01-system-context.md).
 
 ## 6. Events
 

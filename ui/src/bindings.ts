@@ -226,6 +226,14 @@ export const commands = {
 	 *  `appInfoChanged`.
 	 */
 	getAppInfo: (options?: InvokeOptions) => __TAURI_INVOKE<AppInfo_Serialize>("get_app_info", undefined, options),
+	/**  Version, build, FFmpeg and log folder for the About dialog. Static: call when the dialog opens. */
+	getAboutInfo: (options?: InvokeOptions) => __TAURI_INVOKE<AboutInfo_Serialize>("get_about_info", undefined, options),
+	/**
+	 *  Opens the log folder in the file manager (Explorer), creating it if needed. Fails with
+	 *  `unavailable` when there is no log folder (stdout only) or the shell cannot open it, `io` when
+	 *  the folder cannot be created.
+	 */
+	openLogsFolder: (options?: InvokeOptions) => __TAURI_INVOKE<null>("open_logs_folder", undefined, options),
 	/**
 	 *  Reports where the preview area is. In `native` mode the GPU window follows this rectangle.
 	 *  An empty rectangle hides the preview; a non-empty one never shows a preview that
@@ -434,6 +442,39 @@ export const PROJECT_FILE_EXTENSION = "cutframe" as const;
 export const WAVEFORM_BUCKETS_PER_SECOND = 100 as const;
 
 /* Types */
+/**  Static facts for the About dialog (F0.10). They do not change while the app runs. */
+export type AboutInfo = AboutInfo_Serialize | AboutInfo_Deserialize;
+
+/**  Static facts for the About dialog (F0.10). They do not change while the app runs. */
+export type AboutInfo_Deserialize = {
+	/**  The workspace version, e.g. `0.1.0`. */
+	version: string,
+	buildProfile: BuildProfile,
+	/**  Short git commit hash the binary was built from; `None` when unknown at build time. */
+	commit?: string | null,
+	/**  The linked FFmpeg's `av_version_info()`, e.g. `n7.1.1`. Informative only, never parsed. */
+	ffmpegVersion: string,
+	/**  The linked FFmpeg's licence as it reports it (e.g. `LGPL version 2.1 or later`). */
+	ffmpegLicense: string,
+	/**  The folder with the log files; `None` when logs go to stdout only. */
+	logDir?: string | null,
+};
+
+/**  Static facts for the About dialog (F0.10). They do not change while the app runs. */
+export type AboutInfo_Serialize = {
+	/**  The workspace version, e.g. `0.1.0`. */
+	version: string,
+	buildProfile: BuildProfile,
+	/**  Short git commit hash the binary was built from; `None` when unknown at build time. */
+	commit: string | null,
+	/**  The linked FFmpeg's `av_version_info()`, e.g. `n7.1.1`. Informative only, never parsed. */
+	ffmpegVersion: string,
+	/**  The linked FFmpeg's licence as it reports it (e.g. `LGPL version 2.1 or later`). */
+	ffmpegLicense: string,
+	/**  The folder with the log files; `None` when logs go to stdout only. */
+	logDir: string | null,
+};
+
 /**  A property value that may be animated. */
 export type Animated<T> = Animated_Serialize<T> | Animated_Deserialize<T>;
 
@@ -526,6 +567,9 @@ export type AudioSummary = {
 	/**  Number of audio streams in the file (OBS-style recordings have several). */
 	streamCount: number,
 };
+
+/**  How the running binary was built. A stable key; the UI translates it. */
+export type BuildProfile = "debug" | "release";
 
 /**  The cache folder and what it holds. */
 export type CacheInfo = {
@@ -1544,6 +1588,8 @@ export type MockCommandHandlers = {
     redo: () => boolean | Promise<boolean>,
     jumpToHistory: (args: { index: number }) => boolean | Promise<boolean>,
     getAppInfo: () => AppInfo_Serialize | Promise<AppInfo_Serialize>,
+    getAboutInfo: () => AboutInfo_Serialize | Promise<AboutInfo_Serialize>,
+    openLogsFolder: () => null | Promise<null>,
     setPreviewRect: (args: { rect: PreviewRect }) => void | Promise<void>,
     setPreviewVisible: (args: { visible: boolean }) => void | Promise<void>,
     seek: (args: { time: Time; mode: SeekMode }) => number | Promise<number>,
@@ -1628,6 +1674,8 @@ export function mockCommands(handlers: Partial<MockCommandHandlers> = {}): void 
             case "redo": return mockCommandHandler(mockHandlers.redo, "redo", args);
             case "jump_to_history": return mockCommandHandler(mockHandlers.jumpToHistory, "jump_to_history", args);
             case "get_app_info": return mockCommandHandler(mockHandlers.getAppInfo, "get_app_info", args);
+            case "get_about_info": return mockCommandHandler(mockHandlers.getAboutInfo, "get_about_info", args);
+            case "open_logs_folder": return mockCommandHandler(mockHandlers.openLogsFolder, "open_logs_folder", args);
             case "set_preview_rect": return mockCommandHandler(mockHandlers.setPreviewRect, "set_preview_rect", args);
             case "set_preview_visible": return mockCommandHandler(mockHandlers.setPreviewVisible, "set_preview_visible", args);
             case "seek": return mockCommandHandler(mockHandlers.seek, "seek", args);
