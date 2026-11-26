@@ -378,8 +378,33 @@ export const en = {
     dismiss: "Close",
   },
   help: {
+    checkForUpdates: "Check for updates…",
     openLogs: "Open logs folder",
     about: `About ${APP_NAME}`,
+  },
+  /** Update prompt and Help → Check for updates… (F0.12). */
+  updater: {
+    available: (version: string) => `Version ${version} is available`,
+    currentVersion: (version: string) => `You have version ${version}.`,
+    showNotes: "What's new",
+    hideNotes: "Hide release notes",
+    update: "Update",
+    later: "Later",
+    downloading: (version: string) => `Downloading version ${version}…`,
+    progressLabel: "Update download",
+    /** E.g. "12.0 MB of 40.0 MB (30%)". */
+    progressOf: (downloaded: string, total: string, percent: number) =>
+      `${downloaded} of ${total} (${percent}%)`,
+    ready: (version: string) => `Version ${version} is ready to install`,
+    readyHint: `${APP_NAME} closes, installs the update and starts again.`,
+    restart: "Restart to update",
+    failed: "The update could not be downloaded",
+    retry: "Retry",
+    upToDate: "You're up to date",
+    checkFailed: "Could not check for updates",
+    /** `unavailable`: offline, the server did not answer, or this build does not check. */
+    unreachable: "The update server could not be reached, or this build does not check for updates.",
+    restartFailed: "The app could not restart to update",
   },
   /** F0.09. */
   logs: {

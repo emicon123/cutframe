@@ -5,6 +5,7 @@ import { type ClipId, commands } from "@/bindings";
 import { importFromDialog } from "@/features/media-bin/importActions";
 import { openLogsFolder } from "@/features/notifications/logs";
 import { fileActions } from "@/features/project/fileActions";
+import { checkForUpdates } from "@/features/updater/updater";
 import {
   copySelection,
   cutSelection,
@@ -114,6 +115,7 @@ export type ActionId =
   | "toggle-inspector"
   | "reset-panel-layout"
   | "keyboard-shortcuts"
+  | "check-for-updates"
   | "open-logs-folder"
   | "about"
   | "frame-back"
@@ -390,6 +392,11 @@ export const ACTIONS: readonly Action[] = [
     run: () => ui().setShortcutsOpen(true),
   },
   {
+    id: "check-for-updates",
+    label: t.help.checkForUpdates,
+    run: () => void checkForUpdates({ manual: true }),
+  },
+  {
     id: "open-logs-folder",
     label: t.help.openLogs,
     run: () => void openLogsFolder(),
@@ -584,7 +591,7 @@ export const MENUS: readonly Menu[] = [
   {
     id: "help",
     label: t.menu.help,
-    items: ["keyboard-shortcuts", SEPARATOR, "open-logs-folder", SEPARATOR, "about"],
+    items: ["keyboard-shortcuts", SEPARATOR, "check-for-updates", "open-logs-folder", SEPARATOR, "about"],
   },
 ];
 
