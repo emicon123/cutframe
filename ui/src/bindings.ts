@@ -144,6 +144,64 @@ export const commands = {
 	 *  Errors: `invalidEdit` (no clips, unknown clip), `trackLocked`.
 	 */
 	duplicateClips: (clips: ClipId[], options?: InvokeOptions) => __TAURI_INVOKE<ClipId[]>("duplicate_clips", { clips }, options),
+	/**
+	 *  Links two or more clips on different tracks so they move, trim, split and delete together
+	 *  (`linkClips`, the link toggle's "on"). Their previous links are replaced; a group left with one
+	 *  clip loses its link.
+	 * 
+	 *  Errors: `trackLocked`, `invalidEdit` (fewer than two clips, two clips on one track, unknown
+	 *  clip).
+	 */
+	linkClips: (clips: ClipId[], options?: InvokeOptions) => __TAURI_INVOKE<null>("link_clips", { clips }, options),
+	/**
+	 *  Clears the link of the listed clips (`unlinkClips`, the link toggle's "off"). Only these clips
+	 *  leave their groups (send the whole group to unlink it); a group left with one clip loses its
+	 *  link too.
+	 * 
+	 *  Errors: `trackLocked`, `invalidEdit` (none of the clips is linked, unknown clip).
+	 */
+	unlinkClips: (clips: ClipId[], options?: InvokeOptions) => __TAURI_INVOKE<null>("unlink_clips", { clips }, options),
+	/**
+	 *  Moves the sound of video-track media clips onto audio tracks as one undo step
+	 *  (`detachAudio`) and returns the new audio clips' ids, in track then time order. Each new clip
+	 *  has the video clip's media, source range, time and audio props and is linked to it (joining
+	 *  its existing group); the video clip no longer makes sound. It goes on the first unlocked audio
+	 *  track where its range is free, else on a new audio track at the top of the audio section.
+	 *  Clips without sound (images, colour cards, audio clips, already detached) are skipped.
+	 * 
+	 *  Errors: `trackLocked`, `invalidEdit` (nothing to detach, unknown clip).
+	 */
+	detachAudio: (clips: ClipId[], options?: InvokeOptions) => __TAURI_INVOKE<ClipId[]>("detach_audio", { clips }, options),
+	/**
+	 *  Points a clip at other media (`replaceClipMedia`), keeping its start, duration, link and props;
+	 *  its name becomes the new media's file stem. `sourceIn` stays if the media is long enough from
+	 *  there, else it becomes 0. The clip keeps making sound only if the new media has sound and the
+	 *  clip's sound was not detached. Linked members are not changed.
+	 * 
+	 *  Errors: `mediaTooShort` (the media is shorter than the clip), `trackLocked`, `invalidEdit`
+	 *  (unknown clip or media; media that cannot live on the clip's track: audio-only media on a
+	 *  video track, media without sound on an audio track, any media on a text track).
+	 */
+	replaceClipMedia: (clip: ClipId, media: MediaId, options?: InvokeOptions) => __TAURI_INVOKE<null>("replace_clip_media", { clip, media }, options),
+	/**
+	 *  Turns a track's mute, hide or lock flag on or off (`setTrackMuted`, `setTrackHidden`,
+	 *  `setTrackLocked`). Works on every track, the main track and locked tracks included. Setting
+	 *  the value the flag already has does nothing (no history entry, no event). Muted and hidden
+	 *  only affect playback and export; a locked track rejects edits of its clips (`trackLocked`)
+	 *  and its clips never follow the main track.
+	 * 
+	 *  Errors: `invalidEdit` (unknown track).
+	 */
+	setTrackFlag: (track: TrackId, flag: TrackFlag, value: boolean, options?: InvokeOptions) => __TAURI_INVOKE<null>("set_track_flag", { track, flag, value }, options),
+	/**
+	 *  Moves a track to `index` (top = 0; the index it has afterwards), clamped into its own
+	 *  section: overlay (video, text) tracks stay above the main track, audio tracks below it
+	 *  (`moveTrack`). Clips keep their times. Locked, muted and hidden tracks move too. A move to
+	 *  where the track already is does nothing (no history entry, no event).
+	 * 
+	 *  Errors: `invalidEdit` (the main track, unknown track).
+	 */
+	moveTrack: (track: TrackId, index: number, options?: InvokeOptions) => __TAURI_INVOKE<null>("move_track", { track, index }, options),
 	removeTrack: (id: TrackId, options?: InvokeOptions) => __TAURI_INVOKE<null>("remove_track", { id }, options),
 	renameTrack: (id: TrackId, name: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("rename_track", { id, name }, options),
 	renameProject: (name: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("rename_project", { name }, options),
@@ -689,7 +747,23 @@ export type HistoryLabel = "addTrack" | "removeTrack" | "renameTrack" | "renameP
 /**  Pasting the clipboard (Ctrl+V). */
 "pasteClips" | 
 /**  Duplicating clips (Ctrl+D). */
-"duplicateClips";
+"duplicateClips" | 
+/**  Linking clips so they move, trim, split and delete together (the link toggle's "on"). */
+"linkClips" | 
+/**  Clearing the link of clips (the link toggle's "off"). */
+"unlinkClips" | 
+/**  Moving the sound of video clips onto an audio track. */
+"detachAudio" | 
+/**  Pointing a clip at other media, keeping its place and props. */
+"replaceClipMedia" | 
+/**  Muting or unmuting a track. */
+"setTrackMuted" | 
+/**  Hiding or showing a track. */
+"setTrackHidden" | 
+/**  Locking or unlocking a track. */
+"setTrackLocked" | 
+/**  Reordering a track within its section. */
+"moveTrack";
 
 export type HistoryState = HistoryState_Serialize | HistoryState_Deserialize;
 
@@ -765,7 +839,9 @@ export type IpcError =
  */
 { kind: "overlap"; message: string } | 
 /**  The edit would change a clip on a locked track. The project is unchanged. */
-{ kind: "trackLocked"; message: string };
+{ kind: "trackLocked"; message: string } | 
+/**  `replace_clip_media`: the new media is shorter than the clip. The project is unchanged. */
+{ kind: "mediaTooShort"; message: string };
 
 /**  The end of a job. After `cancel_job` the result is `{ Err: { kind: "cancelled" } }`. */
 export type JobFinished = {
@@ -1296,6 +1372,15 @@ export type Side =
  */
 export type Time = number;
 
+/**  A track's on/off switch. */
+export type TrackFlag = 
+/**  No audio from the track in preview and export. Editing is unaffected. */
+"muted" | 
+/**  No visuals from the track in preview and export. Editing is unaffected. */
+"hidden" | 
+/**  Edits never change the track's clips, and its clips never follow the main track. */
+"locked";
+
 /**  Identifies a track within a project. */
 export type TrackId = string;
 
@@ -1430,6 +1515,12 @@ export type MockCommandHandlers = {
     cutClips: (args: { clips: ClipId[] }) => null | Promise<null>,
     pasteClips: (args: { at: Time }) => ClipId[] | Promise<ClipId[]>,
     duplicateClips: (args: { clips: ClipId[] }) => ClipId[] | Promise<ClipId[]>,
+    linkClips: (args: { clips: ClipId[] }) => null | Promise<null>,
+    unlinkClips: (args: { clips: ClipId[] }) => null | Promise<null>,
+    detachAudio: (args: { clips: ClipId[] }) => ClipId[] | Promise<ClipId[]>,
+    replaceClipMedia: (args: { clip: ClipId; media: MediaId }) => null | Promise<null>,
+    setTrackFlag: (args: { track: TrackId; flag: TrackFlag; value: boolean }) => null | Promise<null>,
+    moveTrack: (args: { track: TrackId; index: number }) => null | Promise<null>,
     removeTrack: (args: { id: TrackId }) => null | Promise<null>,
     renameTrack: (args: { id: TrackId; name: string }) => null | Promise<null>,
     renameProject: (args: { name: string }) => null | Promise<null>,
@@ -1507,6 +1598,12 @@ export function mockCommands(handlers: Partial<MockCommandHandlers> = {}): void 
             case "cut_clips": return mockCommandHandler(mockHandlers.cutClips, "cut_clips", args);
             case "paste_clips": return mockCommandHandler(mockHandlers.pasteClips, "paste_clips", args);
             case "duplicate_clips": return mockCommandHandler(mockHandlers.duplicateClips, "duplicate_clips", args);
+            case "link_clips": return mockCommandHandler(mockHandlers.linkClips, "link_clips", args);
+            case "unlink_clips": return mockCommandHandler(mockHandlers.unlinkClips, "unlink_clips", args);
+            case "detach_audio": return mockCommandHandler(mockHandlers.detachAudio, "detach_audio", args);
+            case "replace_clip_media": return mockCommandHandler(mockHandlers.replaceClipMedia, "replace_clip_media", args);
+            case "set_track_flag": return mockCommandHandler(mockHandlers.setTrackFlag, "set_track_flag", args);
+            case "move_track": return mockCommandHandler(mockHandlers.moveTrack, "move_track", args);
             case "remove_track": return mockCommandHandler(mockHandlers.removeTrack, "remove_track", args);
             case "rename_track": return mockCommandHandler(mockHandlers.renameTrack, "rename_track", args);
             case "rename_project": return mockCommandHandler(mockHandlers.renameProject, "rename_project", args);

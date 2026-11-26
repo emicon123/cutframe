@@ -3,7 +3,7 @@
  * is a single command call with the selection and the playhead passed explicitly; Rust does the
  * edit and pushes the new state through `project-changed`. The deciding logic is pure and tested.
  */
-import { type ClipId, commands, type TrackId } from "@/bindings";
+import { type ClipId, commands, type MediaId, type TrackFlag, type TrackId } from "@/bindings";
 import { run } from "@/stores/appStore";
 import { playheadStore, setPlayhead } from "@/stores/playheadStore";
 import { useProjectStore } from "@/stores/projectStore";
@@ -11,6 +11,7 @@ import { clearSelection, selectionStore, setSelection } from "@/stores/selection
 
 import type { GapSelection } from "./gap";
 import type { HitTrack } from "./hitTest";
+import { linkToggle } from "./linking";
 
 export type DeleteRequest =
   { kind: "gap"; track: TrackId; at: number } | { kind: "clips"; clips: ClipId[]; ripple: boolean };
@@ -101,4 +102,37 @@ export async function toggleMagnetic() {
   const magnetic = useProjectStore.getState().state?.project.magnetic;
   if (magnetic === undefined) return;
   await run(commands.setMagnetic(!magnetic));
+}
+
+/** The link toggle (F1.49): unlinks the selection when it holds a linked clip, else links it. */
+export async function toggleLinkSelection() {
+  const clips = selectedClips();
+  const tracks = useProjectStore.getState().state?.project.tracks ?? [];
+  const next = linkToggle(tracks, clips);
+  if (next === "link") await run(commands.linkClips(clips));
+  else if (next === "unlink") await run(commands.unlinkClips(clips));
+}
+
+/** F1.50: moves the sound of the selected video clips to linked audio clips; selects those. */
+export async function detachSelectedAudio() {
+  selectCreated(await run(commands.detachAudio(selectedClips())));
+}
+
+/** F1.51: points `clip` at `media`, keeping its place, length and properties. */
+export async function replaceClipMedia(clip: ClipId, media: MediaId): Promise<boolean> {
+  return (await run(commands.replaceClipMedia(clip, media))) !== undefined;
+}
+
+/** F1.52: mute, hide or lock a track. */
+export async function setTrackFlag(track: TrackId, flag: TrackFlag, value: boolean) {
+  await run(commands.setTrackFlag(track, flag, value));
+}
+
+/** F1.53: moves a track to its final `index` (Rust clamps it into the track's section). */
+export async function moveTrack(track: TrackId, index: number) {
+  await run(commands.moveTrack(track, index));
+}
+
+export async function removeTrack(track: TrackId) {
+  await run(commands.removeTrack(track));
 }

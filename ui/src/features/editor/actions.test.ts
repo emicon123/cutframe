@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { t } from "@/i18n";
+import type { ProjectState } from "@/stores/projectStore";
 
 import {
   type Action,
@@ -9,6 +10,7 @@ import {
   actionContext,
   actionTooltip,
   bindingLabel,
+  clipFlags,
   getAction,
   type Menu,
   MENUS,
@@ -31,6 +33,8 @@ const ctx = (overrides: Partial<ActionContext> = {}): ActionContext => ({
   magnetic: true,
   clipsSelected: false,
   gapSelected: false,
+  linkToggle: null,
+  canDetach: false,
   ...overrides,
 });
 
@@ -271,9 +275,68 @@ describe("timeline edit actions", () => {
     expect(item(ctx({ magnetic: false }), "magnetic")?.checked).toBe(false);
   });
 
+  it("labels the link toggle by what it would do and enables it only when it applies", () => {
+    expect(item(ctx(), "link-toggle")).toMatchObject({ label: t.edit.link, disabled: true, shortcut: "" });
+    expect(item(ctx({ linkToggle: "link" }), "link-toggle")).toMatchObject({
+      label: t.edit.link,
+      disabled: false,
+    });
+    expect(item(ctx({ linkToggle: "unlink" }), "link-toggle")).toMatchObject({
+      label: t.edit.unlink,
+      disabled: false,
+    });
+    expect(item(ctx({ linkToggle: "link", editorOpen: false }), "link-toggle")?.disabled).toBe(true);
+  });
+
+  it("enables detach audio only for clips that still make sound", () => {
+    expect(item(ctx({ clipsSelected: true }), "detach-audio")?.disabled).toBe(true);
+    expect(item(ctx({ clipsSelected: true, canDetach: true }), "detach-audio")?.disabled).toBe(false);
+  });
+
   it("lists the new shortcuts in the reference panel under Edit", () => {
     const rows = shortcutGroups().find((g) => g.id === "edit")?.rows ?? [];
     expect(rows.find((r) => r.id === "ripple-delete")?.keys).toEqual(["Shift+Del"]);
     expect(rows.find((r) => r.id === "split")?.label).toBe(t.edit.split);
+  });
+});
+
+describe("clipFlags", () => {
+  const state = {
+    project: {
+      tracks: [
+        {
+          id: "v",
+          kind: "video",
+          clips: [
+            {
+              id: "a",
+              duration: 1,
+              link: null,
+              audio: {},
+              source: { kind: "media", media: "m", sourceIn: 0 },
+            },
+          ],
+        },
+        {
+          id: "s",
+          kind: "audio",
+          clips: [
+            {
+              id: "b",
+              duration: 1,
+              link: null,
+              audio: {},
+              source: { kind: "media", media: "m", sourceIn: 0 },
+            },
+          ],
+        },
+      ],
+    },
+  } as unknown as ProjectState;
+
+  it("derives the link toggle and detach from the selected clips", () => {
+    expect(clipFlags(state, ["a", "b"])).toEqual({ linkToggle: "link", canDetach: true });
+    expect(clipFlags(state, ["b"])).toEqual({ linkToggle: null, canDetach: false });
+    expect(clipFlags(null, ["a"])).toEqual({ linkToggle: null, canDetach: false });
   });
 });
