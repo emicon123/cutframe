@@ -3,10 +3,11 @@
 use std::path::{Path, PathBuf};
 
 use app_core::command::{
-    AddClips, AddTrack, Batch, Command, DeleteClips, DeleteGap, Edge, HistoryLabel, MoveClips,
-    NewClipSource, PasteClips, Placement, RemoveClipsOfMedia, RemoveMedia, RemoveTrack,
-    RenameProject, RenameTrack, SetMagnetic, SetProjectSettings, Side, SplitClips, TrackTarget,
-    TrimClip, TrimToPlayhead,
+    AddClips, AddTrack, Batch, Command, DeleteClips, DeleteGap, DetachAudio, Edge, HistoryLabel,
+    LinkClips, MoveClips, MoveTrack, NewClipSource, PasteClips, Placement, RemoveClipsOfMedia,
+    RemoveMedia, RemoveTrack, RenameProject, RenameTrack, ReplaceClipMedia, SetMagnetic,
+    SetProjectSettings, SetTrackFlag, Side, SplitClips, TrackFlag, TrackTarget, TrimClip,
+    TrimToPlayhead, UnlinkClips,
 };
 use app_core::serialization::{self, CURRENT_SCHEMA_VERSION};
 use app_core::{
@@ -351,6 +352,142 @@ pub fn duplicate_clips(
         Ok(Some(ids))
     })?;
     Ok(ids.unwrap_or_default())
+}
+
+/// Links two or more clips on different tracks so they move, trim, split and delete together
+/// (`linkClips`, the link toggle's "on"). Their previous links are replaced; a group left with one
+/// clip loses its link.
+///
+/// Errors: `trackLocked`, `invalidEdit` (fewer than two clips, two clips on one track, unknown
+/// clip).
+#[tauri::command]
+#[specta::specta]
+pub fn link_clips(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    clips: Vec<ClipId>,
+) -> Result<(), IpcError> {
+    state.edit(&app, |doc| {
+        doc.execute(Box::new(LinkClips::new(clips))).map(Some)
+    })?;
+    Ok(())
+}
+
+/// Clears the link of the listed clips (`unlinkClips`, the link toggle's "off"). Only these clips
+/// leave their groups (send the whole group to unlink it); a group left with one clip loses its
+/// link too.
+///
+/// Errors: `trackLocked`, `invalidEdit` (none of the clips is linked, unknown clip).
+#[tauri::command]
+#[specta::specta]
+pub fn unlink_clips(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    clips: Vec<ClipId>,
+) -> Result<(), IpcError> {
+    state.edit(&app, |doc| {
+        doc.execute(Box::new(UnlinkClips::new(clips))).map(Some)
+    })?;
+    Ok(())
+}
+
+/// Moves the sound of video-track media clips onto audio tracks as one undo step
+/// (`detachAudio`) and returns the new audio clips' ids, in track then time order. Each new clip
+/// has the video clip's media, source range, time and audio props and is linked to it (joining
+/// its existing group); the video clip no longer makes sound. It goes on the first unlocked audio
+/// track where its range is free, else on a new audio track at the top of the audio section.
+/// Clips without sound (images, colour cards, audio clips, already detached) are skipped.
+///
+/// Errors: `trackLocked`, `invalidEdit` (nothing to detach, unknown clip).
+#[tauri::command]
+#[specta::specta]
+pub fn detach_audio(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    clips: Vec<ClipId>,
+) -> Result<Vec<ClipId>, IpcError> {
+    let added = state.edit(&app, |doc| {
+        let before = doc.snapshot();
+        doc.execute(Box::new(DetachAudio::new(clips)))?;
+        Ok(Some(app_core::timeline::added_clips(
+            &before,
+            doc.project(),
+        )))
+    })?;
+    Ok(added.unwrap_or_default())
+}
+
+/// Points a clip at other media (`replaceClipMedia`), keeping its start, duration, link and props;
+/// its name becomes the new media's file stem. `sourceIn` stays if the media is long enough from
+/// there, else it becomes 0. The clip keeps making sound only if the new media has sound and the
+/// clip's sound was not detached. Linked members are not changed.
+///
+/// Errors: `mediaTooShort` (the media is shorter than the clip), `trackLocked`, `invalidEdit`
+/// (unknown clip or media; media that cannot live on the clip's track: audio-only media on a
+/// video track, media without sound on an audio track, any media on a text track).
+#[tauri::command]
+#[specta::specta]
+pub fn replace_clip_media(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    clip: ClipId,
+    media: MediaId,
+) -> Result<(), IpcError> {
+    state.edit(&app, |doc| {
+        doc.execute(Box::new(ReplaceClipMedia::new(clip, media)))
+            .map(Some)
+    })?;
+    Ok(())
+}
+
+/// Turns a track's mute, hide or lock flag on or off (`setTrackMuted`, `setTrackHidden`,
+/// `setTrackLocked`). Works on every track, the main track and locked tracks included. Setting
+/// the value the flag already has does nothing (no history entry, no event). Muted and hidden
+/// only affect playback and export; a locked track rejects edits of its clips (`trackLocked`)
+/// and its clips never follow the main track.
+///
+/// Errors: `invalidEdit` (unknown track).
+#[tauri::command]
+#[specta::specta]
+pub fn set_track_flag(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    track: TrackId,
+    flag: TrackFlag,
+    value: bool,
+) -> Result<(), IpcError> {
+    let command = SetTrackFlag::new(track, flag, value);
+    state.edit(&app, |doc| {
+        if !command.changes(doc.project())? {
+            return Ok(None);
+        }
+        doc.execute(Box::new(command)).map(Some)
+    })?;
+    Ok(())
+}
+
+/// Moves a track to `index` (top = 0; the index it has afterwards), clamped into its own
+/// section: overlay (video, text) tracks stay above the main track, audio tracks below it
+/// (`moveTrack`). Clips keep their times. Locked, muted and hidden tracks move too. A move to
+/// where the track already is does nothing (no history entry, no event).
+///
+/// Errors: `invalidEdit` (the main track, unknown track).
+#[tauri::command]
+#[specta::specta]
+pub fn move_track(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    track: TrackId,
+    index: u32,
+) -> Result<(), IpcError> {
+    let command = MoveTrack::new(track, index as usize);
+    state.edit(&app, |doc| {
+        if !command.changes(doc.project())? {
+            return Ok(None);
+        }
+        doc.execute(Box::new(command)).map(Some)
+    })?;
+    Ok(())
 }
 
 #[tauri::command]

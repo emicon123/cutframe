@@ -39,6 +39,7 @@ describe("errorKindText", () => {
     "cancelled",
     "overlap",
     "trackLocked",
+    "mediaTooShort",
   ])("translates %s", (kind) => {
     expect(errorKindText(kind)).toBe(t.errors.kinds[kind]);
     expect(errorKindText(kind)).not.toBe(kind);

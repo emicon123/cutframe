@@ -48,4 +48,6 @@ cargo test -p app-core
 ## Documentation
 
 - `CLAUDE.md`: architecture rules, repository layout, agent responsibilities
+- `docs/architecture/`: how the system works today (start with `README.md`), plus `diagrams/`
 - `docs/adr/`: architecture decisions (start with `0001-tech-stack.md`)
+- `docs/design/`: designs for features that are not built yet

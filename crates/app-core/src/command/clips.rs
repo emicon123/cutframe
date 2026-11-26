@@ -140,7 +140,7 @@ fn new_clip(project: &Project, source: &NewClipSource) -> Result<(Clip, Lane), C
         .rsplit_once('.')
         .map_or(name, |(stem, _)| stem)
         .to_owned();
-    let has_audio = asset.kind != MediaKind::Image && !asset.info.audio.is_empty();
+    let has_audio = has_sound(asset);
     let (duration, lane) = match asset.kind {
         MediaKind::Image => (DEFAULT_IMAGE_DURATION, Lane::Video),
         MediaKind::Video => (asset.info.duration.unwrap_or_default(), Lane::Video),
@@ -397,5 +397,125 @@ impl Command for RemoveClipsOfMedia {
     }
 }
 
+/// Points a clip at other media (`replaceClipMedia`, design §4.14), keeping its start, duration,
+/// link and props; its name becomes the new media's default clip name.
+///
+/// `source_in` stays when the new media is long enough from there, else it becomes 0; images
+/// always use 0. The clip's `audio` becomes `None` when the new media has no sound, stays `None`
+/// when the sound was detached (a video-track clip without `audio` whose old media had sound),
+/// and otherwise keeps its props (or gets defaults). A colour clip on a video track becomes a
+/// media clip. Nothing moves, so nothing follows, and linked members are not changed.
+///
+/// Fails, changing nothing, with [`CommandError::MediaNotFound`], [`CommandError::TrackLocked`],
+/// [`CommandError::TrackKindMismatch`] (audio-only media on a video track, media without sound on
+/// an audio track, any media on a text track) and [`CommandError::MediaTooShort`] (the media is
+/// shorter than the clip).
+#[derive(Debug)]
+pub struct ReplaceClipMedia {
+    clip: ClipId,
+    media: MediaId,
+    previous: Option<Clip>,
+}
+
+impl ReplaceClipMedia {
+    pub fn new(clip: ClipId, media: MediaId) -> Self {
+        Self {
+            clip,
+            media,
+            previous: None,
+        }
+    }
+}
+
+/// Whether clips of `asset` make sound: video and audio media with an audio stream.
+fn has_sound(asset: &crate::media::MediaAsset) -> bool {
+    asset.kind != MediaKind::Image && !asset.info.audio.is_empty()
+}
+
+impl Command for ReplaceClipMedia {
+    fn label(&self) -> HistoryLabel {
+        HistoryLabel::ReplaceClipMedia
+    }
+
+    fn apply(&mut self, project: &mut Project) -> Result<(), CommandError> {
+        let (track, old) = project
+            .clip(self.clip)
+            .ok_or(CommandError::ClipNotFound(self.clip))?;
+        let track = &project.tracks[track];
+        if track.locked {
+            return Err(CommandError::TrackLocked(track.id));
+        }
+        let asset = project
+            .media_asset(self.media)
+            .ok_or(CommandError::MediaNotFound(self.media))?;
+        let sound = has_sound(asset);
+        let fits = match track.kind {
+            TrackKind::Video => asset.kind != MediaKind::Audio,
+            TrackKind::Audio => sound,
+            TrackKind::Text => false,
+        };
+        if !fits {
+            return Err(CommandError::TrackKindMismatch);
+        }
+        let source_in = match asset.info.duration {
+            None => Time::ZERO,
+            Some(length) if old.duration > length => return Err(CommandError::MediaTooShort),
+            Some(length) if old.source_in() + old.duration <= length => old.source_in(),
+            Some(_) => Time::ZERO,
+        };
+        let detached = track.kind == TrackKind::Video
+            && old.audio.is_none()
+            && old
+                .source
+                .media()
+                .and_then(|m| project.media_asset(m))
+                .is_some_and(has_sound);
+        let audio = match (sound, detached) {
+            (true, false) => Some(old.audio.clone().unwrap_or_default()),
+            _ => None,
+        };
+        let name = asset.file_name();
+        let name = name
+            .rsplit_once('.')
+            .map_or(name, |(stem, _)| stem)
+            .to_owned();
+        let clip = Clip {
+            name,
+            source: ClipSource::Media {
+                media: self.media,
+                source_in,
+            },
+            audio,
+            ..old.clone()
+        };
+        let mut next = project.clone();
+        let (track, _) = next.clip(self.clip).expect("clip exists");
+        let slot = next.tracks[track]
+            .clips
+            .iter_mut()
+            .find(|c| c.id == self.clip)
+            .expect("clip is on its track");
+        let previous = std::mem::replace(slot, clip);
+        next.validate().map_err(CommandError::InvalidResult)?;
+        project.tracks = next.tracks;
+        self.previous = Some(previous);
+        Ok(())
+    }
+
+    fn revert(&mut self, project: &mut Project) {
+        if let Some(previous) = self.previous.take()
+            && let Some((track, _)) = project.clip(previous.id)
+            && let Some(slot) = project.tracks[track]
+                .clips
+                .iter_mut()
+                .find(|c| c.id == previous.id)
+        {
+            *slot = previous;
+        }
+    }
+}
+
+#[cfg(test)]
+mod replace_tests;
 #[cfg(test)]
 mod tests;

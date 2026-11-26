@@ -4,15 +4,21 @@ mod arrange;
 mod clipboard;
 mod clips;
 mod cut;
+mod linking;
 #[cfg(test)]
 mod sequence_tests;
 #[cfg(test)]
 mod test_support;
+mod tracks;
 
 pub use arrange::{Edge, MoveClips, TrimClip};
 pub use clipboard::{ClipboardContent, ClipboardItem, PasteClips};
-pub use clips::{AddClips, NewClipSource, Placement, RemoveClipsOfMedia, TrackTarget};
+pub use clips::{
+    AddClips, NewClipSource, Placement, RemoveClipsOfMedia, ReplaceClipMedia, TrackTarget,
+};
 pub use cut::{DeleteClips, DeleteGap, SetMagnetic, Side, SplitClips, TrimToPlayhead};
+pub use linking::{DetachAudio, LinkClips, UnlinkClips};
+pub use tracks::{MoveTrack, SetTrackFlag, TrackFlag};
 
 use serde::{Deserialize, Serialize};
 
@@ -63,6 +69,22 @@ pub enum HistoryLabel {
     PasteClips,
     /// Duplicating clips (Ctrl+D).
     DuplicateClips,
+    /// Linking clips so they move, trim, split and delete together (the link toggle's "on").
+    LinkClips,
+    /// Clearing the link of clips (the link toggle's "off").
+    UnlinkClips,
+    /// Moving the sound of video clips onto an audio track.
+    DetachAudio,
+    /// Pointing a clip at other media, keeping its place and props.
+    ReplaceClipMedia,
+    /// Muting or unmuting a track.
+    SetTrackMuted,
+    /// Hiding or showing a track.
+    SetTrackHidden,
+    /// Locking or unlocking a track.
+    SetTrackLocked,
+    /// Reordering a track within its section.
+    MoveTrack,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -127,6 +149,12 @@ pub enum CommandError {
     /// A delete-gap found no gap at that time on the track.
     #[error("no gap there")]
     NoGap,
+    /// A link needs at least two clips, each on a different track.
+    #[error("a link needs two or more clips on different tracks")]
+    InvalidLink,
+    /// The replacement media is shorter than the clip.
+    #[error("the media is shorter than the clip")]
+    MediaTooShort,
     /// The edit would leave an invalid project (e.g. past the largest supported time). Commands
     /// that build clips check their result, so this never leaves the project broken.
     #[error("the edit would make the project invalid: {0}")]

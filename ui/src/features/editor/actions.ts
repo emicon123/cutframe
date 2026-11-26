@@ -1,19 +1,22 @@
 import { useStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 
-import { commands } from "@/bindings";
+import { type ClipId, commands } from "@/bindings";
 import { importFromDialog } from "@/features/media-bin/importActions";
 import { fileActions } from "@/features/project/fileActions";
 import {
   copySelection,
   cutSelection,
   deleteSelection,
+  detachSelectedAudio,
   duplicateSelection,
   pasteAtPlayhead,
   splitAtPlayhead,
+  toggleLinkSelection,
   toggleMagnetic,
   trimToPlayhead,
 } from "@/features/timeline/editActions";
+import { canDetachAudio, linkToggle, type LinkToggle } from "@/features/timeline/linking";
 import { historyLabelText, t } from "@/i18n";
 import { run } from "@/stores/appStore";
 import { type ProjectState, useProjectStore } from "@/stores/projectStore";
@@ -53,10 +56,17 @@ export type ActionContext = {
   clipsSelected: boolean;
   /** A gap on the timeline is selected. */
   gapSelected: boolean;
+  /** What the link toggle would do with the selected clips (F1.49). */
+  linkToggle: LinkToggle;
+  /** A selected clip still plays its own sound, so detach audio applies (F1.50). */
+  canDetach: boolean;
 };
 
 /** The selection-store part of the context. */
 export type SelectionFlags = Pick<ActionContext, "clipsSelected" | "gapSelected">;
+
+/** The part that depends on both the selection and the clips it names. */
+export type ClipFlags = Pick<ActionContext, "linkToggle" | "canDetach">;
 
 /** The UI-store part of the context. */
 export type UiFlags = Pick<
@@ -86,6 +96,8 @@ export type ActionId =
   | "copy"
   | "paste"
   | "duplicate"
+  | "link-toggle"
+  | "detach-audio"
   | "magnetic"
   | "preferences"
   | "history-panel"
@@ -295,6 +307,22 @@ export const ACTIONS: readonly Action[] = [
     run: () => void duplicateSelection(),
   },
   {
+    id: "link-toggle",
+    label: t.edit.linkToggle,
+    // No shortcut: the design gives none (timeline design §2).
+    menuLabel: (ctx) => (ctx.linkToggle === "unlink" ? t.edit.unlink : t.edit.link),
+    scope: "timeline",
+    enabled: (ctx) => editing(ctx) && ctx.linkToggle !== null,
+    run: () => void toggleLinkSelection(),
+  },
+  {
+    id: "detach-audio",
+    label: t.edit.detachAudio,
+    scope: "timeline",
+    enabled: (ctx) => editing(ctx) && ctx.canDetach,
+    run: () => void detachSelectedAudio(),
+  },
+  {
     id: "magnetic",
     label: t.edit.magnetic,
     enabled: editing,
@@ -388,6 +416,9 @@ export const MENUS: readonly Menu[] = [
       "trim-left",
       "trim-right",
       SEPARATOR,
+      "link-toggle",
+      "detach-audio",
+      SEPARATOR,
       "magnetic",
       SEPARATOR,
       "select-all",
@@ -423,10 +454,13 @@ const NO_UI_FLAGS: UiFlags = {
 
 const NO_SELECTION: SelectionFlags = { clipsSelected: false, gapSelected: false };
 
+const NO_CLIP_FLAGS: ClipFlags = { linkToggle: null, canDetach: false };
+
 export function actionContext(
   state: ProjectState | null,
   flags: UiFlags = NO_UI_FLAGS,
   selection: SelectionFlags = NO_SELECTION,
+  clips: ClipFlags = NO_CLIP_FLAGS,
 ): ActionContext {
   const history = state?.history;
   return {
@@ -438,6 +472,7 @@ export function actionContext(
     magnetic: state?.project.magnetic ?? false,
     ...flags,
     ...selection,
+    ...clips,
   };
 }
 
@@ -458,12 +493,20 @@ function selectionFlags(s: SelectionStoreState): SelectionFlags {
   return { clipsSelected: s.clips.length > 0, gapSelected: s.gap !== null };
 }
 
+export function clipFlags(state: ProjectState | null, selected: readonly ClipId[]): ClipFlags {
+  const tracks = state?.project.tracks ?? [];
+  return { linkToggle: linkToggle(tracks, selected), canDetach: canDetachAudio(tracks, selected) };
+}
+
 /** The current context, for the keyboard handler (outside React). */
 export function currentActionContext(): ActionContext {
+  const state = useProjectStore.getState().state;
+  const selection = selectionStore.getState();
   return actionContext(
-    useProjectStore.getState().state,
+    state,
     uiFlags(useUiStore.getState()),
-    selectionFlags(selectionStore.getState()),
+    selectionFlags(selection),
+    clipFlags(state, selection.clips),
   );
 }
 
@@ -471,8 +514,11 @@ export function currentActionContext(): ActionContext {
 export function useActionContext(): ActionContext {
   const flags = useUiStore(useShallow(uiFlags));
   const selection = useStore(selectionStore, useShallow(selectionFlags));
+  const selected = useStore(selectionStore, (s) => s.clips);
+  // Shallow-compared, so a project change (a drag update) re-renders only when a flag changes.
+  const clips = useProjectStore(useShallow((s) => clipFlags(s.state, selected)));
   const project = useProjectStore(useShallow((s) => actionContext(s.state)));
-  return { ...project, ...flags, ...selection };
+  return { ...project, ...flags, ...selection, ...clips };
 }
 
 export function getAction(id: ActionId, actions: readonly Action[] = ACTIONS): Action {

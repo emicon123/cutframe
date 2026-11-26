@@ -48,8 +48,26 @@ enum Op {
     Duplicate {
         clip: usize,
     },
-    Lock {
+    Flag {
         track: usize,
+        flag: usize,
+    },
+    Link {
+        clips: Vec<usize>,
+    },
+    Unlink {
+        clip: usize,
+    },
+    Detach {
+        clip: usize,
+    },
+    Replace {
+        clip: usize,
+        media: usize,
+    },
+    MoveTrack {
+        track: usize,
+        index: u32,
     },
     Undo,
     Redo,
@@ -70,7 +88,12 @@ fn op() -> impl Strategy<Value = Op> {
         1 => any::<bool>().prop_map(Op::Magnetic),
         2 => (0..64usize, ms).prop_map(|(clip, ms)| Op::Paste { clip, ms }),
         2 => (0..64usize).prop_map(|clip| Op::Duplicate { clip }),
-        1 => (0..6usize).prop_map(|track| Op::Lock { track }),
+        2 => (0..6usize, 0..3usize).prop_map(|(track, flag)| Op::Flag { track, flag }),
+        2 => prop::collection::vec(0..64usize, 0..4).prop_map(|clips| Op::Link { clips }),
+        1 => (0..64usize).prop_map(|clip| Op::Unlink { clip }),
+        2 => (0..64usize).prop_map(|clip| Op::Detach { clip }),
+        2 => (0..64usize, 0..4usize).prop_map(|(clip, media)| Op::Replace { clip, media }),
+        1 => (0..6usize, 0..7u32).prop_map(|(track, index)| Op::MoveTrack { track, index }),
         1 => Just(Op::Undo),
         1 => Just(Op::Redo),
     ]
@@ -81,9 +104,12 @@ fn ms(ms: i64) -> Time {
 }
 
 /// Video and colour clips on the main track, overlays over them (one pair linked to sound), a
-/// music bed and loose sound on the audio track.
+/// music bed and loose sound on the audio track. Media: `empty()`'s plus a 2 s video with sound.
 fn sample(magnetic: bool, lengths: &[u8]) -> Project {
     let mut p = empty();
+    let mut short = crate::media::samples::video(9);
+    short.info.duration = Some(t(2.0));
+    p.media.push(short);
     p.magnetic = magnetic;
     let mut at = 0.0;
     for (i, &len) in lengths.iter().enumerate() {
@@ -178,15 +204,44 @@ fn command(
         Op::Duplicate { clip } => {
             Box::new(PasteClips::duplicate(project, &[pick(project, clip)?]).ok()?)
         }
-        Op::Lock { .. } | Op::Undo | Op::Redo => return None,
+        Op::Flag { track: tr, flag } => {
+            let id = track(tr)?;
+            let tr = project.track(id)?;
+            let (flag, current) = [
+                (TrackFlag::Muted, tr.muted),
+                (TrackFlag::Hidden, tr.hidden),
+                (TrackFlag::Locked, tr.locked),
+            ][flag % 3];
+            Box::new(SetTrackFlag::new(id, flag, !current))
+        }
+        Op::Link { ref clips } => {
+            let ids = clips
+                .iter()
+                .map(|&c| pick(project, c))
+                .collect::<Option<Vec<_>>>()?;
+            Box::new(LinkClips::new(ids))
+        }
+        Op::Unlink { clip } => Box::new(UnlinkClips::new(vec![pick(project, clip)?])),
+        Op::Detach { clip } => Box::new(DetachAudio::new(vec![pick(project, clip)?])),
+        Op::Replace { clip, media } => {
+            let media = project.media.get(media % project.media.len())?.id;
+            Box::new(ReplaceClipMedia::new(pick(project, clip)?, media))
+        }
+        Op::MoveTrack { track: tr, index } => Box::new(MoveTrack::new(track(tr)?, index as usize)),
+        Op::Undo | Op::Redo => return None,
     })
 }
 
 fn check_invariants(project: &Project) -> Result<(), TestCaseError> {
     prop_assert_eq!(project.validate(), Ok(()));
     for c in project.clips() {
-        if let Some(end) = c.source_end() {
-            prop_assert!(c.source_in() >= Time::ZERO && end <= t(5.0));
+        let length = c
+            .source
+            .media()
+            .and_then(|m| project.media_asset(m))
+            .and_then(|m| m.info.duration);
+        if let (Some(end), Some(length)) = (c.source_end(), length) {
+            prop_assert!(c.source_in() >= Time::ZERO && end <= length);
         }
     }
     Ok(())
@@ -211,15 +266,6 @@ proptest! {
             match op {
                 Op::Undo => { doc.undo(); }
                 Op::Redo => { doc.redo(); }
-                Op::Lock { track } => {
-                    // Locking is not a command yet (task 0290): change the base and restart the
-                    // history from there.
-                    let mut project = doc.project().clone();
-                    let n = project.tracks.len();
-                    let track = &mut project.tracks[track % n];
-                    track.locked = !track.locked;
-                    doc = Document::new(project);
-                }
                 _ => {
                     let before = doc.project().clone();
                     let Some(command) = command(&before, op, &mut clipboard) else { continue };
@@ -236,18 +282,20 @@ proptest! {
             }
             check_invariants(doc.project())?;
         }
-        let base = doc.history_cursor();
+        let cursor = doc.history_cursor();
         let end = doc.project().clone();
         while doc.undo() {}
         check_invariants(doc.project())?;
+        prop_assert_eq!(doc.project(), &start, "undo of everything gives the start state");
         while doc.redo() {}
         prop_assert_eq!(doc.history_cursor(), doc.history_len());
-        if base == doc.history_len() {
+        if cursor == doc.history_len() {
             prop_assert_eq!(doc.project(), &end, "redo of everything gives the end state");
         }
     }
 
-    /// Undo of a whole sequence without locks gives the exact start state.
+    /// Undo of a whole sequence (locks, links, detaches and track moves included) gives the
+    /// exact start state.
     #[test]
     fn undoing_a_whole_sequence_restores_the_start(
         magnetic in any::<bool>(),

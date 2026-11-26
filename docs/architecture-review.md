@@ -9,7 +9,7 @@
   [ADR-0005](adr/0005-preview-presentation-per-platform.md) and
   [ADR-0006](adr/0006-edit-transactions.md).
 - **Method:** read all Rust, UI, CI and config sources. Ran `cargo metadata` to list crate licences
-  (520 packages). Nothing was built. Overview: [architecture.md](architecture.md).
+  (520 packages). Nothing was built. Overview: [architecture/README.md](architecture/README.md).
 
 **Status key:** **OK** = conforms. **Drift** = the code contradicts a doc. **Gap** = a decision is missing
 or undocumented. **Risk** = allowed today but likely to hurt later. **Obsolete** = withdrawn by a

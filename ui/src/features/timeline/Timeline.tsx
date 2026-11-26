@@ -1,4 +1,4 @@
-import { AudioLines, Film, FoldHorizontal, Lock, Magnet, Plus, Scissors, Trash2, Type } from "lucide-react";
+import { AudioLines, Film, FoldHorizontal, Link2, Magnet, Plus, Scissors, Trash2, Type } from "lucide-react";
 import { type ComponentType, useEffect, useMemo, useRef } from "react";
 
 import {
@@ -31,17 +31,11 @@ import { useProjectStore } from "@/stores/projectStore";
 import { selectionStore } from "@/stores/selectionStore";
 import { useUiStore } from "@/stores/uiStore";
 
-import {
-  DEFAULT_VIEWPORT,
-  RULER_HEIGHT,
-  TRACK_GAP,
-  TRACK_HEIGHT,
-  scrollBy,
-  trackTop,
-  zoomAt,
-  type Viewport,
-} from "./geometry";
+import { DEFAULT_VIEWPORT, TRACK_GAP, scrollBy, trackTop, zoomAt, type Viewport } from "./geometry";
 import { addMediaClips } from "./addActions";
+import { ClipContextMenu } from "./ClipContextMenu";
+import { type Hit, hitTest } from "./hitTest";
+import { TrackHeaders } from "./TrackHeaders";
 import { locateGap } from "./gap";
 import { dropPayload, dropPlacement, dropPreview, type DropPreview } from "./drop";
 import { attachPointerInteraction, type PointerOverlay } from "./pointer";
@@ -49,12 +43,6 @@ import { drawTimeline, readTheme, type TimelineTheme } from "./renderer";
 
 const EMPTY_TRACKS: TrackView[] = [];
 const EMPTY_MEDIA: MediaView_Serialize[] = [];
-
-const KIND_ICONS: Record<TrackKind, ComponentType<{ className?: string }>> = {
-  video: Film,
-  audio: AudioLines,
-  text: Type,
-};
 
 export function Timeline() {
   const tracks = useProjectStore((s) => s.state?.project.tracks ?? EMPTY_TRACKS);
@@ -70,12 +58,7 @@ export function Timeline() {
     <div className="flex h-full flex-col bg-timeline">
       <TimelineToolbar />
       <div className="flex min-h-0 flex-1 overflow-y-auto">
-        <div className="w-52 shrink-0 border-r bg-panel" style={{ minHeight: contentHeight }}>
-          <div style={{ height: RULER_HEIGHT }} className="border-b" />
-          {tracks.map((track) => (
-            <TrackHeader key={track.id} track={track} main={track.id === mainTrack} />
-          ))}
-        </div>
+        <TrackHeaders tracks={tracks} mainTrack={mainTrack} height={contentHeight} />
         <TimelineCanvas
           tracks={tracks}
           mainTrack={mainTrack}
@@ -97,6 +80,7 @@ function TimelineToolbar() {
       <div className="mx-1 h-5 w-px bg-border" aria-hidden />
       <ActionButton id="split" icon={Scissors} />
       <ActionButton id="delete" icon={Trash2} />
+      <ActionButton id="link-toggle" icon={Link2} />
       <div className="mx-1 h-5 w-px bg-border" aria-hidden />
       <ActionButton id="magnetic" icon={FoldHorizontal} />
       <SnappingToggle />
@@ -176,50 +160,6 @@ function SnappingToggle() {
       </TooltipTrigger>
       <TooltipContent>{snapping ? t.timeline.snappingOn : t.timeline.snappingOff}</TooltipContent>
     </Tooltip>
-  );
-}
-
-function TrackHeader({ track, main }: { track: TrackView; main: boolean }) {
-  const Icon = KIND_ICONS[track.kind];
-  const removeLabel = t.timeline.removeTrack(track.name);
-  return (
-    <div
-      className={cn(
-        "group flex items-center gap-2 border-b border-l-2 border-transparent px-3",
-        main && "border-l-primary bg-accent/40",
-      )}
-      style={{ height: TRACK_HEIGHT, marginBottom: TRACK_GAP }}
-    >
-      <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-      <span className="min-w-0 flex-1 truncate font-medium">{track.name}</span>
-      {main && (
-        <span
-          className="rounded-sm bg-primary/20 px-1 text-2xs leading-4 font-semibold text-primary"
-          title={t.timeline.mainTrackTip}
-        >
-          {t.timeline.mainTrack}
-        </span>
-      )}
-      {track.locked && (
-        <span title={t.timeline.locked}>
-          <Lock className="size-3.5 text-muted-foreground" aria-hidden />
-          <span className="sr-only">{t.timeline.locked}</span>
-        </span>
-      )}
-      {/* The main track cannot be removed (timeline design §3.3). */}
-      {!main && (
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-7 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-          aria-label={removeLabel}
-          title={removeLabel}
-          onClick={() => void run(commands.removeTrack(track.id))}
-        >
-          <Trash2 className="size-3.5" aria-hidden />
-        </Button>
-      )}
-    </div>
   );
 }
 
@@ -365,21 +305,31 @@ function TimelineCanvas({
     };
   }, []);
 
+  const hitAt = (clientX: number, clientY: number): Hit | null => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    const tracks = useProjectStore.getState().state?.project.tracks ?? [];
+    return hitTest(clientX - rect.left, clientY - rect.top, tracks, viewportRef.current);
+  };
+
   return (
-    <div
-      ref={containerRef}
-      className={cn("relative min-w-0 flex-1", hoveringFiles && "ring-2 ring-primary ring-inset")}
-      style={{ minHeight: contentHeight }}
-    >
-      <canvas ref={canvasRef} className="absolute inset-0 size-full" />
-      {hoveringFiles && (
-        <div className="pointer-events-none absolute inset-x-0 top-8 flex justify-center">
-          <span className="rounded-md bg-popover px-2 py-1 text-xs font-medium text-primary shadow-md">
-            {t.timeline.dropFiles}
-          </span>
-        </div>
-      )}
-    </div>
+    <ClipContextMenu hitAt={hitAt}>
+      <div
+        ref={containerRef}
+        className={cn("relative min-w-0 flex-1", hoveringFiles && "ring-2 ring-primary ring-inset")}
+        style={{ minHeight: contentHeight }}
+      >
+        <canvas ref={canvasRef} className="absolute inset-0 size-full" />
+        {hoveringFiles && (
+          <div className="pointer-events-none absolute inset-x-0 top-8 flex justify-center">
+            <span className="rounded-md bg-popover px-2 py-1 text-xs font-medium text-primary shadow-md">
+              {t.timeline.dropFiles}
+            </span>
+          </div>
+        )}
+      </div>
+    </ClipContextMenu>
   );
 }
 

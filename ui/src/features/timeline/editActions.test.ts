@@ -9,9 +9,14 @@ import { clearSelection, selectionStore, setGapSelection, setSelection } from "@
 import {
   deleteRequest,
   deleteSelection,
+  detachSelectedAudio,
+  moveTrack,
   pasteAtPlayhead,
   playheadAfterTrimLeft,
+  replaceClipMedia,
+  setTrackFlag,
   splitAtPlayhead,
+  toggleLinkSelection,
   trimToPlayhead,
 } from "./editActions";
 
@@ -142,5 +147,106 @@ describe("edit actions over IPC", () => {
     await pasteAtPlayhead();
     expect(useAppStore.getState().lastError).not.toBeNull();
     expect(selectionStore.getState().clips).toEqual(["a"]);
+  });
+});
+
+describe("link, detach and track actions over IPC", () => {
+  let calls: unknown[] = [];
+  const src = { kind: "media", media: "m", sourceIn: 0 };
+  const state = {
+    revision: 1,
+    project: {
+      mainTrack: "main",
+      magnetic: true,
+      tracks: [
+        {
+          id: "main",
+          kind: "video",
+          locked: false,
+          clips: [
+            { ...clip("v", 0, 100), source: src, link: null, audio: {} },
+            { ...clip("w", 100, 100), source: src, link: "L", audio: null },
+          ],
+        },
+        {
+          id: "music",
+          kind: "audio",
+          locked: false,
+          clips: [{ ...clip("m", 0, 100), source: src, link: "L" }],
+        },
+      ],
+    },
+  } as unknown as ProjectState;
+  const record =
+    <R>(name: string, result: R) =>
+    (args: unknown): R => {
+      calls.push([name, args]);
+      return result;
+    };
+
+  beforeEach(() => {
+    calls = [];
+    useProjectStore.setState({ state });
+    mockCommands({
+      linkClips: record("link", null),
+      unlinkClips: record("unlink", null),
+      detachAudio: record("detach", ["new-audio"] as string[]),
+      replaceClipMedia: record("replace", null),
+      setTrackFlag: record("flag", null),
+      moveTrack: record("moveTrack", null),
+    });
+  });
+
+  afterEach(() => {
+    useProjectStore.setState({ state: null });
+    clearSelection();
+  });
+
+  it("unlinks the whole selection when it holds a linked clip", async () => {
+    setSelection(["v", "m"]);
+    await toggleLinkSelection();
+    expect(calls).toEqual([["unlink", { clips: ["v", "m"] }]]);
+  });
+
+  it("links when no selected clip is linked", async () => {
+    useProjectStore.setState({
+      state: {
+        ...state,
+        project: {
+          ...state.project,
+          tracks: state.project.tracks.map((tr) => ({
+            ...tr,
+            clips: tr.clips.map((c) => ({ ...c, link: null })),
+          })),
+        },
+      },
+    });
+    setSelection(["v", "m"]);
+    await toggleLinkSelection();
+    expect(calls).toEqual([["link", { clips: ["v", "m"] }]]);
+  });
+
+  it("sends nothing when the toggle does not apply", async () => {
+    setSelection(["v"]);
+    await toggleLinkSelection();
+    expect(calls).toEqual([]);
+  });
+
+  it("detaches audio and selects the new audio clips", async () => {
+    setSelection(["v"]);
+    await detachSelectedAudio();
+    expect(calls).toEqual([["detach", { clips: ["v"] }]]);
+    expect(selectionStore.getState().clips).toEqual(["new-audio"]);
+  });
+
+  it("replaces media, sets track flags and moves tracks", async () => {
+    expect(await replaceClipMedia("v", "other")).toBe(true);
+    await setTrackFlag("music", "muted", true);
+    await moveTrack("music", 2);
+    expect(calls).toEqual([
+      ["replace", { clip: "v", media: "other" }],
+      ["flag", { track: "music", flag: "muted", value: true }],
+      ["moveTrack", { track: "music", index: 2 }],
+    ]);
   });
 });
