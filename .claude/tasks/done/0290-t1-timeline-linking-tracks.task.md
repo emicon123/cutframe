@@ -3,6 +3,10 @@
 **Tier:** 1 · **Agents:** `backend`, `frontend` · **Depends on:** `0280`
 **Spec:** `docs/feature-catalog.md` (feature IDs below), `docs/adr/`, `docs/design/`, `CLAUDE.md`
 
+> **Closed 2026-11-26 without the manual check (user's standing decision).** `pnpm check` passed on
+> Linux (PR #9); the Windows `pnpm check` and the detach/link, replace media, track controls, track reorder and
+> context-menu flows in `pnpm dev` were not done by hand. Preview/export do not honour mute/hide yet (task 0320).
+
 ## Why
 
 Video with sound must stay in sync while editing; tracks need mute/hide/lock.
