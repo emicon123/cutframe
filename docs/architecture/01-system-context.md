@@ -192,7 +192,7 @@ exits ([05](05-ipc-contract.md) §4.5).
 | Native preview of the composed timeline at the playhead (render graph, hardware decode, HDR tone map, `seek`) | implemented (task 0320) |
 | Project files, autosave, recovery, recent list, preferences | implemented |
 | Playback, audio output, effects, export | **Target** (`docs/design/playback.md`, `render-graph.md`, `export.md`) |
-| Updater: check, download, install on restart (backend, `updater.rs`) | implemented; update prompt (UI), release key, `latest.json` publishing: **Target** (task 0170). Code signing: dropped (ADR-0001 amendment) |
+| Updater: check, download, install on restart (backend, `updater.rs`) | implemented; signed artifacts + `latest.json` publishing in `release.yml` (`docs/updates.md`): implemented, untested until the first tagged release; release key: user step; update prompt (UI): task 0170. Code signing: dropped (ADR-0001 amendment) |
 
 ## Links
 
