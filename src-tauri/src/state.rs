@@ -8,13 +8,14 @@ use app_core::command::{ClipboardContent, CommandError, DeleteClips, PasteClips}
 use app_core::serialization::CURRENT_SCHEMA_VERSION;
 use app_core::{ClipId, Document, HistoryPosition, MAX_IPC_FLICKS, Project, Time};
 use arc_swap::ArcSwap;
+use engine::playback::{Playback, ShuttleKey};
 use engine::transport::SeekMode;
 use tauri::AppHandle;
 use tauri_specta::Event;
 
 use crate::autosave::{AutosaveHandle, Msg};
 use crate::ipc::IpcError;
-use crate::ipc::events::ProjectChanged;
+use crate::ipc::events::{PlaybackTick, ProjectChanged};
 use crate::ipc::types::ProjectState;
 use crate::ipc::types::{JobId, MediaStatus};
 use crate::jobs::JobManager;
@@ -453,6 +454,7 @@ impl AppState {
             self.publish(&session.document);
             session.state()
         };
+        self.reset_transport();
         self.notify_autosave(Msg::Discard);
         ProjectChanged(state).emit(app)?;
         Ok(())
@@ -477,6 +479,7 @@ impl AppState {
             self.publish(&session.document);
             session.state()
         };
+        self.reset_transport();
         self.notify_autosave(Msg::Adopt { old });
         ProjectChanged(state).emit(app)?;
         Ok(())
@@ -491,8 +494,8 @@ impl AppState {
         }
     }
 
-    /// Moves the preview's playhead (the `seek` command). Returns the new seek generation.
-    /// `time` outside ±2^53 flicks is `invalidEdit`; no preview engine is `unavailable`.
+    /// Moves the playhead (the `seek` command). Returns the new seek generation. `time` outside
+    /// ±2^53 flicks is `invalidEdit`; no preview engine is `unavailable`.
     pub fn seek(&self, time: Time, mode: SeekMode) -> Result<u32, IpcError> {
         if time.flicks().unsigned_abs() > MAX_IPC_FLICKS.unsigned_abs() {
             return Err(IpcError::InvalidEdit(format!(
@@ -500,9 +503,56 @@ impl AppState {
                 time.flicks()
             )));
         }
+        Ok(self.playback()?.seek(time, mode))
+    }
+
+    /// The transport of the preview engine; `unavailable` without one.
+    fn playback(&self) -> Result<&std::sync::Arc<Playback>, IpcError> {
         match &self.preview {
-            Some(preview) if preview.is_available() => Ok(preview.seek(time, mode)),
+            Some(preview) if preview.is_available() => Ok(preview.playback()),
             _ => Err(IpcError::Unavailable("no preview engine".into())),
+        }
+    }
+
+    /// Play at 1x or pause (`toggle_playback`).
+    pub fn toggle_playback(&self) -> Result<(), IpcError> {
+        self.playback()?.toggle();
+        Ok(())
+    }
+
+    pub fn pause_playback(&self) -> Result<(), IpcError> {
+        self.playback()?.pause();
+        Ok(())
+    }
+
+    /// J/K/L (`shuttle`).
+    pub fn shuttle(&self, key: ShuttleKey) -> Result<(), IpcError> {
+        self.playback()?.shuttle(key);
+        Ok(())
+    }
+
+    /// Pause and move whole frames (`step_frames`). Returns the new seek generation.
+    pub fn step_frames(&self, frames: i32) -> Result<u32, IpcError> {
+        Ok(self.playback()?.step(frames))
+    }
+
+    /// Loop on or off (`set_loop`); without a preview engine nothing happens.
+    pub fn set_loop(&self, on: bool) {
+        if let Ok(playback) = self.playback() {
+            playback.set_loop(on);
+        }
+    }
+
+    /// The transport now (`get_playback`).
+    pub fn playback_tick(&self) -> PlaybackTick {
+        self.playback()
+            .map_or(PlaybackTick::IDLE, |playback| playback.status().into())
+    }
+
+    /// A new, opened or restored project: pause, playhead 0, a new seek generation.
+    fn reset_transport(&self) {
+        if let Ok(playback) = self.playback() {
+            playback.reset();
         }
     }
 
@@ -532,6 +582,12 @@ impl AppState {
     #[cfg(test)]
     pub fn test_mark_saved(&self, saved: &SaveSnapshot, path: PathBuf) {
         assert!(self.lock().mark_saved(saved, path));
+    }
+
+    /// The document's current snapshot (tests publish it by hand).
+    #[cfg(test)]
+    fn session_snapshot(&self) -> Arc<Project> {
+        self.lock().document.snapshot()
     }
 
     fn lock(&self) -> MutexGuard<'_, Session> {
@@ -1147,6 +1203,88 @@ mod tests {
             app_state().seek(Time::ZERO, SeekMode::Exact),
             Err(IpcError::Unavailable(_))
         ));
+    }
+
+    #[test]
+    fn transport_commands_without_a_preview_engine_are_unavailable() {
+        let state = app_state();
+        let unavailable = |result: Result<(), IpcError>| {
+            assert!(
+                matches!(result, Err(IpcError::Unavailable(_))),
+                "{result:?}"
+            );
+        };
+        unavailable(state.toggle_playback());
+        unavailable(state.pause_playback());
+        unavailable(state.shuttle(ShuttleKey::Forward));
+        unavailable(state.step_frames(1).map(|_| ()));
+        state.set_loop(true);
+        assert_eq!(state.playback_tick(), PlaybackTick::IDLE);
+    }
+
+    /// A project of `seconds` of colour on the main track.
+    fn timeline_of(seconds: i64) -> Project {
+        let mut project = Project::new("Timeline");
+        let main = project.main_index().unwrap();
+        project.tracks[main].clips.push(app_core::Clip::color(
+            "C",
+            Time::ZERO,
+            Time::from_seconds(seconds),
+            app_core::Rgba8::BLACK,
+        ));
+        project
+    }
+
+    #[test]
+    fn transport_commands_drive_the_engine_and_report_through_ticks() {
+        use crate::ipc::types::TransportStateView;
+        let (state, probe) = app_state_with_preview();
+        state.test_replace(timeline_of(10), None, CURRENT_SCHEMA_VERSION);
+        state.snapshot.store(state.session_snapshot());
+
+        state.toggle_playback().unwrap();
+        assert_eq!(probe.next(WAIT), Some(Wake::Transport));
+        let tick = state.playback_tick();
+        assert_eq!(tick.state, TransportStateView::Playing);
+        assert_eq!(tick.rate, 1);
+
+        state.shuttle(ShuttleKey::Forward).unwrap();
+        assert_eq!(state.playback_tick().rate, 2);
+        state.set_loop(true);
+        assert!(state.playback_tick().looping);
+
+        let before = state.playback_tick().seek;
+        let generation = state.step_frames(3).unwrap();
+        assert!(generation > before);
+        let tick = state.playback_tick();
+        assert_eq!(tick.state, TransportStateView::Paused);
+        assert_eq!(tick.seek, generation);
+        assert_eq!(tick.time, Time(3 * app_core::FLICKS_PER_SECOND / 30));
+        state.pause_playback().unwrap();
+        assert!(state.seek(Time::from_seconds(5), SeekMode::Exact).unwrap() > generation);
+    }
+
+    #[test]
+    fn replacing_the_project_resets_the_transport() {
+        let (state, probe) = app_state_with_preview();
+        state.test_replace(timeline_of(10), None, CURRENT_SCHEMA_VERSION);
+        state.snapshot.store(state.session_snapshot());
+        state.seek(Time::from_seconds(4), SeekMode::Exact).unwrap();
+        state.toggle_playback().unwrap();
+        while probe.next(WAIT).is_some() {}
+        let before = state.playback_tick().seek;
+        state.reset_transport();
+        let tick = state.playback_tick();
+        assert_eq!(tick.time, Time::ZERO);
+        assert_eq!(tick.state, crate::ipc::types::TransportStateView::Paused);
+        assert_eq!(tick.seek, before + 1);
+        assert_eq!(
+            probe.next(WAIT),
+            Some(Wake::Seek {
+                generation: before + 1,
+                mode: SeekMode::Exact
+            })
+        );
     }
 
     /// A project with two colour cards on the main track.

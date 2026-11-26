@@ -1,9 +1,9 @@
 # Design: playback, transport and audio clock
 
-- **Status:** Proposed (task 0310). Implemented by tasks 0330 (transport, audio, A/V sync), 0340
-  (skimming, source preview) and 0370 (clip volume, fades and speed in the mixer); 0320 uses the
-  `seek` command of §8 before the rest exists. After implementation this file is a record, not a
-  spec.
+- **Status:** Transport, audio, A/V sync and scrubbing implemented in task 0330 (record of the
+  differences in "As built (0330)" below; how it works today: `docs/architecture/09-audio-and-playback.md`
+  and `07-preview-and-render.md`). Still to come: 0340 (skimming, source preview) and 0370 (speed
+  and time-stretch in the mixer).
 - **Date:** 2026-11-22
 - **Features:** prepares F1.31, F1.55, F1.58–F1.60, F1.67–F1.69 and F1.17.
 - **Builds on:** `docs/design/render-graph.md` (what one frame looks like, readers, caches),
@@ -595,6 +595,49 @@ audio stream as the only voice).
 
 **0370:** speed, reverse and time-stretch per voice (§6.3); reverse video uses a GOP-reverse reader
 mode, which reverse shuttle may reuse later.
+
+## As built (0330)
+
+Measured on the reference laptop (Iris Xe, driver 32.0.101.7092, 96 kHz shared-mode device,
+1280 x 720 render size, release; ignored tests `crates/engine/tests/playback_hw.rs` and
+`audio_device.rs`, 2026-11-26):
+
+| Scenario (§11) | Budget | Result |
+|---|---|---|
+| 1080p30 H.264 two-track with AAC, 10 min | 0 dropped, \|A/V\| ≤ 1 frame | 0 / 18,000 dropped, max offset 26.5 ms, 0 underruns |
+| 4K30 HEVC 10-bit HLG main + 1080p overlay, 60 s | 0 dropped | 0 / 1,800 (zero-copy) |
+| 4K60 HEVC 10-bit HLG, 60 fps project, 30 s | ≤ 1 % at Full | 0 / 1,800 |
+| Jump cuts every 2 s in one 4K HEVC file | no drops at cuts | 0 dropped in 2 of 3 runs (one run skipped one frame on a 55 ms OS stall, not reproduced) |
+| Space to motion and sound | ≤ 250 ms | 128–196 ms |
+| Audio callback time | ≤ 10 % of the period | worst buffer 0.15–1.05 %, average 0.03–0.06 % |
+| Main thread per transport command | ≤ 0.1 ms | 163 ns average, 41 µs worst |
+
+The harness runs the render thread's playback step against a fake 60 Hz vsync offscreen; a manual
+`pnpm dev` session, real 144/165 Hz displays and Bluetooth headphones were not measured.
+
+Differences from the design above:
+
+- **Session counter in the clock.** Besides `seek_gen` the `ClockCell` carries a session bumped by
+  every play, pause, seek and scrub, so play after pause cannot pick up stale blocks or clock
+  samples. The transport still bumps `seek_gen` at every play start, direction change and exact
+  seek while playing; a same-direction rate change only changes the rate. Epochs never repeat and
+  change at every play start, rate change and loop wrap.
+- **No separate `WallClock` source.** Without a device the feeder drives the real callback into a
+  scratch buffer at wall-clock pace, so the render thread has one `ClockSource` for the engine's
+  life and loop, end, preroll and underrun behave the same with and without sound.
+- **Extra clock and block fields** (`run_start`, `run_kind`, `ended`; block `session`, `end`,
+  `rate`, `last` and a zero-frame end marker) make readings exact across loop wraps, rate changes
+  and underrun recovery.
+- **Feeder** looks up the default device once at start (the first lookup in a process takes about
+  250 ms) and runs at above-normal priority (underruns under heavy build load otherwise).
+- **Audio readers** decode from 200 ms before a seek target, play mono at full level on both
+  channels, are limited to 16 and close after 5 s idle; they have no cancel flag (local files only).
+- **Scrub grains** are cut off by a newer scrub without a crossfade (stale blocks drop by
+  generation), so fast scrubbing may click slightly.
+- **Render thread:** `TransportShared` gained `shown` (start of the frame on screen); lookahead
+  runs forward only (reverse is a timed scrub through normal lookups); `PlaybackTarget` has only
+  `Timeline` (0340 adds `Media`). Readers no longer abort their own file open on a new request,
+  which had left media on software decode after a fast seek.
 
 ## Risks
 

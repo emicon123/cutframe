@@ -34,6 +34,7 @@ for *intent*. Say so in the task instead of silently following one of them.
 | [06 — Media pipeline](06-media-pipeline.md) | import, probing, thumbnails, filmstrips, waveforms, cache, relink |
 | [07 — Preview and render](07-preview-and-render.md) | wgpu, the preview window, device loss, offscreen rendering |
 | [08 — UI architecture](08-ui-architecture.md) | React screens, stores, actions, the canvas timeline, dialogs |
+| [09 — Audio and playback clock](09-audio-and-playback.md) | sound, the audio device, the mixer, the clock, A/V sync |
 | [diagrams/](diagrams/) | you want one picture of a whole flow instead of prose |
 
 Deep dives in `diagrams/` are self-contained: each one is a single flow with its sequence, states
@@ -79,6 +80,7 @@ A task that changes any of the following must update the matching document in th
 | The media cache, a `media://` route, probe fields | 06 |
 | The preview thread, adapter choice, surface or render targets | 07 |
 | A screen, store, action or gesture | 08 |
+| The audio feeder, callback, ring, clock or mixer | 09 |
 
 The history of the system is in `docs/adr/` and in `docs/archive/`; this set only describes the
 present, so delete paragraphs that stopped being true instead of appending corrections.

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { type IpcError, mockCommands, type SeekMode } from "@/bindings";
+import { type IpcError, mockCommands, type PlaybackTick, type SeekMode } from "@/bindings";
+import { FLICKS_PER_SECOND } from "@/lib/time";
 import { useToastStore } from "@/stores/toastStore";
 
 type PlayheadModule = typeof import("./playheadStore");
@@ -140,7 +141,7 @@ describe("seekTo", () => {
     await vi.waitFor(() => expect(debug).toHaveBeenCalledTimes(1));
     expect(error).not.toHaveBeenCalled();
     expect(useToastStore.getState().toasts).toEqual([]);
-    expect(playhead.playheadStore.getState()).toEqual({ time: 100, seekGeneration: null });
+    expect(playhead.playheadStore.getState()).toMatchObject({ time: 100, seekGeneration: null });
 
     // The queue goes on after a failure.
     mockSeek();
@@ -158,15 +159,127 @@ describe("seekTo", () => {
   });
 });
 
-describe("reseekOnDurationChange", () => {
-  it("sends the playhead on the first state and when the old duration was before it", async () => {
+const tick = (overrides: Partial<PlaybackTick> = {}): PlaybackTick => ({
+  time: 0,
+  state: "paused",
+  rate: 0,
+  looping: false,
+  seek: 1,
+  droppedFrames: 0,
+  target: { kind: "timeline" },
+  ...overrides,
+});
+
+describe("reduceTick", () => {
+  const base = () => playhead.playheadStore.getState();
+
+  it("mirrors the transport from a tick", () => {
+    const next = playhead.reduceTick(
+      base(),
+      tick({ time: 500, state: "playing", rate: 2, looping: true, seek: 4, droppedFrames: 3 }),
+      1000,
+    );
+    expect(next).toEqual({
+      time: 500,
+      at: 1000,
+      state: "playing",
+      rate: 2,
+      looping: true,
+      droppedFrames: 3,
+      seekGeneration: 4,
+    });
+  });
+
+  it("ignores a tick older than the newest seek generation", () => {
+    const s = { ...base(), seekGeneration: 5, time: 900 };
+    expect(playhead.reduceTick(s, tick({ seek: 4, time: 100 }), 0)).toBeNull();
+    expect(playhead.reduceTick(s, tick({ seek: 5, time: 100 }), 0)?.time).toBe(100);
+    expect(playhead.reduceTick(s, tick({ seek: 7 }), 0)?.seekGeneration).toBe(7);
+  });
+
+  it("keeps the extrapolation base while the same frame repeats", () => {
+    const playing = playhead.reduceTick(base(), tick({ time: 10, state: "playing", rate: 1 }), 100);
+    if (!playing) throw new Error("tick ignored");
+    expect(playhead.reduceTick(playing, tick({ time: 10, state: "playing", rate: 1 }), 116)?.at).toBe(100);
+    expect(playhead.reduceTick(playing, tick({ time: 20, state: "playing", rate: 1 }), 133)?.at).toBe(133);
+  });
+});
+
+describe("displayTime", () => {
+  const second = FLICKS_PER_SECOND;
+  const playing = { time: 10 * second, at: 1000, state: "playing" as const, rate: 1 };
+
+  it("extrapolates time + elapsed x rate while playing", () => {
+    expect(playhead.displayTime(playing, 1020, 60 * second)).toBe(10 * second + 0.02 * second);
+    expect(playhead.displayTime({ ...playing, rate: -4 }, 1010, 60 * second)).toBe(
+      10 * second - 0.04 * second,
+    );
+  });
+
+  it("caps the extrapolation, so a late tick never runs the playhead away", () => {
+    const capped = 10 * second + (playhead.MAX_EXTRAPOLATION_MS / 1000) * second;
+    expect(playhead.displayTime(playing, 5000, 60 * second)).toBe(capped);
+  });
+
+  it("stays at the tick while paused and inside the timeline", () => {
+    expect(playhead.displayTime({ ...playing, state: "paused", rate: 0 }, 5000, 60 * second)).toBe(
+      10 * second,
+    );
+    expect(playhead.displayTime(playing, 1040, 10 * second)).toBe(10 * second);
+    expect(playhead.displayTime({ ...playing, time: 0, rate: -1 }, 1040, 60 * second)).toBe(0);
+  });
+});
+
+describe("applyTick", () => {
+  it("follows ticks and ignores a stale one after a seek", async () => {
+    mockSeek(() => 3);
+    playhead.applyTick(tick({ time: 100, seek: 2, state: "playing", rate: 1 }));
+    expect(playhead.playheadStore.getState()).toMatchObject({ time: 100, state: "playing", rate: 1 });
+
+    playhead.seekTo(5000, "exact");
+    await vi.waitFor(() => expect(playhead.playheadStore.getState().seekGeneration).toBe(3));
+    playhead.applyTick(tick({ time: 120, seek: 2, state: "playing", rate: 1 }));
+    expect(playhead.playheadStore.getState().time).toBe(5000);
+    playhead.applyTick(tick({ time: 5010, seek: 3, state: "playing", rate: 1 }));
+    expect(playhead.playheadStore.getState().time).toBe(5010);
+  });
+
+  it("holds ticks while a seek is unanswered and applies the newest one after it", async () => {
+    const release: ((generation: number) => void)[] = [];
+    mockSeek(() => new Promise<number>((resolve) => release.push(resolve)));
+    playhead.seekTo(700, "exact");
+    await vi.waitFor(() => expect(release).toHaveLength(1));
+
+    // The engine's tick for the new seek can arrive before the command's answer.
+    playhead.applyTick(tick({ time: 100, seek: 1 }));
+    playhead.applyTick(tick({ time: 700, seek: 2 }));
+    expect(playhead.playheadStore.getState().time).toBe(700);
+    release.shift()?.(2);
+    await vi.waitFor(() => expect(playhead.playheadStore.getState().seekGeneration).toBe(2));
+    expect(playhead.playheadStore.getState().time).toBe(700);
+  });
+
+  it("holds ticks while a scrub waits for its animation frame", () => {
     mockSeek();
-    playhead.setPlayhead(500);
-    playhead.reseekOnDurationChange(undefined, 0);
-    playhead.reseekOnDurationChange(0, 0); // unchanged
-    playhead.reseekOnDurationChange(0, undefined); // no project
-    playhead.reseekOnDurationChange(0, 800);
-    playhead.reseekOnDurationChange(800, 300); // the engine kept 500
-    await vi.waitFor(() => expect(log).toEqual(["exact 500", "exact 500"]));
+    playhead.seekTo(300, "scrub");
+    playhead.applyTick(tick({ time: 0, seek: 9 }));
+    expect(playhead.playheadStore.getState().time).toBe(300);
+  });
+});
+
+describe("stepTo", () => {
+  it("shows the expected frame, pauses and remembers the step's generation", async () => {
+    const steps: number[] = [];
+    mockCommands({
+      stepFrames: ({ frames }) => {
+        steps.push(frames);
+        return 6;
+      },
+    });
+    playhead.applyTick(tick({ time: 100, seek: 5, state: "playing", rate: 1 }));
+    playhead.stepTo(-10, 40);
+    expect(playhead.playheadStore.getState()).toMatchObject({ time: 40, state: "paused", rate: 0 });
+    await vi.waitFor(() => expect(playhead.playheadStore.getState().seekGeneration).toBe(6));
+    expect(steps).toEqual([-10]);
   });
 });

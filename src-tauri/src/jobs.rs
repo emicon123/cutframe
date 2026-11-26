@@ -119,6 +119,8 @@ struct Inner {
     jobs: Mutex<HashMap<JobId, JobEntry>>,
     jobs_changed: Condvar,
     shutdown: AtomicBool,
+    /// Background tasks wait while set (playback, media-import.md §6.1).
+    background_paused: AtomicBool,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -166,6 +168,7 @@ impl JobManager {
             jobs: Mutex::default(),
             jobs_changed: Condvar::new(),
             shutdown: AtomicBool::new(false),
+            background_paused: AtomicBool::new(false),
         });
         for n in 0..workers.max(1) {
             let inner = Arc::clone(&inner);
@@ -216,6 +219,18 @@ impl JobManager {
     pub fn spawner(&self) -> JobSpawner {
         JobSpawner {
             inner: Arc::clone(&self.inner),
+        }
+    }
+
+    /// Holds background tasks (preview prefetch, media checks) while `paused`, so playback has
+    /// the CPU and the decoders (media-import.md §6.1). Running tasks finish; interactive tasks
+    /// still run. Cheap and idempotent: the transport calls it with every tick.
+    pub fn pause_background(&self, paused: bool) {
+        let was = self.inner.background_paused.swap(paused, Ordering::AcqRel);
+        if was && !paused {
+            // Take the lock first, so a worker between its check and its wait gets the wake-up.
+            drop(lock(&self.inner.queues));
+            self.inner.work_available.notify_all();
         }
     }
 
@@ -343,10 +358,11 @@ fn worker(inner: &Inner) {
                 if inner.shutdown.load(Ordering::Relaxed) {
                     return;
                 }
+                let background = !inner.background_paused.load(Ordering::Acquire);
                 if let Some(task) = queues
                     .interactive
                     .pop_front()
-                    .or_else(|| queues.background.pop_front())
+                    .or_else(|| background.then(|| queues.background.pop_front()).flatten())
                 {
                     break task;
                 }
@@ -650,6 +666,37 @@ pub(crate) mod tests {
                 "background 1",
                 "background 2"
             ]
+        );
+    }
+
+    #[test]
+    fn paused_background_tasks_wait_until_resumed() {
+        let (host, _rx) = FakeHost::new();
+        let jobs = JobManager::with_workers(host, 1);
+        jobs.pause_background(true);
+        jobs.pause_background(true);
+        let (ran_tx, ran_rx) = mpsc::channel::<&str>();
+        let spawner = jobs.spawner();
+        let background = ran_tx.clone();
+        spawner.run(Priority::Background, move || {
+            background.send("background").ok();
+        });
+        spawner.run(Priority::Interactive, move || {
+            ran_tx.send("interactive").ok();
+        });
+        assert_eq!(
+            ran_rx.recv_timeout(Duration::from_secs(10)),
+            Ok("interactive"),
+            "interactive tasks still run"
+        );
+        assert!(
+            ran_rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "the background task waits"
+        );
+        jobs.pause_background(false);
+        assert_eq!(
+            ran_rx.recv_timeout(Duration::from_secs(10)),
+            Ok("background")
         );
     }
 

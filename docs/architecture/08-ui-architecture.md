@@ -77,7 +77,7 @@ directly, so a drag or a playhead move does not re-render React.
 | `toastStore` | `stores/toastStore.ts` | `create` | the shown toasts (oldest first, at most 4; a repeated message moves to the end with a count) |
 | `uiStore` | `stores/uiStore.ts` | `create` | `view`, `started`, dialog flags, media panel layout/sort/filter, panel collapse mirror, `layoutVersion`, timeline `snapping` (persisted) |
 | `selectionStore` | `stores/selectionStore.ts` | `createStore` | selected clip ids **or** one selected gap; pruned after every `project-changed` |
-| `playheadStore` | `stores/playheadStore.ts` | `createStore` | playhead time in flicks (UI-owned until playback) |
+| `playheadStore` | `stores/playheadStore.ts` | `createStore` | mirror of the engine transport from `playback-tick`: time (flicks), state, rate, loop, dropped frames, the newest seek generation; `seekTo` / `stepTo` move it optimistically and send `seek` / `stepFrames` |
 | `timelineViewStore` | `stores/timelineViewStore.ts` | `createStore` | timeline viewport (scroll, zoom) and lane width; read by the canvas, the zoom slider and the navigation/zoom actions |
 | `importStore` | `stores/importStore.ts` | `create` | running import/background jobs, per-file results, the last import summary |
 | `mediaDragStore` | `stores/mediaDragStore.ts` | `create` | the media item being dragged from the panel to the timeline |
@@ -92,8 +92,11 @@ Rules:
 
 - **The project is read-only in the UI.** Nothing mutates `projectStore.state`; every change is a
   command and comes back as `project-changed` ([03](03-edit-model.md) §1).
-- **Selection and the playhead are UI state.** They are not in the model, not in history and not
-  saved. Commands receive the ids explicitly.
+- **Selection is UI state; the playhead is the engine's.** Neither is in the model, in history or
+  saved. Commands receive selected ids explicitly. The playhead is owned by the Rust transport
+  (task 0330): the UI moves it optimistically with `seekTo` / `stepTo`, then follows
+  `playback-tick`, ignoring ticks older than the newest seek generation and holding ticks while a
+  seek is unanswered; while playing it draws `time + elapsed x rate` (capped at 50 ms).
 - `projectStore.apply` drops a state whose `revision` is not newer, because events may arrive out of
   order ([05](05-ipc-contract.md) §3).
 
@@ -176,7 +179,8 @@ registered once.
 |---|---|
 | `geometry.ts` | time ↔ pixel, zoom limits, viewport, zoom anchor, zoom to fit, logarithmic slider mapping, reveal a time; all time in integer flicks |
 | `navigation.ts` | frame step on the project frame grid, last frame, edit points (0, end, clip boundaries on all tracks), previous/next edit |
-| `navActions.ts` | the navigation and zoom actions: seek through `setPlayhead`, then scroll the playhead into view |
+| `navActions.ts` | the navigation and zoom actions: Left/Right through `stepFrames`, Home/End and edit points through `seekTo(..., "exact")`, then scroll the playhead into view |
+| `autoScroll.ts` | page-style auto-scroll while playing (forward and reverse), held off during a pointer drag and 1.5 s after a wheel scroll or zoom |
 | `hitTest.ts` | what is under the pointer: ruler, clip body/edge, lane, gap; drag threshold |
 | `selection.ts` | click / Ctrl-click / Shift-click / marquee selection, link expansion, pruning |
 | `gap.ts` | find the gap under the pointer; describe a selected gap |
@@ -212,7 +216,12 @@ stateDiagram-v2
 - `pointer.ts` computes absolute values with the pure functions and hands them to `beginGesture`
   ([§7](#7-gestures)); it never builds a delta command.
 - The canvas redraws on `requestAnimationFrame`; `projectStore`, `selectionStore` and `playheadStore`
-  are subscribed imperatively, so a drag does not re-render React components.
+  are subscribed imperatively, so a drag or playback does not re-render React components. While
+  playing it redraws every animation frame with the extrapolated playhead; paused, only on change.
+  The transport bar's timecode is written to the DOM from a store subscription for the same reason.
+- Transport actions (`features/preview/transport.ts`, registry ids `play-pause` Space,
+  `shuttle-reverse` J, `shuttle-pause` K, `shuttle-forward` L, `loop`) only send the command; the
+  new state arrives as a tick.
 - A drop from Explorer is two steps: import (job), then `addClips` at the drop position, as one
   history entry for the placement.
 - Tracks are drawn top to bottom as the model orders them; a clip's `visual`/`audio` are `null` where

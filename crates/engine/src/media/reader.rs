@@ -103,6 +103,14 @@ impl<'c> VideoReader<'c> {
         &self.decoder
     }
 
+    /// Which frames the decoder skips from the next packet on (`AVCodecContext::skip_frame`):
+    /// `AVDISCARD_DEFAULT`, `AVDISCARD_NONREF` (catch-up) or `AVDISCARD_NONKEY` (keyframes only).
+    pub(crate) fn set_skip_frame(&mut self, discard: ffi::AVDiscard) {
+        // SAFETY: an opened decoder context; `skip_frame` is read by the decoder per frame and
+        // may change between packets.
+        unsafe { (*self.decoder.as_mut_ptr()).skip_frame = discard };
+    }
+
     /// The next decoded frame and its media time (`None` if it has no timestamp), or `None` at
     /// the end of the stream.
     pub(crate) fn next_frame(&mut self) -> Result<Option<(Option<Time>, AVFrame)>, MediaError> {

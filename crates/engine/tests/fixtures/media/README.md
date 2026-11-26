@@ -1,7 +1,7 @@
 # Media format fixtures
 
 Tiny, licence-clean files for the probe and format-coverage tests (`crates/engine/tests/media_formats.rs`,
-design `docs/design/media-import.md` §10). About 230 KB in total (budget: 2 MB).
+design `docs/design/media-import.md` §10). About 320 KB in total (budget: 2 MB).
 
 Every file is made by `generate.sh` from FFmpeg's built-in test sources (`testsrc2`, `sine`) with
 the pinned LGPL build (`scripts/ffmpeg.json`, n7.1.5) and only LGPL-compatible encoders
@@ -29,6 +29,9 @@ HEIF tile-grid container, and the broken files.
 | `hevc-hlg-dv84.mov` | 8-bit HEVC tagged BT.2020 / HLG (`setparams`) + a `dvvC` box: profile 8, level 4, compatibility id 4 (iPhone style) | `hdr.transfer = hlg`, Dolby Vision fields, colour names |
 | `av1-10bit-pq.mp4` | 10-bit AV1 tagged BT.2020 / PQ + `mdcv` (1000 nits) and `clli` (MaxCLL 400, MaxFALL 120) boxes | `bitDepth = 10`, `hdr.transfer = pq`, nits |
 | `stereo-44k.mp3`, `mono-48k.wav`, `stereo-96k.flac`, `opus.ogg`, `aac.m4a` | 0.5 s sine | `kind = audio`, sample rate, channels |
+| `sine-1k-48k.flac` | 1 s full-scale 1 kHz stereo sine, 48 kHz, 16-bit FLAC (`aevalsrc`) | audio reader decodes exactly, sample-accurate seeks, split points without a seek, pre-seeked jump cuts, volume 0.5 peaks at 0.5 (`tests/audio_mix.rs`); the ignored device test |
+| `sine-1k-44k-mono.flac` | 1 s half-scale 1 kHz mono sine, 44.1 kHz, FLAC | resampling to 48 kHz in phase, mono on both channels at full level |
+| `vfr-audio-offset.ts` | MPEG-TS (starts at 1.4 s): 1 s 32x32 MPEG-4 video with frames 10-19 dropped (VFR) + mono 48 kHz MP2 sine starting about 0.25 s later (`-itsoffset`) | `origin`, silence before late audio, sample-accurate seeks with decoder preroll |
 | `exif-orientation-6.jpg` | 64x48 JPEG + APP1 Exif with Orientation = 6 | `rotation = cw90`, display 48x64 |
 | `image.png`, `image.webp`, `image.bmp`, `image.tiff` | 64x48 still | `kind = image`, no duration |
 | `image-alpha.png` | 64x48 RGBA PNG, alpha ramp from 0 (left column) to 255 (right column) | image layers keep straight alpha (`tests/readers.rs`) |

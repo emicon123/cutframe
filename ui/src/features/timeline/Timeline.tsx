@@ -41,7 +41,7 @@ import { formatClipDuration, frameDuration } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import { run } from "@/stores/appStore";
 import { mediaDragStore, registerDropZone } from "@/stores/mediaDragStore";
-import { playheadStore } from "@/stores/playheadStore";
+import { displayTime, playheadStore } from "@/stores/playheadStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { selectionStore } from "@/stores/selectionStore";
 import { setLaneWidth, setViewport, timelineViewStore } from "@/stores/timelineViewStore";
@@ -59,6 +59,7 @@ import {
   type Viewport,
 } from "./geometry";
 import { addMediaClips } from "./addActions";
+import { createAutoScroll } from "./autoScroll";
 import { ClipContextMenu } from "./ClipContextMenu";
 import { type Hit, hitTest } from "./hitTest";
 import { TrackHeaders } from "./TrackHeaders";
@@ -290,9 +291,21 @@ function TimelineCanvas({
     };
     // Filmstrip tiles and waveforms; a finished load redraws.
     const products = createClipMedia(requestDraw);
+    const autoScroll = createAutoScroll();
 
     const draw = () => {
       frame = 0;
+      // While playing, the playhead is extrapolated between ticks and the view follows it
+      // (F1.31), so every animation frame draws; paused, only changes do.
+      const now = performance.now();
+      const transport = playheadStore.getState();
+      const playhead = displayTime(transport, now, useProjectStore.getState().state?.project.duration ?? 0);
+      if (transport.state === "playing") {
+        const current = viewport();
+        const next = autoScroll.follow(current, size.width, playhead, transport.rate, now);
+        if (next !== current) setViewport(next);
+        requestDraw();
+      }
       const dpr = window.devicePixelRatio;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       products.beginFrame();
@@ -301,7 +314,7 @@ function TimelineCanvas({
         ...sceneRef.current,
         products,
         viewport: viewport(),
-        playhead: playheadStore.getState().time,
+        playhead,
         theme,
         offlineLabel: t.timeline.offline,
         drop: dropRef.current,
@@ -327,9 +340,9 @@ function TimelineCanvas({
     });
     resize.observe(container);
 
-    // Only the time is drawn; a new seek generation alone needs no redraw.
+    // The time and the motion are drawn; a new seek generation or loop flag alone needs no redraw.
     const unsubscribePlayhead = playheadStore.subscribe((s, prev) => {
-      if (s.time !== prev.time) requestDraw();
+      if (s.time !== prev.time || s.state !== prev.state || s.rate !== prev.rate) requestDraw();
     });
     const unsubscribeSelection = selectionStore.subscribe(requestDraw);
     const unsubscribeView = timelineViewStore.subscribe(requestDraw);
@@ -352,6 +365,7 @@ function TimelineCanvas({
     });
 
     const onWheel = (event: WheelEvent) => {
+      if (event.ctrlKey || event.deltaX !== 0 || event.shiftKey) autoScroll.scrolled(performance.now());
       if (event.ctrlKey) {
         event.preventDefault();
         const x = event.clientX - canvas.getBoundingClientRect().left;
@@ -363,6 +377,13 @@ function TimelineCanvas({
       // Plain vertical wheel scrolls the track list.
     };
     canvas.addEventListener("wheel", onWheel, { passive: false });
+    // A drag on the timeline (seek, move, trim, marquee) holds auto-scroll off until release.
+    const onPointerDown = () => autoScroll.pointerDown();
+    const onPointerUp = () => autoScroll.pointerUp();
+    canvas.addEventListener("pointerdown", onPointerDown);
+    canvas.addEventListener("pointerup", onPointerUp);
+    canvas.addEventListener("pointercancel", onPointerUp);
+    canvas.addEventListener("lostpointercapture", onPointerUp);
 
     const detachPointer = attachPointerInteraction(canvas, {
       viewport,
@@ -381,6 +402,10 @@ function TimelineCanvas({
       unsubscribeDrag();
       unregisterDrop();
       canvas.removeEventListener("wheel", onWheel);
+      canvas.removeEventListener("pointerdown", onPointerDown);
+      canvas.removeEventListener("pointerup", onPointerUp);
+      canvas.removeEventListener("pointercancel", onPointerUp);
+      canvas.removeEventListener("lostpointercapture", onPointerUp);
       requestDrawRef.current = () => undefined;
     };
   }, []);

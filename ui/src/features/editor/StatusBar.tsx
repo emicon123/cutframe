@@ -1,8 +1,11 @@
 import { Cpu, TriangleAlert, X } from "lucide-react";
+import { useStore } from "zustand";
 
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { t } from "@/i18n";
+import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/appStore";
+import { playheadStore } from "@/stores/playheadStore";
 
 import { gpuNoticeText, gpuWarningText } from "./gpuNotice";
 
@@ -12,6 +15,9 @@ export function StatusBar() {
   const notice = useAppStore((s) => s.gpuNotice);
   const dismissNotice = useAppStore((s) => s.dismissGpuNotice);
   const warning = gpuWarningText(info);
+  // F1.60: only while playing and only when the preview fell behind. A number, so ticks re-render
+  // the bar only when the count changes.
+  const dropped = useStore(playheadStore, (s) => (s.state === "playing" ? s.droppedFrames : 0));
 
   return (
     <footer className="flex h-6 shrink-0 items-center gap-3 border-t bg-panel px-3 text-xs text-muted-foreground">
@@ -53,7 +59,12 @@ export function StatusBar() {
           </button>
         </span>
       )}
-      {info && <span className="ml-auto">{t.status.version(info.version)}</span>}
+      {dropped > 0 && (
+        <span className="ml-auto text-warning tabular-nums" data-testid="dropped-frames">
+          {t.status.droppedFrames(dropped)}
+        </span>
+      )}
+      {info && <span className={cn(dropped === 0 && "ml-auto")}>{t.status.version(info.version)}</span>}
     </footer>
   );
 }

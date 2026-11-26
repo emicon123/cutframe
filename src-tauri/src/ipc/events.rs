@@ -1,8 +1,14 @@
 use serde::{Deserialize, Serialize};
 use tauri_specta::Event;
 
+use app_core::Time;
+use engine::playback::TransportStatus;
+use engine::transport::PlayState;
+
 use super::IpcError;
-use super::types::{AppInfo, JobId, JobStage, MediaFileResult, ProjectState};
+use super::types::{
+    AppInfo, JobId, JobStage, MediaFileResult, PlaybackTarget, ProjectState, TransportStateView,
+};
 
 /// Emitted after every change to the project (edit, undo, redo, new, open, save).
 /// The UI keeps the payload with the highest `revision` and drops older ones.
@@ -50,6 +56,57 @@ pub struct MediaJobReport {
 pub struct OpenFileRequested {
     /// Absolute path as given on the command line; not checked (opening reports errors).
     pub path: String,
+}
+
+/// The transport (playback.md §8): at most 60 Hz while playing, and once after every change
+/// (play, pause, shuttle, seek, step, loop toggle, end of playback, project replaced), so the
+/// last state always arrives. Ignore a tick whose `seek` is older than the generation the last
+/// `seek` or `stepFrames` returned. `getPlayback` returns the same payload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Event)]
+#[serde(rename_all = "camelCase")]
+pub struct PlaybackTick {
+    /// Timeline time of the frame on screen (its start) while playing; the playhead while
+    /// paused. Between ticks the UI may extrapolate `time + elapsed x rate` for drawing.
+    pub time: Time,
+    pub state: TransportStateView,
+    /// -8..=8 (1, 2, 4, 8 forward, negative reverse), 0 while paused.
+    pub rate: i8,
+    pub looping: bool,
+    /// The newest seek generation the engine has applied.
+    pub seek: u32,
+    /// Frames dropped since the last play start (skipped or shown late).
+    pub dropped_frames: u32,
+    pub target: PlaybackTarget,
+}
+
+impl PlaybackTick {
+    /// The tick of a session without a preview engine: paused at 0.
+    pub const IDLE: Self = Self {
+        time: Time::ZERO,
+        state: TransportStateView::Paused,
+        rate: 0,
+        looping: false,
+        seek: 0,
+        dropped_frames: 0,
+        target: PlaybackTarget::Timeline,
+    };
+}
+
+impl From<TransportStatus> for PlaybackTick {
+    fn from(status: TransportStatus) -> Self {
+        Self {
+            time: status.time,
+            state: match status.state {
+                PlayState::Paused => TransportStateView::Paused,
+                PlayState::Prerolling | PlayState::Playing => TransportStateView::Playing,
+            },
+            rate: status.rate,
+            looping: status.looping,
+            seek: status.seek_gen,
+            dropped_frames: status.dropped_frames,
+            target: PlaybackTarget::Timeline,
+        }
+    }
 }
 
 /// The GPU or the preview mode changed at runtime: the GPU was lost and the preview restarted

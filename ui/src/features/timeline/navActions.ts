@@ -1,10 +1,11 @@
 /**
  * Playhead navigation (F1.54) and zoom (F1.32) actions. They read the project, the playhead and
  * the timeline view from their stores and apply the pure rules of `navigation.ts` and
- * `geometry.ts`. Nothing here is an edit: no command, no history.
+ * `geometry.ts`. Nothing here is an edit: no history. Playhead moves go to the engine (`seek`,
+ * `stepFrames`), which pauses or keeps playing as playback.md §2 says.
  */
 import { frameDuration } from "@/lib/time";
-import { playheadStore, setPlayhead } from "@/stores/playheadStore";
+import { playheadStore, seekTo, stepTo } from "@/stores/playheadStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { setViewport, timelineViewStore } from "@/stores/timelineViewStore";
 
@@ -13,18 +14,30 @@ import { editPoints, frameStep, lastFrame, nextEdit, previousEdit } from "./navi
 
 const project = () => useProjectStore.getState().state?.project;
 
-/** Seeks and scrolls the timeline so the new playhead is in view. */
-function seek(time: number) {
-  setPlayhead(time);
+/** Scrolls the timeline so the (new) playhead is in view. */
+function reveal() {
   const { viewport, width } = timelineViewStore.getState();
   if (width > 0) setViewport(revealTime(viewport, width, playheadStore.getState().time));
 }
 
-/** Left / Right (Shift: 10 frames): step `frames` frames on the project frame grid. */
+/** An exact seek, then the playhead scrolled into view. */
+function seek(time: number) {
+  seekTo(time, "exact");
+  reveal();
+}
+
+/**
+ * Left / Right (Shift: 10 frames): the engine pauses and steps `frames` frames on the project
+ * frame grid; the UI shows where it expects the step to land until the tick confirms it.
+ */
 export function stepFrames(frames: number) {
   const p = project();
   if (!p) return;
-  seek(frameStep(playheadStore.getState().time, frames, frameDuration(p.settings.frameRate), p.duration));
+  stepTo(
+    frames,
+    frameStep(playheadStore.getState().time, frames, frameDuration(p.settings.frameRate), p.duration),
+  );
+  reveal();
 }
 
 /** Up (`-1`) / Down (`1`): the previous or next clip boundary on any track, 0 or the end. */
@@ -41,7 +54,7 @@ export function goToStart() {
   seek(0);
 }
 
-/** End: the last frame of the timeline. */
+/** End: the start of the last frame of the timeline, in integer flicks. */
 export function goToEnd() {
   const p = project();
   if (!p) return;

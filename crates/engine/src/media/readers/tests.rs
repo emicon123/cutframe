@@ -200,3 +200,150 @@ fn offline_media_maps_to_the_offline_placeholder() {
         PlaceholderKind::DecodeError
     );
 }
+
+/// A project whose main track plays `clip` as (timeline start, duration, source in) in ms.
+fn edit(media: &MediaAsset, clips: &[(i64, i64, i64)]) -> Project {
+    let mut project = Project::new("edit");
+    project.media = vec![media.clone()];
+    let main = project.main_index().expect("main track");
+    for &(start, duration, source_in) in clips {
+        project.tracks[main].clips.push(app_core::Clip {
+            source: app_core::ClipSource::Media {
+                media: media.id,
+                source_in: ms(source_in),
+            },
+            ..app_core::Clip::color("V", ms(start), ms(duration), app_core::Rgba8::BLACK)
+        });
+    }
+    project
+}
+
+/// Plays `project` frame by frame like the render thread: the lookups of the frame's plan,
+/// then the scheduler's lookahead primes readers. `policy` for the lookups; `pace` between
+/// frames. Returns the lookups of each frame.
+fn play(
+    pool: &mut ReaderPool,
+    project: &Project,
+    frames: std::ops::Range<i64>,
+    policy: FetchPolicy,
+    pace: Duration,
+) -> Vec<FrameLookup> {
+    use crate::playback::{Rate, scheduler};
+    use crate::render::{LayerContent, build_plan};
+    pool.set_project(project);
+    pool.set_playing(true);
+    let rate = project.settings.frame_rate;
+    let mut needs = Vec::new();
+    let mut lookups = Vec::new();
+    for n in frames {
+        let t = Time::from_frames(n, rate);
+        let plan = build_plan(project, t, (64, 64));
+        pool.begin_frame();
+        for layer in &plan.layers {
+            if let LayerContent::Video {
+                media, sample_time, ..
+            } = layer.content
+            {
+                lookups.push(pool.video(media, sample_time, policy));
+            }
+        }
+        scheduler::lookahead(project, t, Rate::FORWARD, false, &mut needs);
+        for need in &needs {
+            pool.prime(need.media, need.sample_time);
+        }
+        std::thread::sleep(pace);
+    }
+    lookups
+}
+
+#[test]
+fn a_split_point_plays_without_a_seek() {
+    let clip = asset("h264-aac.mp4");
+    // Split at 400 ms: the second half continues the source.
+    let project = edit(&clip, &[(0, 400, 100), (400, 500, 500)]);
+    let (mut pool, _) = pool_with(std::slice::from_ref(&clip), ReaderOptions::default());
+    let lookups = play(
+        &mut pool,
+        &project,
+        0..27,
+        FetchPolicy::Exact,
+        Duration::ZERO,
+    );
+    assert_eq!(lookups.len(), 27);
+    assert_eq!(pool.reader_count(), 1, "one reader across the split");
+    assert_eq!(pool.seek_count(clip.id), 1, "only the first frame seeks");
+}
+
+#[test]
+fn a_jump_cut_is_primed_before_it_starts() {
+    let clip = asset("h264-aac.mp4");
+    // A backwards jump cut at 300 ms: source 500..800 ms, then 0..300 ms.
+    let project = edit(&clip, &[(0, 300, 500), (300, 300, 0)]);
+    let (mut pool, _) = pool_with(std::slice::from_ref(&clip), ReaderOptions::default());
+    // The frames before the cut, at about real time.
+    play(
+        &mut pool,
+        &project,
+        0..9,
+        FetchPolicy::Exact,
+        Duration::from_millis(30),
+    );
+    assert_eq!(pool.reader_count(), 2, "a second reader for the jump cut");
+    let before = pool.seek_count(clip.id);
+    assert_eq!(before, 2, "the first frame and the primed reader");
+    // The first frame after the cut is ready at once, without waiting.
+    let after = play(
+        &mut pool,
+        &project,
+        9..12,
+        FetchPolicy::BestAvailable,
+        Duration::ZERO,
+    );
+    for lookup in &after {
+        assert!(matches!(lookup, FrameLookup::Exact(_)), "{lookup:?}");
+    }
+    assert_eq!(pool.seek_count(clip.id), before, "no seek at the cut");
+}
+
+#[test]
+fn a_slow_reader_catches_up() {
+    let clip = asset("h264-aac.mp4");
+    let project = edit(&clip, &[(0, 1000, 0)]);
+    let (mut pool, _) = pool_with(std::slice::from_ref(&clip), ReaderOptions::default());
+    // 30 ms per decoded frame while playback asks for a new frame every 5 ms: the reader
+    // falls behind, discards non-reference frames, then jumps ahead.
+    pool.decode_delay = Duration::from_millis(30);
+    pool.set_project(&project);
+    pool.set_playing(true);
+    let mut discarded = false;
+    let frame = Time::from_flicks(app_core::FLICKS_PER_SECOND / 30);
+    for n in 0..28 {
+        pool.begin_frame();
+        let t = Time::from_flicks(frame.flicks() * n + frame.flicks() / 2);
+        pool.video(clip.id, t, FetchPolicy::BestAvailable);
+        discarded |= pool.readers[0].discard() == queue::Discard::NonRef;
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(
+        discarded,
+        "non-reference frames were discarded while behind"
+    );
+    assert!(
+        pool.catch_up_count(clip.id) >= 1,
+        "jumped ahead when far behind"
+    );
+    assert_eq!(pool.reader_count(), 1);
+}
+
+#[test]
+fn keyframes_only_decodes_only_keyframes() {
+    let clip = asset("h264-aac.mp4");
+    let (mut pool, _) = pool_with(std::slice::from_ref(&clip), ReaderOptions::default());
+    pool.set_playing(true);
+    pool.set_keyframes_only(true);
+    pool.begin_frame();
+    // The fixture has one keyframe at 0: every later time holds it.
+    let frame = exact(&mut pool, clip.id, ms(500));
+    assert_eq!(frame.pts(), Some(Time::ZERO));
+    assert_eq!(pool.readers[0].published(), vec![Time::ZERO]);
+}

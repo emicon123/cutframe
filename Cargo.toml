@@ -18,12 +18,16 @@ base64 = "0.23"
 # Media fingerprints (CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception).
 blake3 = "1.8"
 bytemuck = { version = "1.25", features = ["derive"] }
+# Audio output (WASAPI on Windows; Apache-2.0).
+cpal = "0.18"
 crossbeam-channel = "0.5"
 # The per-user local app data folder, resolved before Tauri starts (MIT OR Apache-2.0).
 dirs = "7"
 minisign-verify = "0.3"
 pollster = "1.0"
 raw-window-handle = "0.6"
+# Wait-free SPSC ring between the audio feeder and the audio callback (MIT OR Apache-2.0).
+rtrb = "0.4"
 # FFmpeg 7.1 bindings (LGPL shared build, dynamically linked; pin in scripts/ffmpeg.json). 0.18 targets
 # FFmpeg 8. rsmpeg asks for rusty_ffmpeg ^0.16.1, a range that also holds the FFmpeg 8 releases
 # (0.16.6+ffmpeg.8, 0.16.7+ffmpeg.8), so rusty_ffmpeg is pinned to the last FFmpeg 7.1 release that is

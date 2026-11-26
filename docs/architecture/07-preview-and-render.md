@@ -10,13 +10,15 @@
 
 The preview shows the **composed timeline at the playhead**, drawn by the shared render graph
 (task 0320, `docs/design/render-graph.md`, [§9](#9-the-render-graph)): background, main track and
-overlays, SDR and HDR sources, decoded in hardware where the GPU can. The UI drives the playhead with
-`seek`; playback (transport, clock, audio) is task 0330.
+overlays, SDR and HDR sources, decoded in hardware where the GPU can. The engine owns the playhead:
+the transport (`crates/engine/src/playback/`) plays, pauses, shuttles, steps, seeks and loops, and the
+UI mirrors it from `playback-tick` (task 0330, `docs/design/playback.md`).
 
 | Piece | Where | State |
 |---|---|---|
 | Preview thread, messages, render on change, device loss | `crates/engine/src/preview.rs` | implemented |
-| Playhead and seek generation | `crates/engine/src/transport.rs` (`TransportShared`) | implemented (seek only) |
+| Transport atomics (state, rate, loop, playhead, shown frame, seek generation) | `crates/engine/src/transport.rs` (`TransportShared`) | implemented |
+| Transport state machine, `Playback` front door, audio seam (`AudioSink`, `NoAudio` wall clock), frame pacing, tick throttle, lookahead | `crates/engine/src/playback/` (`EngineAudio` adapts `engine::audio::AudioEngine`) | implemented |
 | GPU context, adapter order, WARP fallback, optional `NV12`/`P010`/`16BIT_NORM` | `crates/engine/src/render/gpu.rs` | implemented |
 | `build_plan` (pure) | `crates/engine/src/render/plan.rs` | implemented |
 | `Compositor`, source cache, layer and present passes | `render/compositor.rs`, `present.rs`, `shaders/layer.wgsl`, `present.wgsl` | implemented |
@@ -28,7 +30,7 @@ overlays, SDR and HDR sources, decoded in hardware where the GPU can. The UI dri
 | Visibility rules, `frames` mode | `src-tauri/src/preview/mod.rs` | implemented |
 | Smoke test through the real path | `src-tauri/src/smoke_test.rs` | implemented |
 | Golden-frame tests (WARP) | `crates/engine/tests/golden.rs`, `tests/golden/*.png` | implemented |
-| Transport, clock, audio, quality and zoom | `docs/design/playback.md`, render-graph §8 | **target** (0330, 0340) |
+| Quality, zoom, skim, source preview | render-graph §8, playback.md | **target** (0340) |
 
 ## 2. Two ways to put a frame on screen
 
@@ -85,7 +87,8 @@ block on rendering.
 | `Resize { width, height }` | new surface configuration (physical pixels); resets the present-rate window |
 | `SetVisible(bool)` | pauses/resumes drawing; a pause is not counted as a dropped frame |
 | `SnapshotChanged` | sent by `AppState::publish` after it stores a new project in the shared `ArcSwap` |
-| `Seek { generation, mode }` | sent by `PreviewHandle::seek` after it updates `TransportShared` |
+| `Seek { generation, mode }` | sent by `Playback` after a seek, step or project reset updated `TransportShared` |
+| `Transport` | sent by `Playback` after a play, pause, shuttle, loop toggle, preroll end or end of playback |
 | `FrameReady` | a reader decoded a frame a lookup was waiting for (coalesced by an `AtomicBool`) |
 | `Redraw` | an explicit redraw request (smoke test) |
 | `RenderFrame { width, height, reply }` | one offscreen frame through the compositor, answered on the same channel |
@@ -101,6 +104,24 @@ just stale) keeps the previous canvas for up to 250 ms, then is left out. The re
 compositor and its own `ReaderPool`; `MediaUnavailable` from a reader goes to the shell, which calls
 `AppState::report_missing`.
 
+**Playback** (playback.md §5, §7). While `TransportShared` is not paused the loop does not block:
+each iteration handles queued messages, then `play_step` acquires the surface (the swap chain's latency
+waitable paces it to vsync), asks the `AudioSink` for the audible time, picks the frame
+`floor((t_audible + 2 x refresh x rate) / frame)` with `FramePicker` (never backwards within one
+generation and loop epoch at positive rates, wrapping while looping), composites (the compositor skips
+an unchanged plan) and always presents. Preroll ends when the first frame has no stale or missing
+layer and the audio ring is ready, or after 300 ms (`Playback::preroll_done` sets `started`). The end
+of the timeline (clock at `duration` forward, at 0 in reverse) pauses on the last frame
+(`Playback::end`). Dropped frames are frames skipped at 1x plus frames first composited with a stale or
+missing layer; they reset at play start and go into the tick. After each new frame the scheduler's
+lookahead (1.5 s x rate, wrapping at the loop end) primes readers for clips that start soon
+(`ReaderPool::prime`, A/B readers per media; split points continue the same reader). Above 2x readers
+decode keyframes only; at 1x and 2x a reader more than two source frames behind discards non-reference
+frames, more than 500 ms behind it jumps 250 ms ahead. With the preview hidden the loop wakes every
+16 ms for ticks and end detection and presents nothing. Ticks go through the `on_tick` callback (the
+shell emits `playback-tick` and pauses background jobs while playing), at most 60 Hz on average and
+always once after a change.
+
 **Present configuration.** `AutoVsync`, `desired_maximum_frame_latency = 2`, a **non-sRGB** surface
 format (`Bgra8Unorm`, else `Rgba8Unorm`, else the first non-sRGB one): working values are already
 display-referred R'G'B'. The present pass scales the `Rgba16Float` canvas bilinearly into the surface
@@ -109,8 +130,9 @@ with a black letterbox. A failed acquire is retried after 16 ms (`Timeout`, `Out
 
 **Present statistics.** Once per `PRESENT_STATS_WINDOW = 5 s` of continuous drawing, the thread logs
 `frames`, `avg_fps`, `max_gap`, `p99_gap` and `long_gaps` (an interval above 1.5× the window's
-average). Pauses reset the window, so they never look like dropped frames. It is a debug log line,
-not an IPC event.
+average). While playing it adds `dropped`, `skipped`, `late`, `av_offset_ms` (largest |frame start -
+t_show|), `underruns`, `ring_min_fill` (from the audio sink) and `refresh_ms`. Pauses reset the window,
+so they never look like dropped frames. It is a debug log line, not an IPC event.
 
 ## 5. GPU selection and fallback
 

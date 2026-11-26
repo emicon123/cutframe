@@ -19,7 +19,7 @@ use app_core::media::MediaId;
 use rsmpeg::avutil::AVFrame;
 
 use super::decode_path::{DecodePath, PathMemory};
-use super::queue::{FrameQueue, Mode, Select};
+use super::queue::{CATCH_UP_LEAD, Discard, FAR_BEHIND, FrameQueue, Mode, Select};
 use super::{EXACT_TIMEOUT, Notifier, placeholder_for};
 use crate::media::decode::open_decoder_with_threads;
 use crate::media::error::{MediaError, MediaErrorKind};
@@ -47,6 +47,9 @@ pub(crate) struct ReaderSource {
     pub path: PathBuf,
     pub stream: u32,
     pub origin: Time,
+    /// Duration of one source frame (from the average frame rate; 1/30 s when unknown), for the
+    /// catch-up rule.
+    pub frame: Time,
 }
 
 /// The hardware decoder a reader may open.
@@ -72,6 +75,9 @@ pub(crate) struct ReaderConfig {
     pub memory: Arc<PathMemory>,
     pub notifier: Arc<Notifier>,
     pub below_normal_priority: bool,
+    /// Sleeps this long after every decoded frame: a slow decoder for catch-up tests.
+    #[cfg(test)]
+    pub decode_delay: Duration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +96,15 @@ struct State {
     /// The sample time of a lookup that did not get its exact frame: the reader wakes the
     /// consumer when a frame for it arrives.
     wanted: Option<Time>,
+    /// Which frames the decoder skips (shuttle, catch-up).
+    discard: Discard,
+    /// After a catch-up jump: lookups before this time keep the reader's target and get its
+    /// newest frame.
+    hold_until: Option<Time>,
+    /// Seeks started (diagnostics, tests).
+    seeks: u32,
+    /// Catch-up jumps (diagnostics, tests).
+    catch_ups: u32,
     shutdown: bool,
     /// Every pts pushed, for tests of progressive scrub.
     #[cfg(test)]
@@ -122,7 +137,7 @@ struct Shared {
 
 enum Work {
     Seek(Time),
-    Decode,
+    Decode(Discard),
     Exit,
 }
 
@@ -139,10 +154,11 @@ impl Shared {
             }
             if let Some(t) = state.queue.take_seek() {
                 self.abandon.store(false, Ordering::SeqCst);
+                state.seeks += 1;
                 return Work::Seek(t);
             }
             if state.queue.has_room(state.mode) {
-                return Work::Decode;
+                return Work::Decode(state.discard);
             }
             state = self
                 .cond
@@ -234,6 +250,22 @@ pub(crate) struct Reader {
     pub last_used: Instant,
     /// The pool's frame counter at the last lookup.
     pub used_in_frame: u64,
+    /// The sample time the playback scheduler primed this reader for (a clip that starts
+    /// soon), until a lookup uses it.
+    pub primed: Option<Time>,
+    /// The pool's frame counter when it was primed.
+    pub primed_in_frame: u64,
+}
+
+/// How a lookup steers its reader (playback.md §7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Steering {
+    pub mode: Mode,
+    /// Shuttle above 2x: decode keyframes only.
+    pub keyframes_only: bool,
+    /// Playback at 1x or 2x: discard non-reference frames when behind, jump ahead when far
+    /// behind.
+    pub catch_up: bool,
 }
 
 impl Reader {
@@ -245,6 +277,10 @@ impl Reader {
                 status: Status::Starting,
                 path: config.path,
                 wanted: None,
+                discard: Discard::Nothing,
+                hold_until: None,
+                seeks: 0,
+                catch_ups: 0,
                 shutdown: false,
                 #[cfg(test)]
                 published: Vec::new(),
@@ -265,7 +301,42 @@ impl Reader {
             last_served: None,
             last_used: Instant::now(),
             used_in_frame: 0,
+            primed: None,
+            primed_in_frame: 0,
         })
+    }
+
+    /// Seeks started so far.
+    pub fn seeks(&self) -> u32 {
+        self.shared.lock().seeks
+    }
+
+    /// Catch-up jumps so far.
+    pub fn catch_ups(&self) -> u32 {
+        self.shared.lock().catch_ups
+    }
+
+    #[cfg(test)]
+    pub fn discard(&self) -> Discard {
+        self.shared.lock().discard
+    }
+
+    /// The playback scheduler: decode towards `t` now (a clip that starts soon), so the frame
+    /// is ready when the clip starts.
+    pub fn prime(&mut self, t: Time, steering: Steering, frame: u64) {
+        let shared = Arc::clone(&self.shared);
+        let mut state = shared.lock();
+        state.mode = steering.mode;
+        state.discard = base_discard(steering, state.discard);
+        state.hold_until = None;
+        if state.queue.retarget(t) {
+            interrupt(&state, &shared.abandon);
+        }
+        drop(state);
+        shared.cond.notify_all();
+        self.primed = Some(t);
+        self.primed_in_frame = frame;
+        self.last_used = Instant::now();
     }
 
     pub fn serves(&self, media: MediaId, source: u64) -> bool {
@@ -317,12 +388,17 @@ impl Reader {
     }
 
     /// The frame for `t`: retargets the reader and answers by `policy`.
-    pub fn lookup(&mut self, t: Time, mode: Mode, policy: FetchPolicy) -> FrameLookup {
+    pub fn lookup(&mut self, t: Time, steering: Steering, policy: FetchPolicy) -> FrameLookup {
         let shared = Arc::clone(&self.shared);
         let mut state = shared.lock();
-        state.mode = mode;
-        if state.queue.retarget(t) {
-            shared.abandon.store(true, Ordering::SeqCst);
+        self.primed = None;
+        state.mode = steering.mode;
+        state.discard = base_discard(steering, state.discard);
+        let hold = steering.catch_up
+            && policy == FetchPolicy::BestAvailable
+            && self.catch_up(&mut state, t);
+        if !hold && state.queue.retarget(t) {
+            interrupt(&state, &shared.abandon);
         }
         shared.cond.notify_all();
         let deadline = Instant::now() + EXACT_TIMEOUT;
@@ -371,6 +447,39 @@ impl Reader {
                 .wait_timeout(state, left)
                 .unwrap_or_else(PoisonError::into_inner)
                 .0;
+        }
+    }
+
+    /// The catch-up rules of playback.md §7 for a lookup at `t` during playback. Returns true
+    /// when the reader keeps its target (it jumped ahead of `t`) and the lookup only reads.
+    fn catch_up(&self, state: &mut State, t: Time) -> bool {
+        if let Some(until) = state.hold_until {
+            if t < until && !matches!(state.status, Status::Failed(..)) {
+                return true;
+            }
+            state.hold_until = None;
+        }
+        match state.queue.behind(t) {
+            Some(behind) if behind > FAR_BEHIND => {
+                let ahead = t + CATCH_UP_LEAD;
+                tracing::debug!(media = %self.source.media, ?behind, "video reader far behind; jumping ahead");
+                if state.queue.jump_ahead(ahead) {
+                    interrupt(state, &self.shared.abandon);
+                }
+                state.hold_until = Some(ahead);
+                state.catch_ups += 1;
+                state.discard = Discard::NonRef;
+                true
+            }
+            Some(behind) if behind > Time(2 * self.source.frame.flicks()) => {
+                state.discard = Discard::NonRef;
+                false
+            }
+            Some(behind) if behind <= Time::ZERO && state.discard == Discard::NonRef => {
+                state.discard = Discard::Nothing;
+                false
+            }
+            _ => false,
         }
     }
 
@@ -598,6 +707,34 @@ fn monotonic(pts: Option<Time>, last: Option<Time>) -> Time {
     }
 }
 
+/// Interrupts the reader's current decode for a pending seek. Not while it opens its file and
+/// decoder: the seek is taken after the open anyway, and an open interrupted while FFmpeg
+/// probes the stream can fail as "invalid data" instead of "cancelled", which would wrongly
+/// send the media to software decode for the rest of the session.
+fn interrupt(state: &State, abandon: &AtomicBool) {
+    if state.status == Status::Running {
+        abandon.store(true, Ordering::SeqCst);
+    }
+}
+
+/// The discard a lookup or prime asks for: keyframes only for fast shuttle; a catch-up
+/// `NonRef` stays until the catch-up rule clears it; otherwise every frame.
+fn base_discard(steering: Steering, current: Discard) -> Discard {
+    match (steering.keyframes_only, current) {
+        (true, _) => Discard::NonKey,
+        (false, Discard::NonRef) if steering.catch_up => Discard::NonRef,
+        _ => Discard::Nothing,
+    }
+}
+
+fn skip_frame(discard: Discard) -> rsmpeg::ffi::AVDiscard {
+    match discard {
+        Discard::Nothing => rsmpeg::ffi::AVDISCARD_DEFAULT,
+        Discard::NonRef => rsmpeg::ffi::AVDISCARD_NONREF,
+        Discard::NonKey => rsmpeg::ffi::AVDISCARD_NONKEY,
+    }
+}
+
 fn run(shared: &Shared, mut config: ReaderConfig) {
     let _guard = ExitGuard(shared);
     if config.below_normal_priority {
@@ -629,6 +766,7 @@ fn run(shared: &Shared, mut config: ReaderConfig) {
     let mut failures = Failures::default();
     let mut last_pts: Option<Time> = None;
     let mut restarted = false;
+    let mut applied = Discard::Nothing;
     loop {
         let failure = match shared.next_work() {
             Work::Exit => return,
@@ -640,11 +778,26 @@ fn run(shared: &Shared, mut config: ReaderConfig) {
                     Err(err) => decoder.classify(err),
                 }
             }
-            Work::Decode => match decoder.next(&source, &memory) {
+            Work::Decode(discard) if discard != applied => {
+                decoder.reader.set_skip_frame(skip_frame(discard));
+                let left_keyframes = applied == Discard::NonKey;
+                applied = discard;
+                if left_keyframes {
+                    // The frames after the last keyframe miss their references: start again
+                    // from a keyframe at the target.
+                    shared.update(|state| state.queue.force_seek());
+                }
+                continue;
+            }
+            Work::Decode(_) => match decoder.next(&source, &memory) {
                 Ok(Some((pts, data))) => {
                     let pts = monotonic(pts, last_pts);
                     last_pts = Some(pts);
                     shared.publish(DecodedVideoFrame { pts, data });
+                    #[cfg(test)]
+                    if !config.decode_delay.is_zero() {
+                        std::thread::sleep(config.decode_delay);
+                    }
                     continue;
                 }
                 Ok(None) => {
@@ -697,6 +850,7 @@ fn run(shared: &Shared, mut config: ReaderConfig) {
                     }
                 };
                 last_pts = None;
+                applied = Discard::Nothing;
                 shared.update(|state| {
                     state.path = DecodePath::Software;
                     state.queue.force_seek();

@@ -1,11 +1,20 @@
-import { Play } from "lucide-react";
-import { useEffect, useRef, useSyncExternalStore } from "react";
+import { Pause, Play, Repeat } from "lucide-react";
+import { type ReactNode, useEffect, useRef } from "react";
 
 import { commands, type FrameRate } from "@/bindings";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  actionLabel,
+  actionTooltip,
+  getAction,
+  isEnabled,
+  useActionContext,
+} from "@/features/editor/actions";
 import { t } from "@/i18n";
 import { mediaUrl } from "@/ipc/media";
 import { formatTimecode } from "@/lib/time";
+import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/appStore";
 import { playheadStore } from "@/stores/playheadStore";
 import { useProjectStore } from "@/stores/projectStore";
@@ -127,30 +136,112 @@ function FramePreview() {
   return <canvas ref={canvasRef} className="absolute inset-0 size-full" />;
 }
 
-function usePlayhead(): number {
-  return useSyncExternalStore(playheadStore.subscribe, () => playheadStore.getState().time);
-}
-
 const DEFAULT_RATE: FrameRate = { num: 30, den: 1 };
 
+/**
+ * F1.59: playhead / timeline timecode, the Play button and the loop toggle (F1.67). The buttons
+ * run the registered actions, so they share labels, shortcuts and enabled state with the menu.
+ * Tooltips open below the bar, never over the native preview above it.
+ */
 function TransportBar() {
   const rate = useProjectStore((s) => s.state?.project.settings.frameRate ?? DEFAULT_RATE);
-  const playhead = usePlayhead();
+  const duration = useProjectStore((s) => s.state?.project.duration ?? 0);
+  const ctx = useActionContext();
+  const play = getAction("play-pause");
+  const loop = getAction("loop");
 
   return (
-    <div className="flex h-11 shrink-0 items-center gap-3 border-t px-3">
-      <span className="font-mono text-sm tabular-nums">{formatTimecode(playhead, rate)}</span>
-      <Button
+    <div className="grid h-11 shrink-0 grid-cols-[1fr_auto_1fr] items-center gap-3 border-t px-3">
+      <span className="flex items-center gap-1.5 font-mono text-sm tabular-nums">
+        <PlayheadTimecode rate={rate} />
+        <span className="text-muted-foreground" aria-hidden>
+          {t.preview.timecodeOf}
+        </span>
+        <span className="text-muted-foreground" data-testid="timeline-length">
+          {formatTimecode(duration, rate)}
+        </span>
+      </span>
+      <TransportButton
+        label={actionLabel(play, ctx)}
+        tooltip={actionTooltip(play, ctx)}
+        disabled={!isEnabled(play, ctx)}
+        onClick={play.run}
         variant="secondary"
-        size="icon"
-        className="mx-auto"
-        disabled
-        aria-label={t.preview.play}
-        title={t.preview.playSoon}
       >
-        <Play className="size-4" aria-hidden />
-      </Button>
-      <span className="w-[88px]" aria-hidden />
+        {ctx.playing ? <Pause className="size-4" aria-hidden /> : <Play className="size-4" aria-hidden />}
+      </TransportButton>
+      <div className="flex justify-end">
+        <TransportButton
+          label={actionLabel(loop, ctx)}
+          tooltip={actionTooltip(loop, ctx)}
+          disabled={!isEnabled(loop, ctx)}
+          onClick={loop.run}
+          pressed={ctx.looping}
+          variant="ghost"
+        >
+          <Repeat className="size-4" aria-hidden />
+        </TransportButton>
+      </div>
     </div>
   );
+}
+
+function TransportButton({
+  label,
+  tooltip,
+  disabled,
+  onClick,
+  pressed,
+  variant,
+  children,
+}: {
+  label: string;
+  tooltip: string;
+  disabled: boolean;
+  onClick: () => void;
+  pressed?: boolean;
+  variant: "secondary" | "ghost";
+  children: ReactNode;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant={variant}
+          size="icon"
+          aria-label={label}
+          aria-pressed={pressed}
+          className={cn(pressed && "bg-accent text-primary")}
+          disabled={disabled}
+          onClick={onClick}
+        >
+          {children}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" avoidCollisions={false}>
+        {tooltip}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/**
+ * The playhead timecode. Written straight into the DOM from a store subscription, so playback
+ * ticks (up to 60 Hz) never re-render React; the text changes once per frame at most.
+ */
+function PlayheadTimecode({ rate }: { rate: FrameRate }) {
+  const ref = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const show = (time: number) => {
+      const text = formatTimecode(time, rate);
+      if (element.textContent !== text) element.textContent = text;
+    };
+    show(playheadStore.getState().time);
+    return playheadStore.subscribe((s) => show(s.time));
+  }, [rate]);
+
+  return <span ref={ref} data-testid="playhead-timecode" />;
 }

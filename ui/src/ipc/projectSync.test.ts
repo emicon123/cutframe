@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { events, mockCommands, type MockCommandHandlers } from "@/bindings";
+import { events, mockCommands, type MockCommandHandlers, type PlaybackTick } from "@/bindings";
 import { fileActions } from "@/features/project/fileActions";
 import { recovery } from "@/features/project/recovery";
 import { playheadStore } from "@/stores/playheadStore";
@@ -29,6 +29,16 @@ const project: ProjectState = {
   dirty: false,
 };
 
+const paused: PlaybackTick = {
+  time: 0,
+  state: "paused",
+  rate: 0,
+  looping: false,
+  seek: 0,
+  droppedFrames: 0,
+  target: { kind: "timeline" },
+};
+
 let stop: (() => void) | undefined;
 
 afterEach(() => {
@@ -37,7 +47,7 @@ afterEach(() => {
   vi.restoreAllMocks();
   useProjectStore.setState({ state: null });
   useAppStore.setState({ info: null, gpuNotice: null });
-  playheadStore.setState({ time: 0, seekGeneration: null });
+  playheadStore.setState({ time: 0, state: "paused", rate: 0, looping: false, seekGeneration: null });
   useUiStore.setState({ view: "home", started: false });
 });
 
@@ -50,6 +60,7 @@ function mockStartup(
     listRecovery: () => [],
     takeLaunchPath: () => null,
     seek: () => 1,
+    getPlayback: () => paused,
     ...extra,
     cancelGesture,
     getProject: () => {
@@ -208,32 +219,32 @@ describe("startProjectSync", () => {
     expect(useAppStore.getState().gpuNotice).toEqual({ kind: "previewLost" });
   });
 
-  it("sends the playhead on the first state and when a longer timeline may reach it", async () => {
-    const seeks: string[] = [];
+  it("mirrors the transport: getPlayback once, then every playbackTick", async () => {
+    let fetched = 0;
     mockStartup(() => null, [], {
-      seek: ({ time, mode }) => {
-        seeks.push(`${mode} ${time}`);
-        return seeks.length;
+      getPlayback: () => {
+        fetched += 1;
+        return { ...paused, time: 4200, looping: true, seek: 7 };
       },
     });
     vi.spyOn(recovery, "load").mockResolvedValue();
-    playheadStore.setState({ time: 500 });
 
     stop = startProjectSync();
-    await vi.waitFor(() => expect(seeks).toEqual(["exact 500"]));
+    await vi.waitFor(() => expect(playheadStore.getState().time).toBe(4200));
+    expect(playheadStore.getState()).toMatchObject({ looping: true, seekGeneration: 7 });
+    expect(fetched).toBe(1);
 
-    // The engine clamped 500 to the empty timeline; it reaches the playhead now.
-    const apply = useProjectStore.getState().apply;
-    apply({ ...project, revision: 4, project: { ...project.project, duration: 800 } });
-    await vi.waitFor(() => expect(seeks).toEqual(["exact 500", "exact 500"]));
-
-    // Shorter: the engine keeps 500, nothing to send. A change from a duration below the
-    // playhead sends it again, as the engine may have clamped a seek made meanwhile.
-    apply({ ...project, revision: 5, project: { ...project.project, duration: 300 } });
+    await events.playbackTick.emit({ ...paused, time: 9000, state: "playing", rate: 1, seek: 7 });
+    await vi.waitFor(() => expect(playheadStore.getState()).toMatchObject({ time: 9000, state: "playing" }));
+    // Emitted before a newer seek the UI already knows about: ignored.
+    await events.playbackTick.emit({ ...paused, time: 10, seek: 6 });
     await Promise.resolve();
-    expect(seeks).toHaveLength(2);
-    apply({ ...project, revision: 6, project: { ...project.project, duration: 900 } });
-    await vi.waitFor(() => expect(seeks).toEqual(["exact 500", "exact 500", "exact 500"]));
-    await vi.waitFor(() => expect(playheadStore.getState().seekGeneration).toBe(3));
+    expect(playheadStore.getState().time).toBe(9000);
+
+    stop();
+    stop = undefined;
+    await events.playbackTick.emit({ ...paused, time: 1, seek: 8 });
+    await Promise.resolve();
+    expect(playheadStore.getState().time).toBe(9000);
   });
 });

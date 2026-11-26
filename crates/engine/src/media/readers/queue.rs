@@ -19,6 +19,24 @@ pub(crate) const CPU_QUEUE_BYTES: usize = 160 * 1024 * 1024;
 /// Frames past the target a paused reader decodes (for the Right key), then it stops.
 pub(crate) const PAUSED_AHEAD: usize = 2;
 
+/// Catch-up (playback.md §7): a reader whose newest frame is more than this far behind the
+/// sample time seeks ahead of it.
+pub(crate) const FAR_BEHIND: Time = Time(app_core::FLICKS_PER_SECOND / 2);
+
+/// How far past the sample time a catch-up seek lands.
+pub(crate) const CATCH_UP_LEAD: Time = Time(app_core::FLICKS_PER_SECOND / 4);
+
+/// Which frames the decoder skips (`AVCodecContext::skip_frame`, playback.md §7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Discard {
+    /// Decode every frame.
+    Nothing,
+    /// Skip frames no other frame references (catch-up).
+    NonRef,
+    /// Keyframes only (shuttle above 2x).
+    NonKey,
+}
+
 /// How far a reader decodes ahead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Mode {
@@ -60,6 +78,9 @@ pub(crate) struct FrameQueue {
     last_pts: Option<Time>,
     /// The decoder has drained: nothing follows the last frame.
     eos: bool,
+    /// The target of the last seek (or catch-up jump) until a frame at or past it arrives:
+    /// the reader is still decoding forward to it, so it is not behind playback.
+    approaching: Option<Time>,
 }
 
 impl FrameQueue {
@@ -75,6 +96,7 @@ impl FrameQueue {
             stream_start: None,
             last_pts: None,
             eos: false,
+            approaching: None,
         }
     }
 
@@ -154,6 +176,7 @@ impl FrameQueue {
         self.seek_pending = false;
         self.clear();
         self.seeking = self.target;
+        self.approaching = self.target;
         self.target
     }
 
@@ -170,6 +193,7 @@ impl FrameQueue {
         self.stream_start = None;
         self.last_pts = None;
         self.eos = false;
+        self.approaching = None;
     }
 
     fn drop_before(&mut self, t: Time) {
@@ -194,6 +218,9 @@ impl FrameQueue {
             self.stream_start = Some(pts);
         }
         self.last_pts = Some(pts);
+        if self.approaching.is_some_and(|a| pts >= a) {
+            self.approaching = None;
+        }
         if self.target.is_some_and(|t| pts <= t) {
             self.frames.clear();
             self.bytes = 0;
@@ -210,7 +237,28 @@ impl FrameQueue {
             return false;
         }
         self.eos = true;
+        self.approaching = None;
         self.frames.is_empty()
+    }
+
+    /// How far the newest decoded frame is behind `t` (negative: ahead), for catch-up. `None`
+    /// while a seek is pending or running, while the reader decodes forward to the target of
+    /// its last seek, at the end of the stream and before the first frame.
+    pub fn behind(&self, t: Time) -> Option<Time> {
+        if self.seek_pending || self.seeking.is_some() || self.approaching.is_some() || self.eos {
+            return None;
+        }
+        self.last_pts.map(|newest| t - newest)
+    }
+
+    /// Catch-up: moves the target to `t` (ahead of the sample time); the reader decodes
+    /// forward to it, or seeks when it is out of reach. Returns true when a seek is needed.
+    pub fn jump_ahead(&mut self, t: Time) -> bool {
+        let seek = self.retarget(t);
+        if !seek {
+            self.approaching = Some(t);
+        }
+        seek
     }
 
     /// Whether the reader should decode another frame.
@@ -455,6 +503,33 @@ mod tests {
         assert!(!q.has_room(Mode::Playing), "seek first");
         q.take_seek();
         assert!(q.has_room(Mode::Playing));
+    }
+
+    #[test]
+    fn behind_is_measured_only_once_the_seek_target_was_reached() {
+        let mut q = decoded(10 * F, &[]);
+        assert_eq!(q.behind(t(20 * F)), None, "seeking");
+        q.push(frame(0, 4));
+        assert_eq!(
+            q.behind(t(20 * F)),
+            None,
+            "decoding forward to the seek target"
+        );
+        for n in 1..=10 {
+            q.push(frame(n * F, 4));
+        }
+        assert_eq!(q.behind(t(20 * F)), Some(t(10 * F)));
+        assert_eq!(q.behind(t(9 * F)), Some(t(-F)), "ahead");
+
+        // A jump ahead within reach decodes forward without a seek; until it gets there the
+        // reader is not behind.
+        assert!(!q.jump_ahead(t(15 * F)));
+        assert_eq!(q.behind(t(30 * F)), None);
+        for n in 11..=15 {
+            q.push(frame(n * F, 4));
+        }
+        assert_eq!(q.behind(t(16 * F)), Some(t(F)));
+        assert!(q.jump_ahead(t(15 * F + 2 * S)), "out of reach: a seek");
     }
 
     #[test]
