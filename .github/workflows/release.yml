@@ -58,6 +58,13 @@ jobs:
       - name: Provision FFmpeg (pinned, SHA-256 and LGPL checked)
         run: ./scripts/fetch-ffmpeg.ps1
 
+      # Third-party licence notices for the About dialog (ui/src/generated/licenses.json): Rust crates
+      # linked into the app, bundled npm packages, the Rust std and the FFmpeg LGPL notice + source
+      # offer. Runs after the FFmpeg step (it reads .ffmpeg\NOTICE.txt) and before the UI build; it
+      # fails on a package without licence or licence text and on GPL/AGPL/LGPL-only npm packages.
+      - name: Third-party licence notices
+        run: pnpm gen:licenses
+
       # Code signing (Azure Trusted Signing) and the updater (latest.json) are added once the
       # signing account and the updater key exist. Until then releases are unsigned.
       - uses: tauri-apps/tauri-action@v1

@@ -43,7 +43,16 @@ Useful commands:
 pnpm check        # all local checks (cargo fmt, UI checks + build, clippy, tests)
 pnpm bindings     # regenerate ui/src/bindings.ts after changing IPC commands or types
 cargo test -p app-core
+pnpm gen:licenses # regenerate ui/src/generated/licenses.json (About dialog licence notices)
 ```
+
+`pnpm gen:licenses` (`scripts/gen-licenses.mjs`, plain Node, no extra tool) collects the licences of
+the Rust crates linked into the app (`cargo metadata`, normal dependencies of `src-tauri` without
+proc-macros), the npm packages bundled into the UI (`pnpm licenses list --prod`), the Rust standard
+library and the FFmpeg LGPL notice and source offer (`scripts/ffmpeg.json`, `.ffmpeg/NOTICE.txt`).
+Licence texts come from each package; packages that ship none fall back to the SPDX texts in
+`scripts/licenses/spdx/`. The output is gitignored; `pnpm dev`, `pnpm build` and `pnpm check` run
+it first, and it fails on a package without a licence and on copyleft npm packages.
 
 ## Documentation
 
