@@ -1,10 +1,9 @@
-import { CircleAlert, FolderOpen, Plus } from "lucide-react";
+import { FolderOpen, Plus } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { fileActions } from "@/features/project/fileActions";
 import { t } from "@/i18n";
-import { useAppStore } from "@/stores/appStore";
 
 import { DeleteConfirmDialog } from "./DeleteConfirmDialog";
 import { type CardAction, ProjectCard } from "./ProjectCard";
@@ -19,7 +18,6 @@ import { RenameDialog } from "./RenameDialog";
 export function HomeScreen({ recent = appRecent }: { recent?: Recent }) {
   const projects = recent.store((s) => s.projects);
   const loaded = recent.store((s) => s.loaded);
-  const lastError = useAppStore((s) => s.lastError);
   const [renaming, setRenaming] = useState<RecentProject | null>(null);
   const [deleting, setDeleting] = useState<RecentProject | null>(null);
 
@@ -67,12 +65,6 @@ export function HomeScreen({ recent = appRecent }: { recent?: Recent }) {
               {t.home.open}
             </Button>
           </div>
-          {lastError && (
-            <p role="alert" className="flex items-center gap-2 text-sm text-destructive">
-              <CircleAlert className="size-4 shrink-0" aria-hidden />
-              {lastError}
-            </p>
-          )}
           <section aria-labelledby="home-recent" className="grid gap-3">
             <h2 id="home-recent" className="text-sm font-medium text-muted-foreground">
               {t.home.recent}

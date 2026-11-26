@@ -27,7 +27,8 @@ flowchart LR
   boot["main.tsx"] --> app["App"]
   app -->|"view === editor"| editor["EditorLayout (TopBar, panels, StatusBar)"]
   app -->|"view === home"| home["HomeScreen (recent projects)"]
-  app --> dialogs["ProjectSettings, Preferences, Shortcuts, Recovery, UnsavedChanges"]
+  app --> dialogs["ProjectSettings, Preferences, Shortcuts, Recovery, UnsavedChanges, About, ErrorDialog"]
+  app --> toaster["Toaster (toastStore)"]
 ```
 
 - **Home is a view, not a document.** The Rust model always holds one project; Home shows the recent
@@ -47,7 +48,7 @@ flowchart LR
 │ │           │ │                             │ │ + History  │                 │
 │ └───────────┘ └─────────────────────────────┘ └────────────┘                 │
 ├ Timeline (toolbar, track headers, canvas) ────────────────────────────────────┤
-└ StatusBar: GPU, preview mode, GPU notice, last error ─────────────────────────┘
+└ StatusBar: GPU, preview mode, GPU notice, version ────────────────────────────┘
 ```
 
 - Panels are `react-resizable-panels`: two groups (rows and columns), media bin and inspector
@@ -60,7 +61,7 @@ flowchart LR
   groups with default sizes.
 - `StatusBar` sits **below** the timeline, so no tooltip from it can reach the native preview. It
   shows the adapter and backend, `previewMode`, a warning for a software adapter, a dismissible
-  runtime GPU notice, and the translated text of the last failed command.
+  runtime GPU notice and the version. Failed commands are toasts (§9), not a status-bar line.
 - `TopBar` shows the project name, the main menu and undo/redo buttons built from the action
   registry. Export is a disabled placeholder until the export feature lands.
 
@@ -72,7 +73,8 @@ directly, so a drag or a playhead move does not re-render React.
 | Store | File | Kind | Holds |
 |---|---|---|---|
 | `projectStore` | `stores/projectStore.ts` | `create` | the last `ProjectState` from Rust; `apply` ignores an older `revision` |
-| `appStore` | `stores/appStore.ts` | `create` | `AppInfo`, `lastError`, `previewOccluders`, `gpuNotice`; `run()` wraps a command and reports a rejection |
+| `appStore` | `stores/appStore.ts` | `create` | `AppInfo`, `previewOccluders`, `gpuNotice`; `reportError` logs a failure and shows an error toast; `run()` wraps a command and reports a rejection |
+| `toastStore` | `stores/toastStore.ts` | `create` | the shown toasts (oldest first, at most 4; a repeated message moves to the end with a count) |
 | `uiStore` | `stores/uiStore.ts` | `create` | `view`, `started`, dialog flags, media panel layout/sort/filter, panel collapse mirror, `layoutVersion`, timeline `snapping` (persisted) |
 | `selectionStore` | `stores/selectionStore.ts` | `createStore` | selected clip ids **or** one selected gap; pruned after every `project-changed` |
 | `playheadStore` | `stores/playheadStore.ts` | `createStore` | playhead time in flicks (UI-owned until playback) |
@@ -274,7 +276,24 @@ comes back from `set_preferences`.
   the raw key, so an older UI build cannot display `addTrack`.
 - Adding a new backend key means adding a translation in the same change; a missing one is a bug, not
   a crash.
-- `describeError` is the only user-facing error text; diagnostics stay in the console.
+- `describeError` is the only user-facing error text; diagnostics stay in the console (and Rust
+  writes every failed command with its kind and message to the log file).
+- **Toasts** (`features/notifications/Toaster.tsx`, F0.08): non-blocking, stacked bottom-right above
+  the status bar (the timeline/inspector corner, never over the native preview in the default
+  layout, so no occluder). Info and success go after 4 s, errors after 10 s; hover or focus keeps
+  one. `errorToast` builds the toast for a failure: the kind's text, and for a failure Rust logged
+  (any `IpcError` except the self-explaining `invalidEdit`, `overlap`, `trackLocked`,
+  `mediaTooShort`, `cancelled`) "Details are in the log file." with an **Open logs** button.
+- **Error dialog** (`features/notifications/ErrorDialog.tsx`) for failures that leave a decision:
+  `fileActions` routes a failed **open** (File → Open, a recent project, a double-clicked file) and a
+  failed **save** (Save, Save As, the save inside the unsaved-changes prompt) to it; a failed save
+  offers Save As…. A failed file picker, New project or close stays a toast.
+- **Help** menu: Open logs folder (`openLogsFolder` → toast on `unavailable`/`io`) and About.
+  `AboutDialog` (`features/about/`) shows `getAboutInfo` and the licences from
+  `src/generated/licenses.json` (made by `pnpm gen:licenses`, gitignored), loaded through
+  `import.meta.glob` so it is its own chunk and a missing file still builds; the package list is
+  searchable and paged (50 rows), and a licence text renders only when its row is expanded. URLs are
+  shown as text with a copy button: the webview has no permission to open external links.
 
 ## 10. Tests
 
@@ -283,7 +302,8 @@ Vitest (`ui/`), colocated `*.test.ts(x)`:
 - pure modules are tested directly: geometry, hit testing, selection, snapping, drag planning, drop,
   gap, navigation, zoom math, filmstrip/waveform mapping, the product cache, browse, skim, waveform drawing, import summaries, relink, layout storage, shortcuts, actions;
 - components are tested with Testing Library: `MediaBin`, `HomeScreen`, `PreviewArea`, the dialogs,
-  `StatusBar`, `MainMenu`, `HistoryPanel`;
+  `StatusBar`, `MainMenu`, `HistoryPanel`, `Toaster`, `ErrorDialog`, `AboutDialog`; the toast queue,
+  error-toast mapping and licence search/paging are pure and tested directly;
 - `bindings.ts` mocks (`commands.*.mock`) come from tauri-specta's `.mocks()`; no test invents a Rust
   type.
 

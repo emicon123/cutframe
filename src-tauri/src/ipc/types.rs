@@ -609,6 +609,42 @@ pub struct AppInfo {
     pub preview_mode: PreviewMode,
 }
 
+/// How the running binary was built. A stable key; the UI translates it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum BuildProfile {
+    Debug,
+    Release,
+}
+
+impl BuildProfile {
+    /// The profile of this binary (`debug_assertions` on or off).
+    pub fn current() -> Self {
+        if cfg!(debug_assertions) {
+            BuildProfile::Debug
+        } else {
+            BuildProfile::Release
+        }
+    }
+}
+
+/// Static facts for the About dialog (F0.10). They do not change while the app runs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct AboutInfo {
+    /// The workspace version, e.g. `0.1.0`.
+    pub version: String,
+    pub build_profile: BuildProfile,
+    /// Short git commit hash the binary was built from; `None` when unknown at build time.
+    pub commit: Option<String>,
+    /// The linked FFmpeg's `av_version_info()`, e.g. `n7.1.1`. Informative only, never parsed.
+    pub ffmpeg_version: String,
+    /// The linked FFmpeg's licence as it reports it (e.g. `LGPL version 2.1 or later`).
+    pub ffmpeg_license: String,
+    /// The folder with the log files; `None` when logs go to stdout only.
+    pub log_dir: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use engine::render::{DeviceKind, FallbackReason, GpuInfo};

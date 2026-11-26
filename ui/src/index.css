@@ -23,6 +23,7 @@
   --accent-foreground: oklch(0.97 0.005 285);
   --destructive: oklch(0.64 0.21 25);
   --warning: oklch(0.8 0.15 80);
+  --success: oklch(0.72 0.15 155);
   --border: oklch(0.28 0.01 285);
   --input: oklch(0.3 0.01 285);
   --ring: oklch(0.68 0.19 292);
@@ -67,6 +68,7 @@
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-warning: var(--warning);
+  --color-success: var(--success);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -79,6 +81,10 @@
   --spacing-media-tile: 7.5rem;
   /* Smallest width of a home-screen project card. */
   --spacing-project-card: 13rem;
+  /* Width of a toast notification. */
+  --spacing-toast: 22rem;
+  /* Height of the About dialog. */
+  --spacing-about-dialog: 80vh;
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);

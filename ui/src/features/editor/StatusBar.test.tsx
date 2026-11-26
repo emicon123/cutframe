@@ -14,7 +14,7 @@ const renderBar = () =>
     </TooltipProvider>,
   );
 
-afterEach(() => useAppStore.setState({ info: null, gpuNotice: null, lastError: null }));
+afterEach(() => useAppStore.setState({ info: null, gpuNotice: null }));
 
 describe("StatusBar", () => {
   it("shows a warning icon explaining a fallback", () => {

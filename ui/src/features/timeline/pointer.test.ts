@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type IpcError, mockCommands } from "@/bindings";
 import { FLICKS_PER_SECOND } from "@/lib/time";
-import { useAppStore } from "@/stores/appStore";
 import { playheadStore } from "@/stores/playheadStore";
 import { type ProjectState, useProjectStore } from "@/stores/projectStore";
 import { selectionStore } from "@/stores/selectionStore";
@@ -98,7 +97,6 @@ afterEach(() => {
   detach();
   vi.unstubAllGlobals();
   useProjectStore.setState({ state: null });
-  useAppStore.setState({ lastError: null });
 });
 
 describe("timeline pointer", () => {

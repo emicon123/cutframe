@@ -141,6 +141,16 @@ cargo install cargo-deny@0.22.0 --locked   # once; CI pins this version
 cargo deny --all-features check
 ```
 
+**Third-party notices.** `scripts/gen-licenses.mjs` (`pnpm gen:licenses`) writes
+`ui/src/generated/licenses.json` (gitignored) for the About dialog: the Rust crates linked into
+the app (normal dependencies of `src-tauri` for `x86_64-pc-windows-msvc`, without dev/build
+dependencies and proc-macros), the Rust standard library, the npm packages bundled into the UI
+(`pnpm licenses list --prod`) and the FFmpeg notice and source offer from `scripts/ffmpeg.json` and
+`.ffmpeg/NOTICE.txt`. Licence texts are taken from each package and deduplicated; a package
+without licence files falls back to the SPDX texts in `scripts/licenses/spdx/`. It fails on a
+package without a licence expression or text, and on GPL/AGPL/LGPL-only npm packages. `pnpm dev`,
+`pnpm build`, `pnpm check` and both workflows run it before the UI is built.
+
 ## 6. Quality gates
 
 Local checks on the Windows development machine are the primary gate. `pnpm check` runs the same

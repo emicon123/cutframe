@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { type HistoryState, mockCommands } from "@/bindings";
 import { t } from "@/i18n";
-import { useAppStore } from "@/stores/appStore";
+import { useToastStore } from "@/stores/toastStore";
 import { type ProjectState, useProjectStore } from "@/stores/projectStore";
 
 import { historyRows } from "./history";
@@ -66,7 +66,6 @@ const state = (h: Pick<HistoryState, "entries" | "current">): ProjectState => ({
 
 afterEach(() => {
   useProjectStore.setState({ state: null });
-  useAppStore.setState({ lastError: null });
   vi.restoreAllMocks();
 });
 
@@ -97,6 +96,8 @@ describe("HistoryPanel", () => {
     render(<HistoryPanel />);
 
     fireEvent.click(screen.getByRole("button", { name: t.history.labels.addTrack }));
-    await waitFor(() => expect(useAppStore.getState().lastError).toBe(t.errors.kinds.invalidEdit));
+    await waitFor(() =>
+      expect(useToastStore.getState().toasts.at(-1)?.text).toBe(t.errors.kinds.invalidEdit),
+    );
   });
 });

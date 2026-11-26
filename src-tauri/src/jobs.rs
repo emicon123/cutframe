@@ -322,6 +322,11 @@ impl JobContext {
 
     /// Ends the job: unregisters it, then emits `job-finished`. Emit everything else first.
     pub fn finish(self, result: Result<(), IpcError>) {
+        match &result {
+            Ok(()) => {}
+            Err(IpcError::Cancelled(_)) => tracing::info!(job = %self.id.0, "job cancelled"),
+            Err(error) => tracing::warn!(job = %self.id.0, ?error, "job failed"),
+        }
         lock(&self.inner.jobs).remove(&self.id);
         self.inner.host.job_finished(JobFinished {
             job_id: self.id,

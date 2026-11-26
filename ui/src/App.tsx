@@ -1,10 +1,13 @@
 import { useEffect } from "react";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { AboutDialog } from "@/features/about/AboutDialog";
 import { EditorLayout } from "@/features/editor/EditorLayout";
 import { installShortcuts } from "@/features/editor/shortcuts";
 import { ShortcutsDialog } from "@/features/editor/ShortcutsDialog";
 import { HomeScreen } from "@/features/home/HomeScreen";
+import { ErrorDialog } from "@/features/notifications/ErrorDialog";
+import { Toaster } from "@/features/notifications/Toaster";
 import { PreferencesDialog } from "@/features/preferences/PreferencesDialog";
 import { loadPreferences } from "@/features/preferences/preferencesStore";
 import { ProjectSettingsDialog } from "@/features/project/ProjectSettingsDialog";
@@ -37,6 +40,10 @@ export function App() {
       <ShortcutsDialog />
       <RecoveryDialog />
       <UnsavedChangesDialog />
+      <AboutDialog />
+      {/* After the unsaved prompt: a failed save from it shows on top. */}
+      <ErrorDialog />
+      <Toaster />
     </TooltipProvider>
   );
 }

@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { IpcError } from "@/bindings";
+import { Toaster } from "@/features/notifications/Toaster";
 import { t } from "@/i18n";
 import { FLICKS_PER_SECOND } from "@/lib/time";
 import { useAppStore } from "@/stores/appStore";
@@ -28,7 +29,6 @@ const long: RecentProject = {
 const gone: RecentProject = { ...trip, path: "D:\\Gone.cutframe", name: "Gone", modifiedMs: null };
 
 afterEach(() => {
-  useAppStore.setState({ lastError: null });
   vi.restoreAllMocks();
 });
 
@@ -69,10 +69,14 @@ function setup(initial: RecentProject[], failRename?: IpcError) {
       return Promise.resolve();
     },
     reportError: (error) => useAppStore.getState().reportError(error),
-    clearError: () => undefined,
     logError: () => undefined,
   });
-  render(<HomeScreen recent={recent} />);
+  render(
+    <>
+      <HomeScreen recent={recent} />
+      <Toaster />
+    </>,
+  );
   return { calls };
 }
 
@@ -234,6 +238,8 @@ describe("HomeScreen", () => {
     setup([]);
     expect(await screen.findByText(t.home.empty)).toBeTruthy();
     useAppStore.getState().reportError({ kind: "fileNotFound", message: "gone" } satisfies IpcError);
-    expect((await screen.findByRole("alert")).textContent).toBe(t.errors.kinds.fileNotFound);
+    const toast = await screen.findByRole("alert");
+    expect(toast.textContent).toContain(t.errors.kinds.fileNotFound);
+    expect(toast.textContent).not.toContain("gone");
   });
 });

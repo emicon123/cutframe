@@ -19,10 +19,11 @@ use uuid::Uuid;
 
 use super::IpcError;
 use super::types::{
-    AppInfo, CacheInfo, JobId, PreviewMode, PreviewRect, ProjectState, RecentProject,
-    RecoveryEntry, SeekMode,
+    AboutInfo, AppInfo, BuildProfile, CacheInfo, JobId, PreviewMode, PreviewRect, ProjectState,
+    RecentProject, RecoveryEntry, SeekMode,
 };
 use crate::import;
+use crate::logging::LogDir;
 use crate::media_paths;
 use crate::preferences::{self, CURRENT_PREFERENCES_VERSION, Preferences, PreferencesError};
 use crate::project_file;
@@ -43,6 +44,7 @@ pub fn get_project(state: State<'_, AppState>) -> ProjectState {
 /// Adds an empty track at `index` (top = 0) or at the bottom. Returns the new track's id.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn add_track(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -71,6 +73,7 @@ pub fn add_track(
 /// track (e.g. audio-only media on a video track), or a time outside `0..=2^53` flicks.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn add_clips(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -127,6 +130,8 @@ fn ipc_time(time: Time) -> Result<Time, IpcError> {
 /// gesture is still open, so cancel it.
 #[tauri::command]
 #[specta::specta]
+// Gesture updates are rejected (overlap) many times a second during a drag: debug, not warn.
+#[tracing::instrument(skip_all, err(Debug, level = "debug"))]
 pub fn move_clips(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -158,6 +163,8 @@ pub fn move_clips(
 /// Errors: `trackLocked`, and `invalidEdit` (unknown clip, a time outside ±2^53 flicks).
 #[tauri::command]
 #[specta::specta]
+// Gesture updates are rejected (overlap) many times a second during a drag: debug, not warn.
+#[tracing::instrument(skip_all, err(Debug, level = "debug"))]
 pub fn trim_clip(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -192,6 +199,7 @@ fn ipc_position(time: Time) -> Result<Time, IpcError> {
 /// to split, unknown clip, a time outside `0..=2^53` flicks).
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn split_clips(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -221,6 +229,7 @@ pub fn split_clips(
 /// `invalidEdit` (no clips, unknown clip).
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn delete_clips(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -240,6 +249,7 @@ pub fn delete_clips(
 /// unknown track, a time outside `0..=2^53` flicks).
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn delete_gap(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -261,6 +271,7 @@ pub fn delete_gap(
 /// `0..=2^53` flicks).
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn trim_to_playhead(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -281,6 +292,7 @@ pub fn trim_to_playhead(
 /// main clip is on a locked track).
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn set_magnetic(app: AppHandle, state: State<'_, AppState>, on: bool) -> Result<(), IpcError> {
     state.edit(&app, |doc| {
         if doc.project().magnetic == on {
@@ -297,6 +309,7 @@ pub fn set_magnetic(app: AppHandle, state: State<'_, AppState>, on: bool) -> Res
 /// Errors: `invalidEdit` (no clips, unknown clip).
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn copy_clips(state: State<'_, AppState>, clips: Vec<ClipId>) -> Result<(), IpcError> {
     state.copy_clips(&clips)
 }
@@ -306,6 +319,7 @@ pub fn copy_clips(state: State<'_, AppState>, clips: Vec<ClipId>) -> Result<(), 
 /// changes only if the delete succeeds. Errors as `deleteClips`.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn cut_clips(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -325,6 +339,7 @@ pub fn cut_clips(
 /// `0..=2^53` flicks), `trackLocked`.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn paste_clips(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -340,6 +355,7 @@ pub fn paste_clips(
 /// Errors: `invalidEdit` (no clips, unknown clip), `trackLocked`.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn duplicate_clips(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -362,6 +378,7 @@ pub fn duplicate_clips(
 /// clip).
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn link_clips(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -380,6 +397,7 @@ pub fn link_clips(
 /// Errors: `trackLocked`, `invalidEdit` (none of the clips is linked, unknown clip).
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn unlink_clips(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -401,6 +419,7 @@ pub fn unlink_clips(
 /// Errors: `trackLocked`, `invalidEdit` (nothing to detach, unknown clip).
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn detach_audio(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -427,6 +446,7 @@ pub fn detach_audio(
 /// video track, media without sound on an audio track, any media on a text track).
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn replace_clip_media(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -449,6 +469,7 @@ pub fn replace_clip_media(
 /// Errors: `invalidEdit` (unknown track).
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn set_track_flag(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -474,6 +495,7 @@ pub fn set_track_flag(
 /// Errors: `invalidEdit` (the main track, unknown track).
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn move_track(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -492,6 +514,7 @@ pub fn move_track(
 
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn remove_track(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -505,6 +528,7 @@ pub fn remove_track(
 
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn rename_track(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -519,6 +543,7 @@ pub fn rename_track(
 
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn rename_project(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -534,6 +559,7 @@ pub fn rename_project(
 /// on Escape, lost pointer capture, window blur and at startup. Does nothing if no gesture is open.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn cancel_gesture(app: AppHandle, state: State<'_, AppState>) -> Result<(), IpcError> {
     state.edit(&app, |doc| Ok(doc.gesture_cancel().then_some(())))?;
     Ok(())
@@ -542,6 +568,7 @@ pub fn cancel_gesture(app: AppHandle, state: State<'_, AppState>) -> Result<(), 
 /// Returns `false` if there was nothing to undo. While a gesture is open, cancels it instead.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn undo(app: AppHandle, state: State<'_, AppState>) -> Result<bool, IpcError> {
     Ok(state
         .edit(&app, |doc| Ok(doc.undo().then_some(())))?
@@ -551,6 +578,7 @@ pub fn undo(app: AppHandle, state: State<'_, AppState>) -> Result<bool, IpcError
 /// Returns `false` if there was nothing to redo. While a gesture is open, cancels it instead.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn redo(app: AppHandle, state: State<'_, AppState>) -> Result<bool, IpcError> {
     Ok(state
         .edit(&app, |doc| Ok(doc.redo().then_some(())))?
@@ -563,6 +591,7 @@ pub fn redo(app: AppHandle, state: State<'_, AppState>) -> Result<bool, IpcError
 /// `invalidEdit` if `index > history.entries.length`; then nothing changes.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn jump_to_history(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -586,6 +615,43 @@ pub fn get_app_info(app: AppHandle, state: State<'_, AppState>) -> AppInfo {
             .as_ref()
             .map_or(PreviewMode::Unavailable, |p| p.mode()),
     }
+}
+
+/// Version, build, FFmpeg and log folder for the About dialog. Static: call when the dialog opens.
+#[tauri::command]
+#[specta::specta]
+pub fn get_about_info(log_dir: State<'_, LogDir>) -> AboutInfo {
+    about_info(&engine::media::FfmpegInfo::linked(), log_dir.0.as_deref())
+}
+
+fn about_info(ffmpeg: &engine::media::FfmpegInfo, log_dir: Option<&Path>) -> AboutInfo {
+    AboutInfo {
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+        build_profile: BuildProfile::current(),
+        commit: option_env!("CUTFRAME_COMMIT").map(str::to_owned),
+        ffmpeg_version: ffmpeg.version.clone(),
+        ffmpeg_license: ffmpeg.license().to_owned(),
+        log_dir: log_dir.map(|dir| dir.to_string_lossy().into_owned()),
+    }
+}
+
+/// Opens the log folder in the file manager (Explorer), creating it if needed. Fails with
+/// `unavailable` when there is no log folder (stdout only) or the shell cannot open it, `io` when
+/// the folder cannot be created.
+#[tauri::command]
+#[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
+pub async fn open_logs_folder(log_dir: State<'_, LogDir>) -> Result<(), IpcError> {
+    let dir = log_dir
+        .0
+        .clone()
+        .ok_or_else(|| IpcError::Unavailable("logging to a file is off".into()))?;
+    tauri::async_runtime::spawn_blocking(move || {
+        std::fs::create_dir_all(&dir).map_err(|err| IpcError::io(&err))?;
+        tauri_plugin_opener::open_path(&dir, None::<&str>)
+            .map_err(|err| IpcError::Unavailable(format!("cannot open {}: {err}", dir.display())))
+    })
+    .await?
 }
 
 /// Reports where the preview area is. In `native` mode the GPU window follows this rectangle.
@@ -617,6 +683,7 @@ pub fn set_preview_visible(app: AppHandle, state: State<'_, AppState>, visible: 
 /// `unavailable` when there is no preview engine. Never blocks.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn seek(state: State<'_, AppState>, time: Time, mode: SeekMode) -> Result<u32, IpcError> {
     state.seek(time, mode.into())
 }
@@ -625,6 +692,7 @@ pub fn seek(state: State<'_, AppState>, time: Time, mode: SeekMode) -> Result<u3
 /// settings. The history is cleared and the project is clean. Ask about unsaved changes first.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn new_project(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -645,6 +713,7 @@ pub fn new_project(
 /// the open project is unchanged. Ask about unsaved changes first.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub async fn open_project(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -675,6 +744,7 @@ pub async fn open_project(
 /// written and the UI runs Save As. Not an undo step.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub async fn save_project(app: AppHandle, state: State<'_, AppState>) -> Result<bool, IpcError> {
     let _saving = state.save_lock().lock().await;
     let snapshot = state.save_snapshot();
@@ -689,6 +759,7 @@ pub async fn save_project(app: AppHandle, state: State<'_, AppState>) -> Result<
 /// project's file. Not an undo step.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub async fn save_project_as(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -729,6 +800,7 @@ async fn write(
 /// settings fail with `invalidEdit`.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn set_project_settings(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -749,6 +821,7 @@ pub fn set_project_settings(
 /// directory gives an empty list. Call once at startup.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub async fn list_recovery(state: State<'_, AppState>) -> Result<Vec<RecoveryEntry>, IpcError> {
     let store = state.recovery().clone();
     let entries = tauri::async_runtime::spawn_blocking(move || store.list_orphans())
@@ -763,6 +836,7 @@ pub async fn list_recovery(state: State<'_, AppState>) -> Result<Vec<RecoveryEnt
 /// Ask about unsaved changes first.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub async fn restore_recovery(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -789,6 +863,7 @@ pub async fn restore_recovery(
 /// instance is never touched.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub async fn discard_recovery(state: State<'_, AppState>, id: Uuid) -> Result<(), IpcError> {
     let store = state.recovery().clone();
     tauri::async_runtime::spawn_blocking(move || store.discard(id))
@@ -800,6 +875,7 @@ pub async fn discard_recovery(state: State<'_, AppState>, id: Uuid) -> Result<()
 /// `quitRequested` started (Save succeeded, or Don't save).
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn confirm_close(app: AppHandle) -> Result<(), IpcError> {
     let window = app
         .get_webview_window(crate::MAIN_WINDOW)
@@ -815,6 +891,7 @@ pub fn confirm_close(app: AppHandle) -> Result<(), IpcError> {
 /// empty list.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn import_media(state: State<'_, AppState>, paths: Vec<String>) -> Result<JobId, IpcError> {
     if paths.is_empty() {
         return Err(IpcError::InvalidEdit("no paths to import".into()));
@@ -831,6 +908,7 @@ pub fn import_media(state: State<'_, AppState>, paths: Vec<String>) -> Result<Jo
 /// without holding the document.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub async fn import_media_dialog(
     app: AppHandle,
     filter_label: String,
@@ -864,6 +942,7 @@ pub async fn import_media_dialog(
 /// finished ids are ignored.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn cancel_job(state: State<'_, AppState>, id: JobId) -> Result<(), IpcError> {
     state.jobs.cancel(id);
     Ok(())
@@ -876,6 +955,7 @@ pub fn cancel_job(state: State<'_, AppState>, id: JobId) -> Result<(), IpcError>
 /// of the media on a locked track. Cached previews stay on disk, so undo shows them again at once.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn remove_media(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -906,6 +986,7 @@ pub fn remove_media(
 /// Fails with `invalidEdit` for an id that is not in the project.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn relink_media(
     state: State<'_, AppState>,
     id: MediaId,
@@ -929,6 +1010,7 @@ pub fn relink_media(
 /// which fails with `fileNotFound` or `io` when the folder cannot be read.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn relink_media_folder(state: State<'_, AppState>, folder: String) -> Result<JobId, IpcError> {
     if folder.is_empty() {
         return Err(IpcError::InvalidEdit("no folder to search".into()));
@@ -951,6 +1033,7 @@ fn ensure_media(state: &AppState, id: MediaId) -> Result<(), IpcError> {
 /// `fileNotFound` when the file is gone.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub async fn reveal_media(state: State<'_, AppState>, id: MediaId) -> Result<(), IpcError> {
     let project = state.snapshot();
     let asset = project
@@ -996,6 +1079,7 @@ pub fn get_preferences(state: State<'_, AppState>) -> Preferences {
 /// file or the cache folder cannot be written; then nothing changes. Not an undo step.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub async fn set_preferences(
     state: State<'_, AppState>,
     preferences: Preferences,
@@ -1037,6 +1121,7 @@ fn invalid(err: PreferencesError) -> IpcError {
 /// The effective cache folder and what it holds.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub async fn get_cache_info(state: State<'_, AppState>) -> Result<CacheInfo, IpcError> {
     let root = state.preferences().cache_root();
     let stats = tauri::async_runtime::spawn_blocking({
@@ -1052,6 +1137,7 @@ pub async fn get_cache_info(state: State<'_, AppState>) -> Result<CacheInfo, Ipc
 /// Returns the info after clearing.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub async fn clear_cache(state: State<'_, AppState>) -> Result<CacheInfo, IpcError> {
     let store = state.preferences();
     let _changing = store.write_lock().lock().await;
@@ -1074,6 +1160,7 @@ pub async fn clear_cache(state: State<'_, AppState>) -> Result<CacheInfo, IpcErr
 /// (`modifiedMs: null` = missing). Never removes an entry; a missing or broken list is empty.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub async fn list_recent_projects(
     state: State<'_, AppState>,
 ) -> Result<Vec<RecentProject>, IpcError> {
@@ -1084,6 +1171,7 @@ pub async fn list_recent_projects(
 /// Removes `path` from the recent list (the file is not touched). An unknown path is fine.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub async fn remove_recent_project(
     state: State<'_, AppState>,
     path: String,
@@ -1102,6 +1190,7 @@ pub async fn remove_recent_project(
 /// write fails (then nothing changed). Not an undo step.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub async fn rename_project_file(
     state: State<'_, AppState>,
     path: String,
@@ -1115,6 +1204,7 @@ pub async fn rename_project_file(
 /// passes the translated copy name. Errors as for `renameProjectFile`. Not an undo step.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub async fn duplicate_project_file(
     state: State<'_, AppState>,
     path: String,
@@ -1132,6 +1222,7 @@ pub async fn duplicate_project_file(
 /// Recycle Bin refuses it (then the entry stays).
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub async fn trash_project_file(state: State<'_, AppState>, path: String) -> Result<(), IpcError> {
     with_recent(&state, move |store, open| {
         store.trash(&path, open, recent::move_to_trash)
@@ -1144,6 +1235,7 @@ pub async fn trash_project_file(state: State<'_, AppState>, path: String) -> Res
 /// file is gone and `unavailable` when the file manager cannot be started.
 #[tauri::command]
 #[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub async fn reveal_project_file(state: State<'_, AppState>, path: String) -> Result<(), IpcError> {
     let file = with_recent(&state, move |store, open| store.existing_file(&path, open)).await?;
     tauri::async_runtime::spawn_blocking(move || {
@@ -1164,4 +1256,78 @@ async fn with_recent<T: Send + 'static>(
     let store = state.recent().clone();
     let open = state.open_file();
     tauri::async_runtime::spawn_blocking(move || action(&store, open.as_deref())).await?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn about_info_serializes_the_about_dialog_fields() {
+        let ffmpeg = engine::media::FfmpegInfo::linked();
+        let info = about_info(&ffmpeg, Some(Path::new("logs")));
+        let json = serde_json::to_value(&info).unwrap();
+        let mut keys: Vec<&str> = json
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "buildProfile",
+                "commit",
+                "ffmpegLicense",
+                "ffmpegVersion",
+                "logDir",
+                "version"
+            ]
+        );
+        assert_eq!(json["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(
+            json["buildProfile"],
+            if cfg!(debug_assertions) {
+                "debug"
+            } else {
+                "release"
+            }
+        );
+        assert_eq!(json["logDir"], "logs");
+        assert_eq!(json["ffmpegVersion"], ffmpeg.version.as_str());
+        assert!(!info.ffmpeg_version.is_empty());
+        if let Some(commit) = &info.commit {
+            assert!(
+                commit.len() >= 7 && commit.chars().all(|c| c.is_ascii_hexdigit()),
+                "{commit}"
+            );
+        }
+        assert_eq!(about_info(&ffmpeg, None).log_dir, None);
+    }
+
+    /// Every fallible command logs its error (kind and message) at the IPC boundary, so the log
+    /// file has the details behind every error toast (F0.08/F0.09).
+    #[test]
+    fn every_fallible_command_logs_its_error() {
+        let source = include_str!("commands.rs");
+        let mut missing = Vec::new();
+        for block in source.split("#[tauri::command]\n").skip(1) {
+            let signature = &block[..block.find('{').unwrap()];
+            let name = signature
+                .split("fn ")
+                .nth(1)
+                .and_then(|rest| rest.split('(').next())
+                .unwrap_or("?");
+            if signature.contains("-> Result<")
+                && !signature.contains("#[tracing::instrument(skip_all, err(Debug, level = ")
+            {
+                missing.push(name.to_owned());
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "add #[tracing::instrument(skip_all, err(Debug, level = \"warn\"))] to: {missing:?}"
+        );
+    }
 }

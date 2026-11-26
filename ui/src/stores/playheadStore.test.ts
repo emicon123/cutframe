@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { type IpcError, mockCommands, type SeekMode } from "@/bindings";
-import { useAppStore } from "@/stores/appStore";
+import { useToastStore } from "@/stores/toastStore";
 
 type PlayheadModule = typeof import("./playheadStore");
 
@@ -52,7 +52,6 @@ beforeEach(async () => {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
-  useAppStore.setState({ lastError: null });
 });
 
 describe("seekTo", () => {
@@ -140,7 +139,7 @@ describe("seekTo", () => {
     playhead.seekTo(100, "exact");
     await vi.waitFor(() => expect(debug).toHaveBeenCalledTimes(1));
     expect(error).not.toHaveBeenCalled();
-    expect(useAppStore.getState().lastError).toBeNull();
+    expect(useToastStore.getState().toasts).toEqual([]);
     expect(playhead.playheadStore.getState()).toEqual({ time: 100, seekGeneration: null });
 
     // The queue goes on after a failure.
@@ -155,7 +154,7 @@ describe("seekTo", () => {
 
     playhead.seekTo(100, "exact");
     await vi.waitFor(() => expect(error).toHaveBeenCalledWith("[ipc] invalidEdit: time out of range"));
-    expect(useAppStore.getState().lastError).toBeNull();
+    expect(useToastStore.getState().toasts).toEqual([]);
   });
 });
 

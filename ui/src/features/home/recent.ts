@@ -19,7 +19,6 @@ export type RecentDeps = {
   /** Opens the project behind the unsaved prompt and shows the editor (`fileActions.openPath`). */
   openPath: (path: string) => Promise<void>;
   reportError: (error: unknown) => void;
-  clearError: () => void;
   logError: (error: unknown) => void;
 };
 
@@ -67,7 +66,7 @@ export function createRecent(deps: RecentDeps): Recent {
     try {
       store.setState({ projects: await deps.list(), loaded: true });
     } catch (error) {
-      // Keep what is shown; the error goes to the home screen's alert line.
+      // Keep what is shown; the error is shown as a toast.
       store.setState({ loaded: true });
       deps.reportError(error);
     }
@@ -77,7 +76,6 @@ export function createRecent(deps: RecentDeps): Recent {
   async function act(action: () => Promise<unknown>): Promise<void> {
     try {
       await action();
-      deps.clearError();
     } catch (error) {
       deps.reportError(error);
     }
@@ -120,6 +118,5 @@ export const recent = createRecent({
   reveal: (path) => commands.revealProjectFile(path),
   openPath: (path) => fileActions.openPath(path),
   reportError: (error) => useAppStore.getState().reportError(error),
-  clearError: () => useAppStore.getState().clearError(),
   logError,
 });

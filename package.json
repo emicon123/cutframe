@@ -6,11 +6,12 @@
   "engines": { "node": ">=26" },
   "scripts": {
     "tauri": "tauri",
-    "dev": "tauri dev",
-    "build": "tauri build",
+    "dev": "pnpm gen:licenses && tauri dev",
+    "build": "pnpm gen:licenses && tauri build",
     "setup:ffmpeg": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/fetch-ffmpeg.ps1",
+    "gen:licenses": "node scripts/gen-licenses.mjs",
     "bindings": "cargo test -p cutframe export_typescript_bindings",
-    "check": "cargo fmt --all --check && pnpm --dir ui typecheck && pnpm --dir ui lint && pnpm --dir ui exec prettier --check . && pnpm --dir ui test && pnpm --dir ui build && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace"
+    "check": "cargo fmt --all --check && pnpm gen:licenses && pnpm --dir ui typecheck && pnpm --dir ui lint && pnpm --dir ui exec prettier --check . && pnpm --dir ui test && pnpm --dir ui build && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.6"
