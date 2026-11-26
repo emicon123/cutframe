@@ -165,6 +165,11 @@ pub struct RenderOutcome {
   sample-and-hold rule picks the last frame with `pts <= sample_time`. Sampling at the frame
   start would pick the previous source frame whenever source and project rates differ slightly
   (a 29.97 fps phone clip in a 30 fps project would repeat frames). Images have no time.
+  *(Amended 2026-11-26 by task 0370: the centre sample time moves into `app-core` as
+  `Clip::frame_sample_time(t_n, frame)`, which applies speed and reverse and clamps into the used
+  source range; `LayerContent::Video` and `FrameProvider::video` gain `pace: Pace` (forward,
+  reverse, still); `ClipSource::Freeze` clips are video layers at a fixed time.
+  `docs/design/clip-speed-audio.md` §5.1.)*
 - **Determinism.** A plan contains no wall-clock time, no random values and no adapter-dependent
   data. With `FetchPolicy::Exact` the pixels depend only on the snapshot, `n`, `render_size` and
   the adapter. That is the export contract.
@@ -416,6 +421,9 @@ pub struct GpuFrame {
     towards an older target is abandoned at the next packet.
   - **Progressive scrub:** while a seek decodes forward, every decoded frame is published, so
     `BestAvailable` shows the keyframe first and the exact frame when it arrives.
+  - **Reverse mode** (task 0370, `clip-speed-audio.md` §5.2): a reader serving a reversed clip
+    decodes windows of frames forward into a CPU ring of at most 160 MB (hardware frames
+    downloaded), hands them out downwards and prepares the next earlier window meanwhile.
   - **CPU frames** are normalised to the layouts above. Formats the convert shader does not read
     (palettised, packed 4:2:2 such as `yuyv422`, `gray`, RGB24, 16-bit RGB stills) go through
     `sws_scale` on the decode thread to `yuv420p`/`yuv444p` (8 or 16-bit) or `rgba`/`rgba64`.

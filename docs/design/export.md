@@ -347,7 +347,10 @@ the probe in `exportPreparing`.
   sample rate, in blocks of 1024 frames (the AAC frame size). Block `i` starts at
   `i × 1024` samples, converted to flicks exactly (14,700 flicks per sample at 48 kHz, 16,000 at
   44.1 kHz), never accumulated. Muted tracks are silent, hidden tracks sound, the same voices and
-  gains as playback.
+  gains as playback. *(Amended 2026-11-26 by task 0370: speed, pitch preservation, reverse audio and
+  the 4× mute come through the same `mix_block` and `AudioSources` (`TimeStage` per voice), and
+  reversed video through the readers' reverse mode with `FetchPolicy::Exact`, so export needs no
+  code of its own for them; `docs/design/clip-speed-audio.md` §5.)*
 - **Encode.** Native `aac`, `aac_low`, stereo, `fltp`, 384 kbps. The interleaved `f32` block is
   de-interleaved into the two planes. The last block is short (the encoder accepts a small last
   frame). The encoder's priming delay is written as the MP4 edit list (FFmpeg's default), so audio

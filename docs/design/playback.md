@@ -282,7 +282,10 @@ pub fn mix_block(
   noise). Clip boundaries are sample-accurate within the block.
 - **Sum, then clamp** to -1..=1. No limiter in tier 1.
 - **0370** changes only `Clip::source_time` (speed, reverse) and adds a time-stretch stage per
-  voice on the feeder thread; the callback is unaffected.
+  voice on the feeder thread; the callback is unaffected. *(Amended 2026-11-26: `Voice` gains
+  `pace`; `AudioSources` runs a per-voice `TimeStage`, a `libavfilter` graph with `atempo` (pitch
+  preserved) or `asetrate` + `aresample` (not preserved); reversed voices read 1 s windows
+  downwards; voices faster than 4× are silent. `docs/design/clip-speed-audio.md` §5.3.)*
 - **Export parity:** export calls the same `mix_block` at the project sample rate; preview runs it
   at the device rate. Sample-exact equality between the two is not required; the same voices,
   gains and timing are.
@@ -340,7 +343,10 @@ seek while paused. It is cheap (a walk over the clips in a 1.5 s window).
   then it stops.
 - **Rates:** at |rate| ≤ 2 every frame is decoded. Above 2x readers decode keyframes only
   (`skip_frame = AVDISCARD_NONKEY`), and sample and hold shows the latest one. Reverse sends a
-  "decode at `t`" request per presented frame, coalesced (a timed scrub).
+  "decode at `t`" request per presented frame, coalesced (a timed scrub). *(Amended 2026-11-26 by
+  0370: clip speed multiplies the rate; above an effective 4× a reader decodes keyframes only.
+  Reversed clips use GOP-reverse reader mode, at most 2 such readers.
+  `clip-speed-audio.md` §5.1–5.2.)*
 - **Catch-up:** when a reader's newest frame is more than 2 source frames behind the sample time,
   it discards non-reference frames (`AVDISCARD_NONREF`) until it catches up; more than 500 ms
   behind, it seeks to the sample time plus 250 ms.
@@ -594,7 +600,7 @@ the status bar.
 audio stream as the only voice).
 
 **0370:** speed, reverse and time-stretch per voice (§6.3); reverse video uses a GOP-reverse reader
-mode, which reverse shuttle may reuse later.
+mode, which reverse shuttle may reuse later. Design: `docs/design/clip-speed-audio.md`.
 
 ## As built (0330)
 

@@ -21,10 +21,10 @@ Basic look of each clip; the inspector shows only project info today.
 
 ## Scope
 
-Design: `docs/design/timeline-editing.md` (§3.6, §4.10–4.11, §7) and `docs/design/render-graph.md` (§4.1 `LayerPlan`, §4.2 background pass, §12 golden frames).
+Design: `docs/design/timeline-editing.md` (§3.6, §4.10–4.11, §7), `docs/design/clip-speed-audio.md` (§6 inspector shell) and `docs/design/render-graph.md` (§4.1 `LayerPlan`, §4.2 background pass, §12 golden frames).
 
-- **backend:** the keyframe-ready properties (`VisualProps`: position, scale, rotation, opacity, flip, crop, fit mode) and `Project.background` (colour, blur, image) are already in the model since 0260; this task adds `set_clip_property(clips, value, phase)` (gesture for sliders) and `reset_clip_properties`, and renders them and the canvas background in the render graph through the shared `app-core` evaluation (`Animated::at`): `build_plan` fills `LayerPlan.transform` (fit, scale, rotation, position, flip), `crop` and `opacity`; the layer pass applies them with premultiplied-over blending; the background pass adds `Blur` (separable Gaussian of the main-track source texture at a quarter of the render size, with fill) and `Image` (an image layer with fill). Nothing new in the convert pass or the readers.
-- **frontend:** clip inspector with sliders + numeric entry, reset per property and reset all.
+- **backend:** the keyframe-ready properties (`VisualProps`: position, scale, rotation, opacity, flip, crop, fit mode) and `Project.background` (colour, blur, image) are already in the model since 0260; `set_clip_property(clips, value, phase)` with every `PropertyValue` kind (visual ones included) is built by task 0370 (`docs/design/clip-speed-audio.md` §3.4); this task adds `reset_clip_properties` (including the `preservePitch` key) and renders them and the canvas background in the render graph through the shared `app-core` evaluation (`Animated::at`): `build_plan` fills `LayerPlan.transform` (fit, scale, rotation, position, flip), `crop` and `opacity`; the layer pass applies them with premultiplied-over blending; the background pass adds `Blur` (separable Gaussian of the main-track source texture at a quarter of the render size, with fill) and `Image` (an image layer with fill). Nothing new in the convert pass or the readers.
+- **frontend:** a **Transform** section (position, scale with aspect lock, rotation, opacity, flip, rotate 90°, crop, fit) in the selection-driven inspector shell that 0370 builds, using its shared slider + numeric-entry component (gesture phases); reset per property and reset all.
 
 ## Done when
 

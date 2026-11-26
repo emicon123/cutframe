@@ -34,6 +34,12 @@ None. Later tasks read `default_image_duration` / `default_transition_duration` 
 and pass the value into the `app-core` command as an argument; commands never read preferences.
 Snapping a default to the project frame rate happens at that use site.
 
+*(Amended 2026-11-26 by task 0370, F1.83: `default_image_duration` is the default **still**
+duration: `add_clips` passes it to `AddClips` as `image_duration`, and `insert_freeze_frame` uses it
+as the freeze-frame length, both snapped to the nearest project frame (at least one). The field
+keeps its name, so the preferences file does not change; the Editing tab labels it "Image and
+freeze-frame duration". `docs/design/clip-speed-audio.md` §3.4, §4.)*
+
 ## 4. Preferences store (`src-tauri/src/preferences.rs`, new; plain functions, no Tauri)
 
 Not the model, so not `app-core`. One struct is both the file format and the IPC type (like ADR-0002

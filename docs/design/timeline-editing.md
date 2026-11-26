@@ -184,7 +184,10 @@ serialized as `"#rrggbbaa"` (lowercase hex) to keep files readable, through a `s
 media clip it is `source_in + (t - start)` for `t` in `start..end()`. The source range used is
 `source_in .. source_in + duration`. Task 0370 adds speed (and reverse) by changing this one
 function and `Clip::source_end()`, plus a migration that adds the field with its default. No
-trim, split or render code computes source times by itself.
+trim, split or render code computes source times by itself. *(Amended 2026-11-26 by task 0370:
+`ClipSource::Media` gained `speed` and `reverse`, `ClipSource::Freeze` was added, and the mapping
+helpers `frame_sample_time`, `sub_source_in`, `extend_room`, `content_at` / `offset_of_content` are
+what split, trim, anchors and the engine use; `docs/design/clip-speed-audio.md` §3.)*
 
 **Image clips** have `source_in = 0` and no source length limit. New ones get
 `DEFAULT_IMAGE_DURATION` (5 s, an `app-core` constant; F1.83 later takes it from preferences).
@@ -259,6 +262,9 @@ clips, times within `0..=MAX_IPC_FLICKS`):
 5. Every `LinkId` is used by at least two clips, on pairwise different tracks.
 6. Property ranges hold (§3.6), and every `f32` is finite.
 7. A `CanvasBackground::Image` references an image media asset.
+
+*(Amended 2026-11-26 by task 0370: invariant 3 uses `source_end()` with speed and requires images to
+have speed 1× and no reverse; a new invariant 8 covers `Freeze` sources; `clip-speed-audio.md` §3.3.)*
 
 The commands keep these invariants by construction, and proptest checks them (§9). Clip times do
 **not** have to lie on the project frame grid, which is unchanged: a frame-rate change must never
@@ -495,7 +501,7 @@ track (`F`). Followers move in the same command, so in the same history entry an
 | 4.7 | `TrimToPlayhead` (`trimToPlayhead`) | | `clips` (empty means the main-track clip under `at`), `at`, `side: Side` (`left` = Q, `right` = W) | `left`: the start edge moves to `at`. `right`: the end edge moves to `at`. Same clamping and ripple rules as `TrimClip`. Clips that `at` does not cross are skipped. | F |
 | 4.8 | `PasteClips` (`pasteClips`, `duplicateClips`) | | `items: ClipboardContent`, `at: Time` | §6.3. New ids for every clip, and a new `LinkId` per copied group. Returns the new ids. | F |
 | 4.9 | `RemoveClipsOfMedia` (in the media design's batch) | | `media: MediaId` | Removes every clip whose source is `media` and clears a `CanvasBackground::Image` that uses it (back to black). Repacks the main track, moves followers to the removal point (never deletes them, §3.7) and normalises links. **No IPC command of its own**: the media design's remove-media `Batch` uses it (§3.1). It succeeds when nothing references the media. | F |
-| 4.10 | `SetClipProperty` (`setClipProperty`) | G | `clips`, `value: PropertyValue` | Sets one property on every listed clip that has it (visual or audio), and fails with `PropertyNotApplicable` if none has it. Range-checked, `InvalidValue` otherwise. Tier 1 sets `Animated.value`. With keyframes present, task 0520 defines "set at playhead". |  |
+| 4.10 | `SetClipProperty` (`setClipProperty`) | G | `clips`, `value: PropertyValue` | Sets one property on every listed clip that has it (visual or audio), and fails with `PropertyNotApplicable` if none has it. Range-checked, `InvalidValue` otherwise. Tier 1 sets `Animated.value`. With keyframes present, task 0520 defines "set at playhead". **Built by task 0370** (with `PreservePitch`; fades clamp per clip instead of failing, `clip-speed-audio.md` §3.4). |  |
 | 4.11 | `ResetClipProperties` (`resetClipProperties`) | | `clips`, `properties: Option<Vec<PropertyKey>>` (None = all) | Restores defaults (F1.84). |  |
 | 4.12 | `LinkClips` / `UnlinkClips` (`linkClips`, `unlinkClips`) | | `clips` | Link: at least two clips on pairwise different tracks, else `InvalidLink`. Existing links of these clips are replaced. |  |
 | 4.13 | `DetachAudio` (`detachAudio`) | | `clips` | §3.5. Skips clips without `audio`. Returns the new audio clip ids. |  |
@@ -569,7 +575,8 @@ fn replace_clip_media(clip: ClipId, media: MediaId) -> Result<(), IpcError>;
 fn set_track_flag(track: TrackId, flag: TrackFlag, value: bool) -> Result<(), IpcError>;
 fn move_track(track: TrackId, index: u32) -> Result<(), IpcError>;
 
-// Properties (task 0350): gestures for sliders, Commit for typed values and buttons
+// Properties: set_clip_property is built by task 0370, reset_clip_properties by 0350.
+// Gestures for sliders, Commit for typed values and buttons
 fn set_clip_property(clips: Vec<ClipId>, value: PropertyValue, phase: EditPhase) -> Result<(), IpcError>;
 fn reset_clip_properties(clips: Vec<ClipId>, properties: Option<Vec<PropertyKey>>) -> Result<(), IpcError>;
 ```
@@ -943,12 +950,14 @@ then frontend.
    `SetTrackFlag`, `MoveTrack`. **(frontend):** track headers, reorder by drag, context menus.
 5. **0300 (frontend):** filmstrips and waveforms use `source.sourceIn` and the clip duration to
    pick the source range.
-6. **0350 (backend):** `SetClipProperty`, `ResetClipProperties` and the render-graph use of
-   `VisualProps` and `CanvasBackground`. **(frontend):** clip inspector.
+6. **0350 (backend):** `ResetClipProperties` and the render-graph use of `VisualProps` and
+   `CanvasBackground` (`SetClipProperty` moved to 0370 on 2026-11-26). **(frontend):** the
+   Transform section of the inspector shell that 0370 builds.
 7. **0360:** preview manipulation sends `set_clip_property` (`position`, `scale`, `rotation`)
    gestures.
-8. **0370:** volume and fades are already in `AudioProps`, so it only adds mixer use and the
-   inspector. Speed and reverse add a field and a migration and change `Clip::source_time`.
+8. **0370:** `SetClipProperty`, speed, reverse, freeze frame and the still duration preference;
+   the inspector shell with Audio, Speed and Duration sections. Design:
+   `docs/design/clip-speed-audio.md`.
 
 ## 14. Decisions (user, 2026-11-22)
 
