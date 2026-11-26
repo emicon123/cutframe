@@ -17,6 +17,14 @@ import {
   trimToPlayhead,
 } from "@/features/timeline/editActions";
 import { canDetachAudio, linkToggle, type LinkToggle } from "@/features/timeline/linking";
+import {
+  fitTimeline,
+  goToEnd,
+  goToStart,
+  jumpToEdit,
+  stepFrames,
+  zoomStep,
+} from "@/features/timeline/navActions";
 import { historyLabelText, t } from "@/i18n";
 import { run } from "@/stores/appStore";
 import { type ProjectState, useProjectStore } from "@/stores/projectStore";
@@ -104,7 +112,18 @@ export type ActionId =
   | "toggle-media-bin"
   | "toggle-inspector"
   | "reset-panel-layout"
-  | "keyboard-shortcuts";
+  | "keyboard-shortcuts"
+  | "frame-back"
+  | "frame-forward"
+  | "frame-back-10"
+  | "frame-forward-10"
+  | "previous-edit"
+  | "next-edit"
+  | "go-to-start"
+  | "go-to-end"
+  | "zoom-in"
+  | "zoom-out"
+  | "zoom-to-fit";
 
 /**
  * A user command. Register it once in `ACTIONS`; the main menu, the shortcut reference panel,
@@ -367,6 +386,100 @@ export const ACTIONS: readonly Action[] = [
     ],
     run: () => ui().setShortcutsOpen(true),
   },
+  // F1.54, playback design §2. Timeline-scoped, so the arrows keep moving the focus in the media
+  // bin's grid and list; a focused slider or menu handles them first (`defaultPrevented`).
+  {
+    id: "frame-back",
+    label: t.view.frameBack,
+    shortcuts: [{ key: "ArrowLeft" }],
+    scope: "timeline",
+    enabled: editing,
+    run: () => stepFrames(-1),
+  },
+  {
+    id: "frame-forward",
+    label: t.view.frameForward,
+    shortcuts: [{ key: "ArrowRight" }],
+    scope: "timeline",
+    enabled: editing,
+    run: () => stepFrames(1),
+  },
+  {
+    id: "frame-back-10",
+    label: t.view.frameBack10,
+    shortcuts: [{ key: "ArrowLeft", shift: true }],
+    scope: "timeline",
+    enabled: editing,
+    run: () => stepFrames(-10),
+  },
+  {
+    id: "frame-forward-10",
+    label: t.view.frameForward10,
+    shortcuts: [{ key: "ArrowRight", shift: true }],
+    scope: "timeline",
+    enabled: editing,
+    run: () => stepFrames(10),
+  },
+  {
+    id: "previous-edit",
+    label: t.view.previousEdit,
+    shortcuts: [{ key: "ArrowUp" }],
+    scope: "timeline",
+    enabled: editing,
+    run: () => jumpToEdit(-1),
+  },
+  {
+    id: "next-edit",
+    label: t.view.nextEdit,
+    shortcuts: [{ key: "ArrowDown" }],
+    scope: "timeline",
+    enabled: editing,
+    run: () => jumpToEdit(1),
+  },
+  {
+    id: "go-to-start",
+    label: t.view.goToStart,
+    shortcuts: [{ key: "Home" }],
+    scope: "timeline",
+    enabled: editing,
+    run: goToStart,
+  },
+  {
+    id: "go-to-end",
+    label: t.view.goToEnd,
+    shortcuts: [{ key: "End" }],
+    scope: "timeline",
+    enabled: editing,
+    run: goToEnd,
+  },
+  // F1.32. `+` needs Shift on some layouts and `=` is the same key unshifted.
+  {
+    id: "zoom-in",
+    label: t.view.zoomIn,
+    shortcuts: [
+      { key: "+", shift: "any" },
+      { key: "=", shift: "any" },
+    ],
+    scope: "timeline",
+    enabled: editing,
+    run: () => zoomStep(1),
+  },
+  {
+    id: "zoom-out",
+    label: t.view.zoomOut,
+    shortcuts: [{ key: "-" }],
+    scope: "timeline",
+    enabled: editing,
+    run: () => zoomStep(-1),
+  },
+  {
+    id: "zoom-to-fit",
+    label: t.view.zoomToFit,
+    shortcuts: [{ key: "z", shift: true }],
+    scope: "timeline",
+    enabled: editing,
+    run: fitTimeline,
+  },
 ];
 
 export const SEPARATOR = "-";
@@ -436,6 +549,19 @@ export const MENUS: readonly Menu[] = [
       "toggle-media-bin",
       "toggle-inspector",
       "history-panel",
+      SEPARATOR,
+      "zoom-in",
+      "zoom-out",
+      "zoom-to-fit",
+      SEPARATOR,
+      "go-to-start",
+      "go-to-end",
+      "previous-edit",
+      "next-edit",
+      "frame-back",
+      "frame-forward",
+      "frame-back-10",
+      "frame-forward-10",
       SEPARATOR,
       "reset-panel-layout",
       SEPARATOR,
@@ -537,8 +663,17 @@ export function actionLabel(action: Action, ctx: ActionContext): string {
 
 /** Display text of a key combination, e.g. `"Ctrl+Shift+S"`. */
 export function bindingLabel(binding: KeyBinding): string {
-  const { ctrl, shift, separator, escape, delete: del } = t.keys;
-  const named: Record<string, string> = { Escape: escape, Delete: del };
+  const { ctrl, shift, separator, escape, delete: del, left, right, up, down, home, end } = t.keys;
+  const named: Record<string, string> = {
+    Escape: escape,
+    Delete: del,
+    ArrowLeft: left,
+    ArrowRight: right,
+    ArrowUp: up,
+    ArrowDown: down,
+    Home: home,
+    End: end,
+  };
   const key = named[binding.key] ?? (binding.key.length === 1 ? binding.key.toUpperCase() : binding.key);
   const parts = [binding.ctrl && ctrl, binding.shift === true && shift, key];
   return parts.filter((part) => typeof part === "string").join(separator);
