@@ -1,9 +1,10 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { t } from "@/i18n";
 import { useAppStore } from "@/stores/appStore";
+import { playheadStore } from "@/stores/playheadStore";
 
 import { StatusBar } from "./StatusBar";
 
@@ -14,7 +15,10 @@ const renderBar = () =>
     </TooltipProvider>,
   );
 
-afterEach(() => useAppStore.setState({ info: null, gpuNotice: null }));
+afterEach(() => {
+  useAppStore.setState({ info: null, gpuNotice: null });
+  playheadStore.setState({ state: "paused", rate: 0, droppedFrames: 0 });
+});
 
 describe("StatusBar", () => {
   it("shows a warning icon explaining a fallback", () => {
@@ -45,5 +49,16 @@ describe("StatusBar", () => {
     fireEvent.click(screen.getByRole("button", { name: t.status.dismiss }));
     expect(screen.queryByRole("status")).toBeNull();
     expect(useAppStore.getState().gpuNotice).toBeNull();
+  });
+
+  it("shows dropped frames only while playing and only when there are some (F1.60)", () => {
+    renderBar();
+    expect(screen.queryByTestId("dropped-frames")).toBeNull();
+    act(() => playheadStore.setState({ state: "playing", rate: 1, droppedFrames: 0 }));
+    expect(screen.queryByTestId("dropped-frames")).toBeNull();
+    act(() => playheadStore.setState({ droppedFrames: 3 }));
+    expect(screen.getByTestId("dropped-frames").textContent).toBe(t.status.droppedFrames(3));
+    act(() => playheadStore.setState({ state: "paused", rate: 0 }));
+    expect(screen.queryByTestId("dropped-frames")).toBeNull();
   });
 });

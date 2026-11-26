@@ -1,6 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { frameDuration } from "@/lib/time";
+import { mockCommands } from "@/bindings";
+import { FLICKS_PER_SECOND, frameDuration } from "@/lib/time";
 import { playheadStore, setPlayhead } from "@/stores/playheadStore";
 import { type ProjectState, useProjectStore } from "@/stores/projectStore";
 import { setLaneWidth, setViewport, timelineViewStore } from "@/stores/timelineViewStore";
@@ -34,7 +35,21 @@ const project = (duration: number) =>
 const playhead = () => playheadStore.getState().time;
 const view = () => timelineViewStore.getState().viewport;
 
+/** What reached the engine, in order. */
+let sent: string[];
+
 beforeEach(() => {
+  sent = [];
+  mockCommands({
+    seek: ({ time, mode }) => {
+      sent.push(`seek ${mode} ${time}`);
+      return sent.length;
+    },
+    stepFrames: ({ frames }) => {
+      sent.push(`step ${frames}`);
+      return sent.length;
+    },
+  });
   useProjectStore.setState({ state: project(100 * frame) });
   setViewport(DEFAULT_VIEWPORT);
   setLaneWidth(1000);
@@ -44,13 +59,15 @@ beforeEach(() => {
 afterEach(() => useProjectStore.setState({ state: null }));
 
 describe("playhead navigation (F1.54)", () => {
-  it("steps frames on the project grid", () => {
+  it("steps frames in the engine and shows the expected frame at once", async () => {
     stepFrames(1);
     expect(playhead()).toBe(frame);
     stepFrames(10);
     expect(playhead()).toBe(11 * frame);
     stepFrames(-1);
     expect(playhead()).toBe(10 * frame);
+    stepFrames(-10);
+    await vi.waitFor(() => expect(sent).toEqual(["step 1", "step 10", "step -1", "step -10"]));
   });
 
   it("jumps between edit points on all tracks", () => {
@@ -62,11 +79,26 @@ describe("playhead navigation (F1.54)", () => {
     expect(playhead()).toBe(20 * frame);
   });
 
-  it("goes to the start and to the last frame", () => {
+  it("goes to the start and to the last frame with exact seeks", async () => {
     goToEnd();
     expect(playhead()).toBe(99 * frame);
     goToStart();
     expect(playhead()).toBe(0);
+    await vi.waitFor(() => expect(sent).toEqual([`seek exact ${99 * frame}`, "seek exact 0"]));
+  });
+
+  it("computes the last frame in integer flicks at an NTSC rate", async () => {
+    const ntsc = { num: 30000, den: 1001 };
+    useProjectStore.setState({
+      state: {
+        project: { duration: 10 * FLICKS_PER_SECOND, settings: { frameRate: ntsc }, tracks: [] },
+      } as unknown as ProjectState,
+    });
+    goToEnd();
+    // 10 s hold 299.7 frames of 23,543,520 flicks: the last one starts at frame 299.
+    expect(playhead()).toBe(299 * frameDuration(ntsc));
+    expect(Number.isInteger(playhead())).toBe(true);
+    await vi.waitFor(() => expect(sent).toEqual([`seek exact ${299 * 23_543_520}`]));
   });
 
   it("scrolls the timeline to keep the new playhead in view", () => {

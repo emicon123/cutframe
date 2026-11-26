@@ -4,7 +4,7 @@ import { fileActions } from "@/features/project/fileActions";
 import { recovery } from "@/features/project/recovery";
 import { logError } from "@/ipc/errors";
 import { useAppStore } from "@/stores/appStore";
-import { reseekOnDurationChange } from "@/stores/playheadStore";
+import { applyTick } from "@/stores/playheadStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
 
@@ -14,16 +14,15 @@ import { useUiStore } from "@/stores/uiStore";
  * the app runs; `appInfoChanged`, a GPU change at runtime) first, cancels any stale gesture, then
  * fetches the current state, so no change is missed in between. Then it opens the project file the
  * app was launched with, if any (it shows the editor; otherwise the home screen stays), and only
- * after that offers crash recovery over either view. It also re-sends the playhead to the engine
- * on the first state and when a duration change may have clamped it. Returns a cleanup function.
+ * after that offers crash recovery over either view. The playhead mirrors the engine's transport
+ * the same way: `playbackTick` first, then `getPlayback` once (playback.md §8). Returns a cleanup
+ * function.
  */
 export function startProjectSync(): () => void {
   let disposed = false;
-  const unlisteners: (() => void)[] = [
-    useProjectStore.subscribe((s, prev) =>
-      reseekOnDurationChange(prev.state?.project.duration, s.state?.project.duration),
-    ),
-  ];
+  /** A tick is newer than the `getPlayback` snapshot taken before it. */
+  let ticked = false;
+  const unlisteners: (() => void)[] = [];
   const { apply } = useProjectStore.getState();
   const { setInfo, reportError } = useAppStore.getState();
 
@@ -32,6 +31,10 @@ export function startProjectSync(): () => void {
     events.quitRequested.listen(() => void fileActions.requestClose()),
     events.openFileRequested.listen((event) => void fileActions.openPath(event.payload.path)),
     events.appInfoChanged.listen((event) => applyAppInfoChange(event.payload)),
+    events.playbackTick.listen((event) => {
+      ticked = true;
+      applyTick(event.payload);
+    }),
   ])
     .then(async (stops) => {
       if (disposed) {
@@ -43,9 +46,18 @@ export function startProjectSync(): () => void {
       // GestureInProgress (ADR-0006). Cancelling is a no-op otherwise; a failure must not block
       // the initial state, so it is only logged.
       await commands.cancelGesture().catch(logError);
-      const [project, info] = await Promise.all([commands.getProject(), commands.getAppInfo()]);
+      const [project, info, playback] = await Promise.all([
+        commands.getProject(),
+        commands.getAppInfo(),
+        // The playhead stays where it is if this fails; the next tick brings the state.
+        commands.getPlayback().catch((error: unknown) => {
+          logError(error);
+          return null;
+        }),
+      ]);
       apply(project);
       setInfo(info);
+      if (playback !== null && !ticked) applyTick(playback);
       // After the first state, so the unsaved checks see the real document. The launch path
       // first (design `platform-integration.md` §8): the recovery prompt still appears after it.
       const launchPath = await commands.takeLaunchPath().catch((error: unknown) => {

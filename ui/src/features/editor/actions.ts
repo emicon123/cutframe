@@ -4,6 +4,7 @@ import { useShallow } from "zustand/react/shallow";
 import { type ClipId, commands } from "@/bindings";
 import { importFromDialog } from "@/features/media-bin/importActions";
 import { openLogsFolder } from "@/features/notifications/logs";
+import { shuttle, toggleLoop, togglePlayback } from "@/features/preview/transport";
 import { fileActions } from "@/features/project/fileActions";
 import {
   copySelection,
@@ -28,6 +29,7 @@ import {
 } from "@/features/timeline/navActions";
 import { historyLabelText, t } from "@/i18n";
 import { run } from "@/stores/appStore";
+import { playheadStore } from "@/stores/playheadStore";
 import { type ProjectState, useProjectStore } from "@/stores/projectStore";
 import { clearSelection, selectAll, selectionStore } from "@/stores/selectionStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -69,6 +71,12 @@ export type ActionContext = {
   linkToggle: LinkToggle;
   /** A selected clip still plays its own sound, so detach audio applies (F1.50). */
   canDetach: boolean;
+  /** The timeline has content, so it can play (an empty one does not). */
+  canPlay: boolean;
+  /** The transport plays (any rate), from the latest `playbackTick`. */
+  playing: boolean;
+  /** Loop playback is on. */
+  looping: boolean;
 };
 
 /** The selection-store part of the context. */
@@ -76,6 +84,9 @@ export type SelectionFlags = Pick<ActionContext, "clipsSelected" | "gapSelected"
 
 /** The part that depends on both the selection and the clips it names. */
 export type ClipFlags = Pick<ActionContext, "linkToggle" | "canDetach">;
+
+/** The playhead-store part of the context. */
+export type PlaybackFlags = Pick<ActionContext, "playing" | "looping">;
 
 /** The UI-store part of the context. */
 export type UiFlags = Pick<
@@ -116,6 +127,11 @@ export type ActionId =
   | "keyboard-shortcuts"
   | "open-logs-folder"
   | "about"
+  | "play-pause"
+  | "shuttle-reverse"
+  | "shuttle-pause"
+  | "shuttle-forward"
+  | "loop"
   | "frame-back"
   | "frame-forward"
   | "frame-back-10"
@@ -399,6 +415,45 @@ export const ACTIONS: readonly Action[] = [
     label: t.help.about,
     run: () => ui().setAboutOpen(true),
   },
+  // F1.58, F1.59, F1.67, F1.68 (playback design §2). Not timeline-scoped: the transport answers
+  // wherever the focus is, except while typing or in a dialog.
+  {
+    id: "play-pause",
+    label: t.playback.playPause,
+    menuLabel: (ctx) => (ctx.playing ? t.playback.pause : t.playback.play),
+    shortcuts: [{ key: " " }],
+    enabled: (ctx) => editing(ctx) && (ctx.canPlay || ctx.playing),
+    run: togglePlayback,
+  },
+  {
+    id: "shuttle-reverse",
+    label: t.playback.shuttleReverse,
+    shortcuts: [{ key: "j" }],
+    enabled: (ctx) => editing(ctx) && ctx.canPlay,
+    run: () => shuttle("reverse"),
+  },
+  {
+    id: "shuttle-pause",
+    label: t.playback.shuttlePause,
+    shortcuts: [{ key: "k" }],
+    enabled: editing,
+    run: () => shuttle("pause"),
+  },
+  {
+    id: "shuttle-forward",
+    label: t.playback.shuttleForward,
+    shortcuts: [{ key: "l" }],
+    enabled: (ctx) => editing(ctx) && ctx.canPlay,
+    run: () => shuttle("forward"),
+  },
+  {
+    id: "loop",
+    label: t.playback.loop,
+    // A button and a menu toggle; no default shortcut (playback design §8).
+    enabled: editing,
+    checked: (ctx) => ctx.looping,
+    run: toggleLoop,
+  },
   // F1.54, playback design §2. Timeline-scoped, so the arrows keep moving the focus in the media
   // bin's grid and list; a focused slider or menu handles them first (`defaultPrevented`).
   {
@@ -563,6 +618,12 @@ export const MENUS: readonly Menu[] = [
       "toggle-inspector",
       "history-panel",
       SEPARATOR,
+      "play-pause",
+      "shuttle-reverse",
+      "shuttle-pause",
+      "shuttle-forward",
+      "loop",
+      SEPARATOR,
       "zoom-in",
       "zoom-out",
       "zoom-to-fit",
@@ -599,11 +660,14 @@ const NO_SELECTION: SelectionFlags = { clipsSelected: false, gapSelected: false 
 
 const NO_CLIP_FLAGS: ClipFlags = { linkToggle: null, canDetach: false };
 
+const NO_PLAYBACK: PlaybackFlags = { playing: false, looping: false };
+
 export function actionContext(
   state: ProjectState | null,
   flags: UiFlags = NO_UI_FLAGS,
   selection: SelectionFlags = NO_SELECTION,
   clips: ClipFlags = NO_CLIP_FLAGS,
+  playback: PlaybackFlags = NO_PLAYBACK,
 ): ActionContext {
   const history = state?.history;
   return {
@@ -613,9 +677,11 @@ export function actionContext(
     undoLabel: history?.undoLabel ?? null,
     redoLabel: history?.redoLabel ?? null,
     magnetic: state?.project.magnetic ?? false,
+    canPlay: (state?.project.duration ?? 0) > 0,
     ...flags,
     ...selection,
     ...clips,
+    ...playback,
   };
 }
 
@@ -628,6 +694,10 @@ function uiFlags(s: UiStoreState): UiFlags {
     inspectorOpen: !s.collapsedPanels.inspector,
     editorOpen: s.view === "editor",
   };
+}
+
+function playbackFlags(s: ReturnType<typeof playheadStore.getState>): PlaybackFlags {
+  return { playing: s.state === "playing", looping: s.looping };
 }
 
 type SelectionStoreState = ReturnType<typeof selectionStore.getState>;
@@ -650,6 +720,7 @@ export function currentActionContext(): ActionContext {
     uiFlags(useUiStore.getState()),
     selectionFlags(selection),
     clipFlags(state, selection.clips),
+    playbackFlags(playheadStore.getState()),
   );
 }
 
@@ -661,7 +732,9 @@ export function useActionContext(): ActionContext {
   // Shallow-compared, so a project change (a drag update) re-renders only when a flag changes.
   const clips = useProjectStore(useShallow((s) => clipFlags(s.state, selected)));
   const project = useProjectStore(useShallow((s) => actionContext(s.state)));
-  return { ...project, ...flags, ...selection, ...clips };
+  // Shallow-compared too: playback ticks re-render only on play/pause and loop changes.
+  const playback = useStore(playheadStore, useShallow(playbackFlags));
+  return { ...project, ...flags, ...selection, ...clips, ...playback };
 }
 
 export function getAction(id: ActionId, actions: readonly Action[] = ACTIONS): Action {
@@ -680,8 +753,9 @@ export function actionLabel(action: Action, ctx: ActionContext): string {
 
 /** Display text of a key combination, e.g. `"Ctrl+Shift+S"`. */
 export function bindingLabel(binding: KeyBinding): string {
-  const { ctrl, shift, separator, escape, delete: del, left, right, up, down, home, end } = t.keys;
+  const { ctrl, shift, separator, escape, delete: del, left, right, up, down, home, end, space } = t.keys;
   const named: Record<string, string> = {
+    " ": space,
     Escape: escape,
     Delete: del,
     ArrowLeft: left,

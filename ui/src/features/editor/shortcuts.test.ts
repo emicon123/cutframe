@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { mockCommands } from "@/bindings";
 import { playheadStore } from "@/stores/playheadStore";
 import { type ProjectState, useProjectStore } from "@/stores/projectStore";
 import { selectionStore } from "@/stores/selectionStore";
@@ -75,6 +76,14 @@ describe("findShortcut", () => {
     expect(findShortcut(key("-"))?.id).toBe("zoom-out");
     expect(findShortcut(key("Z", { shiftKey: true }))?.id).toBe("zoom-to-fit");
     expect(findShortcut(key("ArrowLeft", { ctrlKey: true }))).toBeUndefined();
+  });
+
+  it("finds the transport shortcuts (playback design §2)", () => {
+    expect(findShortcut(key(" "))?.id).toBe("play-pause");
+    expect(findShortcut(key("j"))?.id).toBe("shuttle-reverse");
+    expect(findShortcut(key("K"))?.id).toBe("shuttle-pause");
+    expect(findShortcut(key("l"))?.id).toBe("shuttle-forward");
+    expect(findShortcut(key(" ", { ctrlKey: true }))).toBeUndefined();
   });
 
   it("ignores plain keys", () => {
@@ -215,6 +224,7 @@ describe("handleShortcut", () => {
     });
     useUiStore.setState({ view: "editor" });
     playheadStore.setState({ time: 0 });
+    mockCommands({ seek: () => 1, stepFrames: () => 1 });
 
     const inBin = press("ArrowRight", {}, item);
     handleShortcut(inBin);
@@ -228,6 +238,78 @@ describe("handleShortcut", () => {
 
     handleShortcut(press("End"));
     expect(playheadStore.getState().time).toBeGreaterThan(0);
+  });
+
+  it("drives the engine's transport from Space, J/K/L, the arrows, Home and End", async () => {
+    const frame = 705_600_000 / 25;
+    useProjectStore.setState({
+      state: {
+        ...state,
+        project: { duration: 100 * frame, settings: { frameRate: { num: 25, den: 1 } }, tracks: [] },
+      } as unknown as ProjectState,
+    });
+    useUiStore.setState({ view: "editor" });
+    playheadStore.setState({ time: 0 });
+    const sent: string[] = [];
+    mockCommands({
+      togglePlayback: () => {
+        sent.push("toggle");
+        return null;
+      },
+      shuttle: ({ key }) => {
+        sent.push(`shuttle ${key}`);
+        return null;
+      },
+      stepFrames: ({ frames }) => {
+        sent.push(`step ${frames}`);
+        return sent.length;
+      },
+      seek: ({ time, mode }) => {
+        sent.push(`seek ${mode} ${time}`);
+        return sent.length;
+      },
+    });
+
+    for (const [k, mods] of [
+      [" ", {}],
+      ["l", {}],
+      ["j", {}],
+      ["k", {}],
+      ["ArrowRight", {}],
+      ["ArrowLeft", { shiftKey: true }],
+      ["Home", {}],
+      ["End", {}],
+    ] as const) {
+      const event = press(k, mods);
+      handleShortcut(event);
+      expect(event.defaultPrevented).toBe(true);
+    }
+    await vi.waitFor(() =>
+      expect(sent).toEqual([
+        "toggle",
+        "shuttle forward",
+        "shuttle reverse",
+        "shuttle pause",
+        "step 1",
+        "step -10",
+        "seek exact 0",
+        `seek exact ${99 * frame}`,
+      ]),
+    );
+  });
+
+  it("ignores Space while typing or in a dialog", () => {
+    useUiStore.setState({ view: "editor" });
+    const play = fake({ shortcuts: [{ key: " " }] });
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    const inside = document.createElement("button");
+    dialog.append(inside);
+    const typing = press(" ", {}, document.createElement("input"));
+    handleShortcut(typing, [play]);
+    handleShortcut(press(" ", {}, inside), [play]);
+    expect(play.run).not.toHaveBeenCalled();
+    expect(typing.defaultPrevented).toBe(false);
   });
 
   it("does not trim with Q or W while typing", () => {

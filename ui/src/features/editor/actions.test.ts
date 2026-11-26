@@ -35,6 +35,9 @@ const ctx = (overrides: Partial<ActionContext> = {}): ActionContext => ({
   gapSelected: false,
   linkToggle: null,
   canDetach: false,
+  canPlay: true,
+  playing: false,
+  looping: false,
   ...overrides,
 });
 
@@ -180,6 +183,10 @@ describe("shortcutGroups", () => {
       { id: "preferences", label: t.edit.preferences, keys: ["Ctrl+,"] },
     ]);
     expect(groups[2]?.rows).toEqual([
+      { id: "play-pause", label: t.playback.playPause, keys: [t.keys.space] },
+      { id: "shuttle-reverse", label: t.playback.shuttleReverse, keys: ["J"] },
+      { id: "shuttle-pause", label: t.playback.shuttlePause, keys: ["K"] },
+      { id: "shuttle-forward", label: t.playback.shuttleForward, keys: ["L"] },
       { id: "zoom-in", label: t.view.zoomIn, keys: ["+", "="] },
       { id: "zoom-out", label: t.view.zoomOut, keys: ["-"] },
       { id: "zoom-to-fit", label: t.view.zoomToFit, keys: ["Shift+Z"] },
@@ -233,7 +240,36 @@ describe("actionContext", () => {
         inspectorOpen: true,
         editorOpen: true,
       }),
-    ).toEqual(ctx({ loaded: false, historyPanelOpen: true, mediaBinOpen: false, magnetic: false }));
+    ).toEqual(
+      ctx({ loaded: false, historyPanelOpen: true, mediaBinOpen: false, magnetic: false, canPlay: false }),
+    );
+  });
+
+  it("can play a timeline with content and mirrors the transport flags", () => {
+    const state = { project: { duration: 1, magnetic: true }, history: {} } as unknown as ProjectState;
+    const c = actionContext(state, undefined, undefined, undefined, { playing: true, looping: true });
+    expect(c).toMatchObject({ canPlay: true, playing: true, looping: true });
+    const empty = { project: { duration: 0, magnetic: true }, history: {} } as unknown as ProjectState;
+    expect(actionContext(empty).canPlay).toBe(false);
+  });
+});
+
+describe("transport actions", () => {
+  it("labels play/pause by the transport state and checks the loop toggle", () => {
+    const item = (c: ActionContext, id: string) => actionItems(menuModel(c)[2]).find((i) => i.id === id);
+    expect(item(ctx(), "play-pause")).toMatchObject({ label: t.playback.play, shortcut: t.keys.space });
+    expect(item(ctx({ playing: true }), "play-pause")?.label).toBe(t.playback.pause);
+    expect(item(ctx(), "loop")).toMatchObject({ checked: false, shortcut: "" });
+    expect(item(ctx({ looping: true }), "loop")?.checked).toBe(true);
+  });
+
+  it("cannot start an empty timeline but can always pause", () => {
+    const item = (c: ActionContext, id: string) => actionItems(menuModel(c)[2]).find((i) => i.id === id);
+    const empty = ctx({ canPlay: false });
+    expect(item(empty, "play-pause")?.disabled).toBe(true);
+    expect(item(empty, "shuttle-forward")?.disabled).toBe(true);
+    expect(item(empty, "shuttle-pause")?.disabled).toBe(false);
+    expect(item({ ...empty, playing: true }, "play-pause")?.disabled).toBe(false);
   });
 });
 

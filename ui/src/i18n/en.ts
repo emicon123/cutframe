@@ -35,6 +35,7 @@ export const en = {
     down: "Down",
     home: "Home",
     end: "End",
+    space: "Space",
   },
   /** Main menu bar titles. */
   menu: {
@@ -183,6 +184,16 @@ export const en = {
     frameForward: "Next frame",
     frameBack10: "Back 10 frames",
     frameForward10: "Forward 10 frames",
+  },
+  /** Transport actions (playback design §2); in the View menu and the shortcut reference. */
+  playback: {
+    playPause: "Play / pause",
+    play: "Play",
+    pause: "Pause",
+    shuttleReverse: "Play backward (faster on repeat)",
+    shuttlePause: "Stop shuttle",
+    shuttleForward: "Play forward (faster on repeat)",
+    loop: "Loop playback",
   },
   preferences: {
     title: "Preferences",
@@ -581,8 +592,8 @@ export const en = {
   preview: {
     unavailable: "Preview unavailable: no usable GPU",
     loading: "Starting preview…",
-    play: "Play",
-    playSoon: "Playback arrives with media import",
+    /** Between the playhead timecode and the timeline length. */
+    timecodeOf: "/",
   },
   inspector: {
     title: "Project",
@@ -643,6 +654,8 @@ export const en = {
     software: "software rendering",
     noGpu: "No GPU",
     previewMode: { native: "native preview", frames: "frame preview (dev)", unavailable: "no preview" },
+    /** While playing, when the preview could not keep up. */
+    droppedFrames: (n: number) => (n === 1 ? "1 dropped frame" : `${n} dropped frames`),
     version: (v: string) => `v${v}`,
   },
 } as const;
