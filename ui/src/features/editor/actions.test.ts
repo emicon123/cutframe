@@ -63,6 +63,17 @@ describe("bindingLabel", () => {
     expect(bindingLabel({ key: "?", shift: "any" })).toBe("?");
     expect(bindingLabel({ key: "/", ctrl: true, shift: "any" })).toBe("Ctrl+/");
   });
+
+  it("names the navigation keys", () => {
+    expect(shortcutLabel(getAction("frame-back"))).toBe("Left");
+    expect(shortcutLabel(getAction("frame-forward-10"))).toBe("Shift+Right");
+    expect(shortcutLabel(getAction("previous-edit"))).toBe("Up");
+    expect(shortcutLabel(getAction("next-edit"))).toBe("Down");
+    expect(shortcutLabel(getAction("go-to-start"))).toBe("Home");
+    expect(shortcutLabel(getAction("go-to-end"))).toBe("End");
+    expect(shortcutLabel(getAction("zoom-in"))).toBe("+");
+    expect(shortcutLabel(getAction("zoom-to-fit"))).toBe("Shift+Z");
+  });
 });
 
 describe("menuModel", () => {
@@ -169,6 +180,17 @@ describe("shortcutGroups", () => {
       { id: "preferences", label: t.edit.preferences, keys: ["Ctrl+,"] },
     ]);
     expect(groups[2]?.rows).toEqual([
+      { id: "zoom-in", label: t.view.zoomIn, keys: ["+", "="] },
+      { id: "zoom-out", label: t.view.zoomOut, keys: ["-"] },
+      { id: "zoom-to-fit", label: t.view.zoomToFit, keys: ["Shift+Z"] },
+      { id: "go-to-start", label: t.view.goToStart, keys: ["Home"] },
+      { id: "go-to-end", label: t.view.goToEnd, keys: ["End"] },
+      { id: "previous-edit", label: t.view.previousEdit, keys: ["Up"] },
+      { id: "next-edit", label: t.view.nextEdit, keys: ["Down"] },
+      { id: "frame-back", label: t.view.frameBack, keys: ["Left"] },
+      { id: "frame-forward", label: t.view.frameForward, keys: ["Right"] },
+      { id: "frame-back-10", label: t.view.frameBack10, keys: ["Shift+Left"] },
+      { id: "frame-forward-10", label: t.view.frameForward10, keys: ["Shift+Right"] },
       { id: "keyboard-shortcuts", label: t.view.keyboardShortcuts, keys: ["?", "Ctrl+/"] },
     ]);
     const listed = groups.flatMap((g) => g.rows.map((r) => r.id));

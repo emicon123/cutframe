@@ -3,18 +3,27 @@ import { describe, expect, it } from "vitest";
 import { FLICKS_PER_SECOND } from "@/lib/time";
 
 import {
+  DEFAULT_VIEWPORT,
+  FIT_PADDING,
   MAX_FLICKS_PER_PIXEL,
   MIN_FLICKS_PER_PIXEL,
   RULER_HEIGHT,
   TRACK_GAP,
   TRACK_HEIGHT,
   formatRulerLabel,
+  revealTime,
   rulerStep,
   scrollBy,
+  sliderToZoom,
   timeToX,
   trackAt,
   xToTime,
+  zoomAnchor,
   zoomAt,
+  zoomTo,
+  zoomToFit,
+  zoomToSlider,
+  ZOOM_SLIDER_STEPS,
   type Viewport,
 } from "./geometry";
 
@@ -78,5 +87,59 @@ describe("formatRulerLabel", () => {
     expect(formatRulerLabel(5 * FLICKS_PER_SECOND, FLICKS_PER_SECOND)).toBe("0:05");
     expect(formatRulerLabel(3725 * FLICKS_PER_SECOND, FLICKS_PER_SECOND)).toBe("1:02:05");
     expect(formatRulerLabel(2.5 * FLICKS_PER_SECOND, 0.5 * FLICKS_PER_SECOND)).toBe("2.5s");
+  });
+});
+
+describe("zoom controls (F1.32)", () => {
+  it("zooms to a level keeping the anchor time fixed", () => {
+    const next = zoomTo(viewport, viewport.flicksPerPixel / 2, 200);
+    expect(next.flicksPerPixel).toBe(viewport.flicksPerPixel / 2);
+    expect(Math.abs(xToTime(200, next) - xToTime(200, viewport))).toBeLessThanOrEqual(1);
+  });
+
+  it("anchors at the playhead while visible, else the middle", () => {
+    expect(zoomAnchor(viewport, 1000, viewport.scroll + 300 * viewport.flicksPerPixel)).toBe(300);
+    expect(zoomAnchor(viewport, 1000, 0)).toBe(500);
+    expect(zoomAnchor(viewport, 1000, viewport.scroll + 2000 * viewport.flicksPerPixel)).toBe(500);
+  });
+
+  it("fits the whole timeline into the lanes", () => {
+    const duration = 60 * FLICKS_PER_SECOND;
+    const fit = zoomToFit(duration, 1024);
+    expect(fit.scroll).toBe(0);
+    expect(timeToX(duration, fit)).toBeCloseTo(1024 - FIT_PADDING);
+  });
+
+  it("fits within the zoom limits and gives the default zoom when empty", () => {
+    expect(zoomToFit(0, 1000)).toEqual(DEFAULT_VIEWPORT);
+    expect(zoomToFit(FLICKS_PER_SECOND, 0)).toEqual(DEFAULT_VIEWPORT);
+    expect(zoomToFit(1, 1000).flicksPerPixel).toBe(MIN_FLICKS_PER_PIXEL);
+    expect(zoomToFit(100 * 3600 * FLICKS_PER_SECOND, 1000).flicksPerPixel).toBe(MAX_FLICKS_PER_PIXEL);
+  });
+
+  it("maps the slider logarithmically, zoomed in at the right", () => {
+    expect(zoomToSlider(MAX_FLICKS_PER_PIXEL)).toBe(0);
+    expect(zoomToSlider(MIN_FLICKS_PER_PIXEL)).toBe(ZOOM_SLIDER_STEPS);
+    expect(sliderToZoom(0)).toBeCloseTo(MAX_FLICKS_PER_PIXEL);
+    expect(sliderToZoom(ZOOM_SLIDER_STEPS)).toBeCloseTo(MIN_FLICKS_PER_PIXEL);
+    for (const position of [0, 137, 500, 999]) expect(zoomToSlider(sliderToZoom(position))).toBe(position);
+    const middle = sliderToZoom(ZOOM_SLIDER_STEPS / 2);
+    expect(middle).toBeCloseTo(Math.sqrt(MIN_FLICKS_PER_PIXEL * MAX_FLICKS_PER_PIXEL));
+    expect(sliderToZoom(-5)).toBeCloseTo(MAX_FLICKS_PER_PIXEL);
+  });
+});
+
+describe("revealTime", () => {
+  it("leaves a time in view alone", () => {
+    const inView = viewport.scroll + 500 * viewport.flicksPerPixel;
+    expect(revealTime(viewport, 1000, inView)).toBe(viewport);
+  });
+
+  it("scrolls a time past either edge just into view", () => {
+    const right = revealTime(viewport, 1000, viewport.scroll + 1500 * viewport.flicksPerPixel);
+    expect(timeToX(viewport.scroll + 1500 * viewport.flicksPerPixel, right)).toBeCloseTo(952);
+    const left = revealTime(viewport, 1000, viewport.scroll - 10 * viewport.flicksPerPixel);
+    expect(timeToX(viewport.scroll - 10 * viewport.flicksPerPixel, left)).toBeCloseTo(48);
+    expect(revealTime(viewport, 1000, 0).scroll).toBe(0);
   });
 });

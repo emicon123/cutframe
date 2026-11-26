@@ -1,6 +1,15 @@
 /** Draws the timeline lanes, ruler, clips and playhead onto a canvas. No React in here. */
-import type { ClipId, ClipView, MediaId, TrackId, TrackKind, TrackView } from "@/bindings";
+import type {
+  ClipId,
+  ClipView,
+  MediaId,
+  MediaView_Serialize,
+  TrackId,
+  TrackKind,
+  TrackView,
+} from "@/bindings";
 
+import { drawClipWaveform, drawFilmstrip, type PeakLevels, type TileSource } from "./clipVisuals";
 import type { DropPreview } from "./drop";
 import { normalizeRect, type Rect } from "./hitTest";
 import { trackDimmed } from "./tracks";
@@ -31,6 +40,12 @@ export type TimelineTheme = {
   selected: string;
   snapLine: string;
   clip: Record<TrackKind, string>;
+  /** Waveform bars on clips. */
+  wave: string;
+  /** Strip behind the waveform under a video clip's filmstrip. */
+  waveBand: string;
+  /** Shade behind the clip labels at the top of a filmstrip. */
+  labelShade: string;
 };
 
 /** Reads the colour tokens from CSS custom properties defined in `index.css`. */
@@ -53,6 +68,9 @@ export function readTheme(element: Element): TimelineTheme {
     selected: v("--clip-selected"),
     snapLine: v("--snap-line"),
     clip: { video: v("--clip-video"), audio: v("--clip-audio"), text: v("--clip-text") },
+    wave: v("--clip-wave"),
+    waveBand: v("--clip-wave-band"),
+    labelShade: v("--clip-label-shade"),
   };
 }
 
@@ -78,12 +96,28 @@ export type Scene = {
   snapLine: number | null;
   /** Label text for a clip's length. */
   durationText: (flicks: number) => string;
+  /** The project's media by id, for clip filmstrips and waveforms. */
+  media: ReadonlyMap<MediaId, MediaView_Serialize>;
+  /** Decoded `media://` products; a miss queues a load and draws nothing (F1.34, F1.35). */
+  products: ClipProducts;
+};
+
+export type ClipProducts = {
+  tiles: TileSource<MediaView_Serialize>;
+  waveforms: { get(item: MediaView_Serialize, index: number): PeakLevels | null };
 };
 
 /** Opacity of the clips on a muted or hidden track (`trackDimmed`). */
 const DIMMED_ALPHA = 0.4;
 /** Clips narrower than this get no link marker. */
 const LINK_MARK_MIN_WIDTH = 40;
+/** The clip body inside its lane. */
+const BODY_TOP = 3;
+const BODY_HEIGHT = TRACK_HEIGHT - 6;
+/** Height of the waveform strip under a video clip's filmstrip. */
+const WAVE_STRIP_HEIGHT = 16;
+/** Height of the label shade over a filmstrip. */
+const LABEL_SHADE_HEIGHT = 40;
 
 export function drawTimeline(ctx: CanvasRenderingContext2D, scene: Scene) {
   const { width, height, tracks, viewport, theme } = scene;
@@ -173,6 +207,8 @@ function drawClips(ctx: CanvasRenderingContext2D, track: TrackView, top: number,
     ctx.save();
     ctx.clip();
     if (offline) drawHatch(ctx, x, top, w, theme.invalid);
+    else if (clip.source.kind === "media")
+      drawClipMedia(ctx, clip, clip.source, track.kind, x, w, top, scene);
     // F1.36: the name, and the length under it (with the offline note for a missing file).
     ctx.fillStyle = theme.clipText;
     ctx.font = "500 12px 'Inter Variable', sans-serif";
@@ -201,6 +237,83 @@ function drawClips(ctx: CanvasRenderingContext2D, track: TrackView, top: number,
       ctx.stroke();
     }
   }
+}
+
+/**
+ * The filmstrip (video clips) and waveform (audio clips, and video clips that still play their
+ * own sound) of a media clip, for its source range `sourceIn .. sourceIn + duration`. The clip's
+ * rounded rectangle is the clip path already. Products not loaded yet are skipped and drawn when
+ * they arrive.
+ */
+function drawClipMedia(
+  ctx: CanvasRenderingContext2D,
+  clip: ClipView,
+  source: { media: MediaId; sourceIn: number },
+  kind: TrackKind,
+  x: number,
+  w: number,
+  top: number,
+  scene: Scene,
+) {
+  const item = scene.media.get(source.media);
+  if (!item) return;
+  const { viewport, width, theme, products } = scene;
+  const filmstrip = kind === "video" && item.kind === "video" ? item.filmstrip : null;
+  const sound = item.audio !== null && (kind === "audio" || (kind === "video" && clip.audio != null));
+  const bodyTop = top + BODY_TOP;
+  const left = Math.max(x, 0);
+  const visible = Math.min(x + w, width) - left;
+  const strip = filmstrip !== null;
+  if (filmstrip) {
+    const height = sound ? BODY_HEIGHT - WAVE_STRIP_HEIGHT : BODY_HEIGHT;
+    drawFilmstrip(
+      ctx,
+      filmstrip,
+      products.tiles,
+      item,
+      source.sourceIn,
+      x,
+      w,
+      bodyTop,
+      height,
+      viewport,
+      width,
+    );
+  }
+  const peaks = sound ? products.waveforms.get(item, 0) : null;
+  if (sound) {
+    const waveTop = strip ? bodyTop + BODY_HEIGHT - WAVE_STRIP_HEIGHT : bodyTop;
+    const waveHeight = strip ? WAVE_STRIP_HEIGHT : BODY_HEIGHT;
+    if (strip) {
+      ctx.fillStyle = theme.waveBand;
+      ctx.fillRect(left, waveTop, visible, waveHeight);
+    }
+    if (peaks) {
+      ctx.fillStyle = theme.wave;
+      drawClipWaveform(ctx, peaks, source.sourceIn, x, w, waveTop + 1, waveHeight - 2, viewport, width);
+    }
+  }
+  // Keeps the name and length readable over the pictures.
+  if (strip || peaks) {
+    ctx.save();
+    ctx.translate(0, bodyTop);
+    ctx.fillStyle = labelShade(ctx, theme.labelShade);
+    ctx.fillRect(left, 0, visible, LABEL_SHADE_HEIGHT);
+    ctx.restore();
+  }
+}
+
+/** The label shade gradient, in coordinates relative to the clip body's top; built once per colour. */
+const labelShades = new WeakMap<CanvasRenderingContext2D, { color: string; gradient: CanvasGradient }>();
+
+function labelShade(ctx: CanvasRenderingContext2D, color: string): CanvasGradient {
+  const cached = labelShades.get(ctx);
+  if (cached?.color === color) return cached.gradient;
+  const gradient = ctx.createLinearGradient(0, 0, 0, LABEL_SHADE_HEIGHT);
+  gradient.addColorStop(0, color);
+  gradient.addColorStop(1, "transparent");
+  labelShades.set(ctx, { color, gradient });
+  return gradient;
 }
 
 /** Two interlocking rings at the clip's top-right corner: the clip is linked (§3.5). */

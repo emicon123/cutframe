@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { playheadStore } from "@/stores/playheadStore";
 import { type ProjectState, useProjectStore } from "@/stores/projectStore";
 import { selectionStore } from "@/stores/selectionStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -58,6 +59,22 @@ describe("findShortcut", () => {
     expect(findShortcut(key("v", { ctrlKey: true }))?.id).toBe("paste");
     expect(findShortcut(key("d", { ctrlKey: true }))?.id).toBe("duplicate");
     expect(findShortcut(key("q", { ctrlKey: true }))).toBeUndefined();
+  });
+
+  it("finds the navigation and zoom shortcuts (F1.54, F1.32)", () => {
+    expect(findShortcut(key("ArrowLeft"))?.id).toBe("frame-back");
+    expect(findShortcut(key("ArrowRight"))?.id).toBe("frame-forward");
+    expect(findShortcut(key("ArrowLeft", { shiftKey: true }))?.id).toBe("frame-back-10");
+    expect(findShortcut(key("ArrowRight", { shiftKey: true }))?.id).toBe("frame-forward-10");
+    expect(findShortcut(key("ArrowUp"))?.id).toBe("previous-edit");
+    expect(findShortcut(key("ArrowDown"))?.id).toBe("next-edit");
+    expect(findShortcut(key("Home"))?.id).toBe("go-to-start");
+    expect(findShortcut(key("End"))?.id).toBe("go-to-end");
+    expect(findShortcut(key("+", { shiftKey: true }))?.id).toBe("zoom-in");
+    expect(findShortcut(key("="))?.id).toBe("zoom-in");
+    expect(findShortcut(key("-"))?.id).toBe("zoom-out");
+    expect(findShortcut(key("Z", { shiftKey: true }))?.id).toBe("zoom-to-fit");
+    expect(findShortcut(key("ArrowLeft", { ctrlKey: true }))).toBeUndefined();
   });
 
   it("ignores plain keys", () => {
@@ -183,6 +200,34 @@ describe("handleShortcut", () => {
     expect(global.run).toHaveBeenCalledOnce();
     handleShortcut(press("Delete"), [timeline]);
     expect(timeline.run).toHaveBeenCalledOnce();
+  });
+
+  it("leaves the arrow keys to the media bin and to a focused slider", () => {
+    const panel = document.createElement("section");
+    panel.dataset.shortcutScope = "media-bin";
+    const item = document.createElement("div");
+    panel.append(item);
+    useProjectStore.setState({
+      state: {
+        ...state,
+        project: { duration: 705_600_000, settings: { frameRate: { num: 25, den: 1 } }, tracks: [] },
+      } as unknown as ProjectState,
+    });
+    useUiStore.setState({ view: "editor" });
+    playheadStore.setState({ time: 0 });
+
+    const inBin = press("ArrowRight", {}, item);
+    handleShortcut(inBin);
+    expect(inBin.defaultPrevented).toBe(false);
+    expect(playheadStore.getState().time).toBe(0);
+
+    const onSlider = press("ArrowRight");
+    onSlider.preventDefault();
+    handleShortcut(onSlider);
+    expect(playheadStore.getState().time).toBe(0);
+
+    handleShortcut(press("End"));
+    expect(playheadStore.getState().time).toBeGreaterThan(0);
   });
 
   it("does not trim with Q or W while typing", () => {

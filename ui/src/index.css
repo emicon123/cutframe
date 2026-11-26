@@ -39,6 +39,10 @@
   --clip-video: oklch(0.55 0.15 292);
   --clip-audio: oklch(0.6 0.13 165);
   --clip-text: oklch(0.7 0.14 75);
+  /* Waveform bars on clips, the strip behind them under a filmstrip, and the label shade. */
+  --clip-wave: oklch(0.95 0.03 165 / 0.8);
+  --clip-wave-band: oklch(0.16 0.02 285 / 0.75);
+  --clip-label-shade: oklch(0.1 0.005 285 / 0.7);
   /* Outline of selected clips and the marquee, and the snap indicator line. */
   --clip-selected: oklch(0.97 0.005 285);
   --snap-line: oklch(0.86 0.16 95);

@@ -1,5 +1,19 @@
-import { AudioLines, Film, FoldHorizontal, Link2, Magnet, Plus, Scissors, Trash2, Type } from "lucide-react";
+import {
+  AudioLines,
+  Film,
+  FoldHorizontal,
+  Link2,
+  Magnet,
+  Maximize2,
+  Plus,
+  Scissors,
+  Trash2,
+  Type,
+  ZoomIn,
+  ZoomOut,
+} from "lucide-react";
 import { type ComponentType, useEffect, useMemo, useRef } from "react";
+import { useStore } from "zustand";
 
 import {
   commands,
@@ -10,6 +24,7 @@ import {
   type TrackView,
 } from "@/bindings";
 import { Button } from "@/components/ui/button";
+import { Slider } from "@/components/ui/slider";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   type ActionId,
@@ -29,15 +44,28 @@ import { mediaDragStore, registerDropZone } from "@/stores/mediaDragStore";
 import { playheadStore } from "@/stores/playheadStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { selectionStore } from "@/stores/selectionStore";
+import { setLaneWidth, setViewport, timelineViewStore } from "@/stores/timelineViewStore";
 import { useUiStore } from "@/stores/uiStore";
 
-import { DEFAULT_VIEWPORT, TRACK_GAP, scrollBy, trackTop, zoomAt, type Viewport } from "./geometry";
+import {
+  DEFAULT_VIEWPORT,
+  TRACK_GAP,
+  ZOOM_SLIDER_STEPS,
+  scrollBy,
+  sliderToZoom,
+  trackTop,
+  zoomAt,
+  zoomToSlider,
+  type Viewport,
+} from "./geometry";
 import { addMediaClips } from "./addActions";
 import { ClipContextMenu } from "./ClipContextMenu";
 import { type Hit, hitTest } from "./hitTest";
 import { TrackHeaders } from "./TrackHeaders";
 import { locateGap } from "./gap";
 import { dropPayload, dropPlacement, dropPreview, type DropPreview } from "./drop";
+import { createClipMedia } from "./clipMedia";
+import { setZoomLevel } from "./navActions";
 import { attachPointerInteraction, type PointerOverlay } from "./pointer";
 import { drawTimeline, readTheme, type TimelineTheme } from "./renderer";
 
@@ -52,6 +80,7 @@ export function Timeline() {
     () => new Set(media.filter((item) => item.status === "offline").map((item) => item.id)),
     [media],
   );
+  const mediaById = useMemo(() => new Map(media.map((item) => [item.id, item])), [media]);
   const contentHeight = trackTop(tracks.length) + TRACK_GAP;
 
   return (
@@ -63,6 +92,7 @@ export function Timeline() {
           tracks={tracks}
           mainTrack={mainTrack}
           offline={offline}
+          media={mediaById}
           contentHeight={contentHeight}
         />
       </div>
@@ -84,7 +114,12 @@ function TimelineToolbar() {
       <div className="mx-1 h-5 w-px bg-border" aria-hidden />
       <ActionButton id="magnetic" icon={FoldHorizontal} />
       <SnappingToggle />
-      <span className="ml-auto text-xs text-muted-foreground">{t.timeline.zoomHint}</span>
+      <div className="ml-auto flex items-center gap-1">
+        <ActionButton id="zoom-out" icon={ZoomOut} />
+        <ZoomSlider />
+        <ActionButton id="zoom-in" icon={ZoomIn} />
+        <ActionButton id="zoom-to-fit" icon={Maximize2} />
+      </div>
     </div>
   );
 }
@@ -164,32 +199,60 @@ function SnappingToggle() {
 }
 
 /**
- * The canvas part. Viewport and playhead live in refs/vanilla stores and trigger a redraw
+ * F1.32: the zoom level on a logarithmic slider, anchored at the playhead (or the middle). It
+ * re-renders on zoom changes only, never on scroll or playhead moves.
+ */
+function ZoomSlider() {
+  const flicksPerPixel = useStore(timelineViewStore, (s) => s.viewport.flicksPerPixel);
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div className="w-28 px-1">
+          <Slider
+            aria-label={t.timeline.zoom}
+            min={0}
+            max={ZOOM_SLIDER_STEPS}
+            step={1}
+            value={[zoomToSlider(flicksPerPixel)]}
+            onValueChange={([position]) => {
+              if (position !== undefined) setZoomLevel(sliderToZoom(position));
+            }}
+          />
+        </div>
+      </TooltipTrigger>
+      <TooltipContent>{t.timeline.zoomHint}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+/**
+ * The canvas part. Viewport and playhead live in vanilla stores and trigger a redraw
  * directly, so scrolling, zooming and scrubbing never re-render React.
  */
 function TimelineCanvas({
   tracks,
   mainTrack,
   offline,
+  media,
   contentHeight,
 }: {
   tracks: TrackView[];
   mainTrack: TrackId | null;
   offline: ReadonlySet<MediaId>;
+  media: ReadonlyMap<MediaId, MediaView_Serialize>;
   contentHeight: number;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const viewportRef = useRef<Viewport>(DEFAULT_VIEWPORT);
-  const sceneRef = useRef({ tracks, mainTrack, offline });
+  const sceneRef = useRef({ tracks, mainTrack, offline, media });
   const dropRef = useRef<DropPreview | null>(null);
   const overlayRef = useRef<PointerOverlay>({ marquee: null, snapLine: null });
   const requestDrawRef = useRef<() => void>(() => undefined);
 
   useEffect(() => {
-    sceneRef.current = { tracks, mainTrack, offline };
+    sceneRef.current = { tracks, mainTrack, offline, media };
     requestDrawRef.current();
-  }, [tracks, mainTrack, offline]);
+  }, [tracks, mainTrack, offline, media]);
 
   // Files from Explorer: one import step, then one add step at the drop position (F1.03).
   const hoveringFiles = useFileDrop(containerRef, (paths, point) => {
@@ -197,7 +260,14 @@ function TimelineCanvas({
       const media = await importPathsForPlacement(paths);
       const canvas = canvasRef.current;
       if (media.length === 0 || !canvas) return;
-      const preview = previewAt(canvas, viewportRef.current, media, point.x, point.y, false);
+      const preview = previewAt(
+        canvas,
+        timelineViewStore.getState().viewport,
+        media,
+        point.x,
+        point.y,
+        false,
+      );
       const placement = (preview && dropPlacement(preview)) ?? { kind: "append" };
       await addMediaClips(media, placement);
     })();
@@ -212,15 +282,25 @@ function TimelineCanvas({
     let theme: TimelineTheme = readTheme(container);
     let size = { width: 0, height: 0 };
     let frame = 0;
+    // A fresh timeline starts at the default zoom, scrolled to 0, as before the view was shared.
+    setViewport(DEFAULT_VIEWPORT);
+    const viewport = () => timelineViewStore.getState().viewport;
+    const requestDraw = () => {
+      frame ||= requestAnimationFrame(draw);
+    };
+    // Filmstrip tiles and waveforms; a finished load redraws.
+    const products = createClipMedia(requestDraw);
 
     const draw = () => {
       frame = 0;
       const dpr = window.devicePixelRatio;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      products.beginFrame();
       drawTimeline(ctx, {
         ...size,
         ...sceneRef.current,
-        viewport: viewportRef.current,
+        products,
+        viewport: viewport(),
         playhead: playheadStore.getState().time,
         theme,
         offlineLabel: t.timeline.offline,
@@ -231,9 +311,7 @@ function TimelineCanvas({
         snapLine: overlayRef.current.snapLine,
         durationText: formatClipDuration,
       });
-    };
-    const requestDraw = () => {
-      frame ||= requestAnimationFrame(draw);
+      products.endFrame();
     };
     requestDrawRef.current = requestDraw;
 
@@ -243,6 +321,7 @@ function TimelineCanvas({
       size = { width: entry.contentRect.width, height: entry.contentRect.height };
       canvas.width = Math.round(size.width * dpr);
       canvas.height = Math.round(size.height * dpr);
+      setLaneWidth(size.width);
       theme = readTheme(container);
       requestDraw();
     });
@@ -253,16 +332,17 @@ function TimelineCanvas({
       if (s.time !== prev.time) requestDraw();
     });
     const unsubscribeSelection = selectionStore.subscribe(requestDraw);
+    const unsubscribeView = timelineViewStore.subscribe(requestDraw);
 
     // Media dragged from the media panel: follow the pointer with a drop preview.
     const unsubscribeDrag = mediaDragStore.subscribe(({ drag }) => {
-      const next = drag ? previewAt(canvas, viewportRef.current, drag.media, drag.x, drag.y, drag.alt) : null;
+      const next = drag ? previewAt(canvas, viewport(), drag.media, drag.x, drag.y, drag.alt) : null;
       if (next === null && dropRef.current === null) return;
       dropRef.current = next;
       requestDraw();
     });
     const unregisterDrop = registerDropZone((drag) => {
-      const preview = previewAt(canvas, viewportRef.current, drag.media, drag.x, drag.y, drag.alt);
+      const preview = previewAt(canvas, viewport(), drag.media, drag.x, drag.y, drag.alt);
       dropRef.current = null;
       requestDraw();
       if (!preview) return false;
@@ -275,19 +355,17 @@ function TimelineCanvas({
       if (event.ctrlKey) {
         event.preventDefault();
         const x = event.clientX - canvas.getBoundingClientRect().left;
-        viewportRef.current = zoomAt(viewportRef.current, Math.exp(event.deltaY * 0.002), x);
+        setViewport(zoomAt(viewport(), Math.exp(event.deltaY * 0.002), x));
       } else if (event.deltaX !== 0 || event.shiftKey) {
         event.preventDefault();
-        viewportRef.current = scrollBy(viewportRef.current, event.deltaX || event.deltaY);
-      } else {
-        return; // Plain vertical wheel scrolls the track list.
+        setViewport(scrollBy(viewport(), event.deltaX || event.deltaY));
       }
-      requestDraw();
+      // Plain vertical wheel scrolls the track list.
     };
     canvas.addEventListener("wheel", onWheel, { passive: false });
 
     const detachPointer = attachPointerInteraction(canvas, {
-      viewport: () => viewportRef.current,
+      viewport,
       overlay: overlayRef.current,
       requestDraw,
     });
@@ -297,6 +375,8 @@ function TimelineCanvas({
       resize.disconnect();
       unsubscribePlayhead();
       unsubscribeSelection();
+      unsubscribeView();
+      products.clear();
       detachPointer();
       unsubscribeDrag();
       unregisterDrop();
@@ -310,7 +390,7 @@ function TimelineCanvas({
     if (!canvas) return null;
     const rect = canvas.getBoundingClientRect();
     const tracks = useProjectStore.getState().state?.project.tracks ?? [];
-    return hitTest(clientX - rect.left, clientY - rect.top, tracks, viewportRef.current);
+    return hitTest(clientX - rect.left, clientY - rect.top, tracks, timelineViewStore.getState().viewport);
   };
 
   return (
