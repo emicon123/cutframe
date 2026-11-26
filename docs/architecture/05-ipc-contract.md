@@ -166,15 +166,25 @@ to touch arbitrary files.
 
 These are called by a `ResizeObserver` in `PreviewArea`, not by a user action, and are infallible.
 
-### 4.6 Playhead
+### 4.6 Playback and transport
+
+The engine owns the playhead (task 0330, playback.md §8). Every handler is synchronous and never
+blocks (measured: about 0.2 µs on average); all fail with `unavailable` when there is no preview
+engine.
 
 | Command | Arguments | Returns | Notes |
 |---|---|---|---|
-| `seek` | `time: Time`, `mode: SeekMode` (`exact` / `scrub`) | `u32` seek generation | Never blocks; clamps to `0..=duration`; `invalidEdit` outside ±2^53 flicks, `unavailable` without a preview engine |
+| `seek` | `time: Time`, `mode: SeekMode` (`exact` / `scrub`) | `u32` seek generation | Clamps to `0..=duration`; `scrub` pauses and plays an 80 ms audio grain, `exact` while playing prerolls again; `invalidEdit` outside ±2^53 flicks |
+| `togglePlayback` | — | — | Play at 1x from the playhead, or pause; at the end, play starts at 0 |
+| `pausePlayback` | — | — | Pauses on the start of the frame on screen |
+| `shuttle` | `key: ShuttleKey` (`reverse` / `pause` / `forward`) | — | J/K/L: rates ±1, 2, 4, 8; only 1x has sound |
+| `stepFrames` | `frames: i32` | `u32` seek generation | Pauses, then moves whole frames, clamped |
+| `setLoop` | `on: bool` | — | Loops the whole timeline |
+| `getPlayback` | — | `PlaybackTick` | The current state (start-up, webview reload); paused at 0 without an engine |
 
-The UI owns the playhead until task 0330 and mirrors it to the engine: `playheadStore.seekTo` sends
-`scrub` at most once per animation frame while the ruler is dragged and `exact` on press, release and
-jumps (playback.md §8).
+The UI mirrors the transport from `playback-tick` and ignores a tick whose `seek` is older than the
+last generation `seek` or `stepFrames` returned; `playheadStore.seekTo` sends `scrub` at most once
+per animation frame while the ruler is dragged and `exact` on press, release and jumps.
 
 ## 5. Errors
 
@@ -216,6 +226,7 @@ jobs are logged in `JobHandle::finish` (`warn`; `cancelled` at `info`). Log file
 | `open-file-requested` | `{ path }` | A second launch passed a `.cutframe` path |
 | `quit-requested` | — | Close was stopped because the project is dirty |
 | `app-info-changed` | `AppInfo` | The GPU was lost/restarted or the preview gave up |
+| `playback-tick` | `PlaybackTick { time, state, rate, looping, seek, droppedFrames, target }` | From the render thread: at most 60 Hz while playing, and once after every play, pause, shuttle, seek, step, loop toggle, preroll end, end of playback, project replacement and audio device loss |
 
 `quit-requested` and `confirmClose` are one protocol: the window's `CloseRequested` handler closes a
 clean project immediately and, for a dirty one, cancels the close and emits the event; the UI asks

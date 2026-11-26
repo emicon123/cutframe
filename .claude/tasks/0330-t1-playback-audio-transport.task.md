@@ -9,13 +9,13 @@ The heart of the MVP: press Space and watch the edit with sound.
 
 ## Features
 
-- [ ] `F1.31` Auto-scroll timeline to follow the playhead during playback — *missing*
-- [ ] `F1.58` Real-time playback of the composed timeline with audio/video sync — *missing*
-- [ ] `F1.59` Play/pause (Space), current/total timecode display — *partial*
-- [ ] `F1.60` Dropped-frame handling: audio is the master clock, video skips — *missing*
-- [ ] `F1.67` Loop playback — *missing*
-- [ ] `F1.68` J/K/L shuttle (reverse / pause / forward, repeated presses speed up) — *missing*
-- [ ] `F1.69` Audio scrubbing while dragging the playhead — *missing*
+- [ ] `F1.31` Auto-scroll timeline to follow the playhead during playback — *partial* (built and tested; manual `pnpm dev` check open)
+- [ ] `F1.58` Real-time playback of the composed timeline with audio/video sync — *partial* (built and tested; manual `pnpm dev` check open)
+- [ ] `F1.59` Play/pause (Space), current/total timecode display — *partial* (built and tested; manual `pnpm dev` check open)
+- [ ] `F1.60` Dropped-frame handling: audio is the master clock, video skips — *partial* (built and tested; manual `pnpm dev` check open)
+- [ ] `F1.67` Loop playback — *partial* (built and tested; manual `pnpm dev` check open)
+- [ ] `F1.68` J/K/L shuttle (reverse / pause / forward, repeated presses speed up) — *partial* (built and tested; manual `pnpm dev` check open)
+- [ ] `F1.69` Audio scrubbing while dragging the playhead — *partial* (built and tested; manual `pnpm dev` check open)
 
 ## Scope
 
@@ -37,3 +37,23 @@ Design: `docs/design/playback.md` (§13 task breakdown), `docs/design/render-gra
 - each row above is updated in `docs/feature-catalog.md` (status + short evidence note); partial rows say what is missing
 - `pnpm check` passes; after any IPC change `pnpm bindings` is re-run and `ui/src/bindings.ts` committed
 - architecture rules in `CLAUDE.md` hold (model changes are undoable commands, no frames over JSON IPC, integer flicks, LGPL-only FFmpeg, no reference-product names or assets)
+
+## Status (2026-11-26, branch `claude/project-thread-z58xeb`)
+
+- [ ] **1080p30 two-track, 10 min, in sync:** release harness on the Iris Xe (render-thread
+  playback step with a fake 60 Hz vsync, real readers, compositor and audio engine): 0 / 18,000
+  dropped, max |A/V offset| 26.5 ms, 0 underruns. Open: the same in `pnpm dev` with the log at debug
+  (playback.md §12 manual check), on a real display.
+- [ ] **4K30 HEVC 10-bit HLG + overlay, 0 dropped over 60 s on the iGPU:** harness 0 / 1,800, zero-copy,
+  tone-mapped; 4K60 0 / 1,800 (budget ≤ 1 %). Open: a real iPhone clip in `pnpm dev`.
+- [x] **Audio callback no-allocation test and the clock/scheduling simulations:** counting-allocator
+  test (0 allocations over 10,000 calls, 1/2/6 channels, all sample formats), clock, loop, end,
+  preroll, underrun and 10-minute drift simulations, fake-vsync frame choice at 60/144/165 Hz.
+- [ ] **Every feature end-to-end in `pnpm dev` with tests:** all have engine, src-tauri and Vitest
+  tests. Open: a person trying Space, J/K/L, arrows, Home/End, loop, auto-scroll and audio scrubbing
+  in `pnpm dev`, and unplugging headphones during playback.
+- [x] **Catalog rows updated:** F1.31, F1.58–F1.60, F1.67–F1.69 (partial: manual check open).
+- [x] **`pnpm check` passes; `pnpm bindings` committed.**
+- [x] **Architecture rules:** no model changes; frames never cross IPC; integer flicks in the
+  transport, clock and mixer; LGPL FFmpeg only (`swresample`); new crates `cpal` (Apache-2.0) and
+  `rtrb` (MIT/Apache) pass `cargo deny`.

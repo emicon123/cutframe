@@ -48,12 +48,15 @@ flowchart LR
   workers["job pool: clamp(cores/4, 1, 3) workers, two priority queues"]
   auto["autosave thread: interval ticks, writes recovery files"]
   ticker["progress ticker: 10 Hz job-progress"]
-  audio["audio callback — Target, real-time"]
+  feeder["audio-feeder: cpal stream, readers, mixer"]
+  audio["audio callback, real-time"]
   main -- "crossbeam messages" --> render
   handlers -- "queue a generation on a miss" --> workers
   workers -- "edit through the host lock" --> main
   main -- "SaveSnapshot (brief lock)" --> auto
   workers -- "publish progress" --> ticker
+  main -- "transport commands" --> feeder
+  feeder -- "rtrb ring" --> audio
   audio -. "sample clock" .-> render
 ```
 
@@ -65,9 +68,10 @@ flowchart LR
 | job pool | import, relink, preview prefetch, media check | one job = one `JobId`; progress at most 10 Hz; edits land only when no gesture is open |
 | autosave | recovery files | takes a `SaveSnapshot` under a short document lock, writes outside it; a stuck disk delays at most 2 s of shutdown |
 | progress ticker | `job-progress` emission | coalesces progress so a fast job cannot flood IPC |
-| audio (Target) | `cpal` callback, ring buffer | no allocation, locks or I/O in the callback (ADR-0004) |
+| `audio-feeder` | the `cpal` stream, audio readers, the mixer | may allocate and do I/O; above-normal priority ([09](09-audio-and-playback.md)) |
+| audio callback | the device buffer, the clock samples | no allocation, locks or I/O (ADR-0004); a counting-allocator test enforces it |
 
-Threads exist only for the preview, `media://`, jobs and autosave. Everything the user does to the
+Threads exist only for the preview, playback audio, `media://`, jobs and autosave. Everything the user does to the
 project is a synchronous command on the main thread, applied to a clone and swapped in on success
 ([03](03-edit-model.md)).
 
@@ -187,7 +191,8 @@ prompt appear on the next start.
 | Media import, probe, posters, filmstrips, waveforms, relink | implemented |
 | Native preview of the composed timeline at the playhead (render graph, hardware decode, HDR tone map, `seek`) | implemented (task 0320) |
 | Project files, autosave, recovery, recent list, preferences | implemented |
-| Playback, audio output, effects, export | **Target** (`docs/design/playback.md`, `render-graph.md`, `export.md`) |
+| Playback with audio, transport, A/V sync | implemented (task 0330) |
+| Skimming and source preview, effects, export | **Target** (`docs/design/playback.md`, `render-graph.md`, `export.md`) |
 | Updater and code signing | **Target** (task 0170) |
 
 ## Links
