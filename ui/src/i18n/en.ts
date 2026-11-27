@@ -370,6 +370,8 @@ export const en = {
       trackLocked: "That track is locked",
       mediaTooShort: "That media is shorter than the clip",
       updateRejected: "The update could not be verified and was not installed",
+      fileExists: "A file with that name already exists",
+      busy: "An export is already running",
     } satisfies Record<IpcError["kind"], string>,
     /** Shown for an unknown kind or a failure that is not an `IpcError`. */
     unknown: "Something went wrong",
@@ -490,6 +492,10 @@ export const en = {
         generatingPreviews: "Generating previews",
         checkingMedia: "Checking media files",
         searchingFolder: "Searching folder",
+        probingEncoders: "Checking video encoders",
+        exportPreparing: "Preparing export",
+        exportEncoding: "Exporting",
+        exportFinalizing: "Finishing export",
       } satisfies Record<JobStage, string>,
       /** Shown for a stage this UI build does not know. */
       unknownStage: "Working",

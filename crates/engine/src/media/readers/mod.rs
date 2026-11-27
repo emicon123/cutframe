@@ -111,7 +111,7 @@ impl Default for ReaderOptions {
 }
 
 /// Lowers the calling thread to below-normal priority (Windows); logs a failure.
-pub(crate) fn lower_thread_priority() {
+pub fn lower_thread_priority() {
     #[cfg(windows)]
     {
         use windows::Win32::System::Threading::{

@@ -14,6 +14,7 @@ use tauri::AppHandle;
 use tauri_specta::Event;
 
 use crate::autosave::{AutosaveHandle, Msg};
+use crate::export::EncoderProbe;
 use crate::ipc::IpcError;
 use crate::ipc::events::{PlaybackTick, ProjectChanged};
 use crate::ipc::types::ProjectState;
@@ -53,6 +54,8 @@ pub struct AppState {
     recent_lock: tauri::async_runtime::Mutex<()>,
     /// The running media check, cancelled when another project replaces the open one.
     media_check: Mutex<Option<JobId>>,
+    /// The session's export encoder probe (export.md §4.4).
+    pub encoder_probe: Arc<EncoderProbe>,
 }
 
 /// The preferences in effect and where they live (design `preferences.md` §4).
@@ -197,6 +200,7 @@ impl AppState {
             recent: RecentStore::new(Path::new("")),
             recent_lock: tauri::async_runtime::Mutex::new(()),
             media_check: Mutex::new(None),
+            encoder_probe: Arc::default(),
         }
     }
 

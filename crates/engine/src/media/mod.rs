@@ -2,7 +2,6 @@
 //!
 //! - [`ffmpeg`]: versions, licence and configure flags of the linked FFmpeg, and the LGPL-only check
 //!   the app runs at startup (CLAUDE.md rule 7, review F26).
-//! - [`encoders`]: encoder discovery that only ever selects allowlisted, licence-clean encoders.
 //! - [`probe`]: opens a media file, decodes its first frames and describes it as model data.
 //! - [`fingerprint`]: the content identity of a media file (cache key, relink match).
 //! - [`previews`]: poster, filmstrip and waveform generators for the media panel, on top of
@@ -18,7 +17,6 @@ pub mod cache;
 #[cfg(windows)]
 mod d3d12;
 pub mod decode;
-pub mod encoders;
 mod error;
 pub mod ffmpeg;
 pub mod fingerprint;
@@ -36,7 +34,6 @@ pub mod waveform;
 
 #[cfg(windows)]
 pub use d3d12::GpuFrame;
-pub use encoders::{EncoderBackend, EncoderCandidate, EncoderTarget};
 pub use error::{MediaError, MediaErrorKind};
 pub use ffmpeg::{FfmpegInfo, FfmpegProblem, LibraryInfo};
 pub use fingerprint::{fingerprint, modified_millis};

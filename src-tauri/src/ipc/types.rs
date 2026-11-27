@@ -385,6 +385,136 @@ pub enum JobStage {
     CheckingMedia,
     /// Looking for missing media files in a folder (`relinkMediaFolder`).
     SearchingFolder,
+    /// Test-encoding with each export encoder, once per session (`getExportCapabilities`).
+    ProbingEncoders,
+    /// Export: opening the encoder, the renderer and the output file. No progress value.
+    ExportPreparing,
+    /// Export: rendering and encoding frames; progress is frames done / frames.
+    ExportEncoding,
+    /// Export: flushing the encoders, finishing the MP4 and renaming it. No progress value.
+    ExportFinalizing,
+}
+
+/// Video codec of an export (export.md §6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum VideoCodec {
+    H264,
+    Hevc,
+}
+
+impl From<VideoCodec> for engine::export::plan::VideoCodec {
+    fn from(codec: VideoCodec) -> Self {
+        match codec {
+            VideoCodec::H264 => Self::H264,
+            VideoCodec::Hevc => Self::Hevc,
+        }
+    }
+}
+
+impl From<engine::export::plan::VideoCodec> for VideoCodec {
+    fn from(codec: engine::export::plan::VideoCodec) -> Self {
+        use engine::export::plan::VideoCodec as Engine;
+        match codec {
+            Engine::H264 => Self::H264,
+            Engine::Hevc => Self::Hevc,
+        }
+    }
+}
+
+/// An export encoder implementation (export.md §4.4). Keys are stable; `CUTFRAME_ENCODERS`
+/// uses the same ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum EncoderKind {
+    /// NVIDIA NVENC.
+    Nvenc,
+    /// Intel Quick Sync.
+    Qsv,
+    /// AMD AMF.
+    Amf,
+    /// A Media Foundation hardware encoder (the GPU driver's MFT).
+    MfHardware,
+    /// Microsoft's Media Foundation software H.264 encoder.
+    MfSoftware,
+    /// OpenH264 (software, last resort).
+    OpenH264,
+}
+
+impl From<EncoderKind> for engine::export::encoders::EncoderKind {
+    fn from(kind: EncoderKind) -> Self {
+        match kind {
+            EncoderKind::Nvenc => Self::Nvenc,
+            EncoderKind::Qsv => Self::Qsv,
+            EncoderKind::Amf => Self::Amf,
+            EncoderKind::MfHardware => Self::MfHardware,
+            EncoderKind::MfSoftware => Self::MfSoftware,
+            EncoderKind::OpenH264 => Self::OpenH264,
+        }
+    }
+}
+
+impl From<engine::export::encoders::EncoderKind> for EncoderKind {
+    fn from(kind: engine::export::encoders::EncoderKind) -> Self {
+        use engine::export::encoders::EncoderKind as Engine;
+        match kind {
+            Engine::Nvenc => Self::Nvenc,
+            Engine::Qsv => Self::Qsv,
+            Engine::Amf => Self::Amf,
+            Engine::MfHardware => Self::MfHardware,
+            Engine::MfSoftware => Self::MfSoftware,
+            Engine::OpenH264 => Self::OpenH264,
+        }
+    }
+}
+
+/// One export encoder candidate and whether this machine can use it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EncoderStatus {
+    pub codec: VideoCodec,
+    pub encoder: EncoderKind,
+    /// Runs on the GPU (NVENC, Quick Sync, AMF, Media Foundation hardware).
+    pub hardware: bool,
+    /// The session's test encode worked (`false` also when `CUTFRAME_ENCODERS` left it out).
+    pub available: bool,
+}
+
+/// The export encoders of this machine (`getExportCapabilities`, `exportCapabilitiesChanged`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportCapabilities {
+    /// `false` until the session's probe finished; `encoders` is empty until then.
+    pub probed: bool,
+    /// Every candidate in priority order, H.264 first.
+    pub encoders: Vec<EncoderStatus>,
+}
+
+impl ExportCapabilities {
+    /// Before the probe finished.
+    pub const PENDING: Self = Self {
+        probed: false,
+        encoders: Vec::new(),
+    };
+}
+
+impl From<&engine::export::encoders::ProbeReport> for ExportCapabilities {
+    fn from(report: &engine::export::encoders::ProbeReport) -> Self {
+        use engine::export::encoders::ProbeOutcome;
+        Self {
+            probed: true,
+            encoders: report
+                .entries
+                .iter()
+                .map(|entry| EncoderStatus {
+                    codec: entry.codec.into(),
+                    encoder: entry.kind.into(),
+                    hardware: entry.kind.is_hardware(),
+                    available: matches!(entry.outcome, ProbeOutcome::Available(_)),
+                })
+                .collect(),
+        }
+    }
 }
 
 /// The result of one file of a media job, in the order the files were given.
@@ -846,6 +976,78 @@ mod tests {
                 "sizeBytes": "18446744073709551615",
                 "files": 2,
             })
+        );
+    }
+
+    #[test]
+    fn job_stages_serialize_as_stable_keys() {
+        let cases = [
+            (JobStage::Probing, "probing"),
+            (JobStage::GeneratingPreviews, "generatingPreviews"),
+            (JobStage::CheckingMedia, "checkingMedia"),
+            (JobStage::SearchingFolder, "searchingFolder"),
+            (JobStage::ProbingEncoders, "probingEncoders"),
+            (JobStage::ExportPreparing, "exportPreparing"),
+            (JobStage::ExportEncoding, "exportEncoding"),
+            (JobStage::ExportFinalizing, "exportFinalizing"),
+        ];
+        for (stage, key) in cases {
+            assert_eq!(serde_json::to_value(stage).unwrap(), key);
+        }
+    }
+
+    #[test]
+    fn encoder_keys_match_the_engine_and_the_env_variable() {
+        use engine::export::encoders::EncoderKind as Engine;
+        for kind in Engine::ALL {
+            let view = EncoderKind::from(kind);
+            assert_eq!(serde_json::to_value(view).unwrap(), kind.key());
+            assert_eq!(Engine::from(view), kind);
+        }
+        for (codec, key) in [(VideoCodec::H264, "h264"), (VideoCodec::Hevc, "hevc")] {
+            assert_eq!(serde_json::to_value(codec).unwrap(), key);
+            assert_eq!(
+                VideoCodec::from(engine::export::plan::VideoCodec::from(codec)),
+                codec
+            );
+        }
+    }
+
+    #[test]
+    fn capabilities_list_every_candidate_in_order() {
+        use engine::export::encoders::{
+            EncoderError, EncoderFilter, EncoderKind as Engine, OptionSet, ProbeReport,
+        };
+        let report = ProbeReport::run_with(&EncoderFilter::default(), |kind, _| match kind {
+            Engine::Nvenc | Engine::OpenH264 => Ok(OptionSet::Full),
+            _ => Err(EncoderError::NotInBuild("fake")),
+        });
+        let caps = ExportCapabilities::from(&report);
+        assert!(caps.probed);
+        assert_eq!(caps.encoders.len(), 10);
+        assert_eq!(
+            caps.encoders[0],
+            EncoderStatus {
+                codec: VideoCodec::H264,
+                encoder: EncoderKind::Nvenc,
+                hardware: true,
+                available: true,
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(caps.encoders[5]).unwrap(),
+            serde_json::json!({
+                "codec": "h264",
+                "encoder": "openH264",
+                "hardware": false,
+                "available": true,
+            })
+        );
+        assert!(!caps.encoders[1].available);
+        assert_eq!(caps.encoders[6].codec, VideoCodec::Hevc);
+        assert_eq!(
+            serde_json::to_value(ExportCapabilities::PENDING).unwrap(),
+            serde_json::json!({ "probed": false, "encoders": [] })
         );
     }
 }

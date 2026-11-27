@@ -52,7 +52,7 @@ Notes:
 - The LGPL build has no 10-bit HEVC encoder (`libkvazaar` is 8-bit only), so the HLG clip is
   8-bit HEVC and the 10-bit check uses AV1. The HDR probe reads container metadata only, so the
   codec does not matter for it.
-- `libopenh264` only made the H.264 test files on a developer machine. It is never shipped or
-  selected by the app (`engine::media::encoders` excludes it, review F28).
+- `libopenh264` made the H.264 test files on a developer machine. The app uses it only as the
+  last-resort export encoder (`engine::export::encoders`, export.md decision F28).
 - FFmpeg 7.1 exposes the HEIF grid as a stream group but does not read `irot`; the engine reads it
   itself (`crates/engine/src/media/heif.rs`).

@@ -54,6 +54,13 @@ pub enum IpcError {
     /// key (or the file is not an installer). Nothing was installed.
     #[error("{0}")]
     UpdateRejected(String),
+    /// Export: the target file exists and the call did not ask to overwrite it. Nothing was
+    /// written; ask the user, then call again with `overwrite`.
+    #[error("{0}")]
+    FileExists(String),
+    /// Only one of these may run at a time and one is running (an export).
+    #[error("{0}")]
+    Busy(String),
 }
 
 impl IpcError {
@@ -125,6 +132,8 @@ mod tests {
             (IpcError::TrackLocked("x".into()), "trackLocked"),
             (IpcError::MediaTooShort("x".into()), "mediaTooShort"),
             (IpcError::UpdateRejected("x".into()), "updateRejected"),
+            (IpcError::FileExists("x".into()), "fileExists"),
+            (IpcError::Busy("x".into()), "busy"),
         ];
         for (error, kind) in cases {
             assert_eq!(

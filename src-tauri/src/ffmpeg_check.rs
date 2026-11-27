@@ -26,6 +26,14 @@ pub fn check() {
         "FFmpeg loaded"
     );
     tracing::info!(configuration = %info.configuration(), "FFmpeg configure flags");
+    // Export needs these encoders and muxers (export.md §4.4); a pin update that drops one must
+    // not go unnoticed. Missing ones only disable export paths, so this is no reason to exit.
+    if let Err(missing) = engine::export::encoders::required_encoders_present() {
+        tracing::error!(
+            ?missing,
+            "the linked FFmpeg lacks encoders or muxers that export needs"
+        );
+    }
 
     let problems = info.problems();
     if problems.is_empty() {

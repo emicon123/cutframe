@@ -531,11 +531,19 @@ export const commands = {
 	 *  update stays ready (`updateRejected`, `io`, `internal`; `unavailable` outside Windows).
 	 */
 	restartApp: (options?: InvokeOptions) => __TAURI_INVOKE<null>("restart_app", undefined, options),
+	/**
+	 *  The export encoders of this machine (export.md §4.4). The first call of a session starts a
+	 *  short probe job (stage `probingEncoders`, 1-3 s of test encodes) and returns `probed: false`
+	 *  with no encoders; `exportCapabilitiesChanged` brings the result. Later calls return the
+	 *  cached result. Never blocks: call it when the export dialog opens.
+	 */
+	getExportCapabilities: (options?: InvokeOptions) => __TAURI_INVOKE<ExportCapabilities>("get_export_capabilities", undefined, options),
 };
 
 /** Events */
 export const events = {
 	appInfoChanged: makeEvent<AppInfoChanged_Serialize, AppInfoChanged_Deserialize>("app-info-changed"),
+	exportCapabilitiesChanged: makeEvent<ExportCapabilitiesChanged, ExportCapabilitiesChanged>("export-capabilities-changed"),
 	jobFinished: makeEvent<JobFinished, JobFinished>("job-finished"),
 	jobProgress: makeEvent<JobProgress_Serialize, JobProgress_Deserialize>("job-progress"),
 	mediaJobReport: makeEvent<MediaJobReport, MediaJobReport>("media-job-report"),
@@ -824,6 +832,48 @@ export type EditPhase =
 "commit";
 
 /**
+ *  An export encoder implementation (export.md §4.4). Keys are stable; `CUTFRAME_ENCODERS`
+ *  uses the same ones.
+ */
+export type EncoderKind = 
+/**  NVIDIA NVENC. */
+"nvenc" | 
+/**  Intel Quick Sync. */
+"qsv" | 
+/**  AMD AMF. */
+"amf" | 
+/**  A Media Foundation hardware encoder (the GPU driver's MFT). */
+"mfHardware" | 
+/**  Microsoft's Media Foundation software H.264 encoder. */
+"mfSoftware" | 
+/**  OpenH264 (software, last resort). */
+"openH264";
+
+/**  One export encoder candidate and whether this machine can use it. */
+export type EncoderStatus = {
+	codec: VideoCodec,
+	encoder: EncoderKind,
+	/**  Runs on the GPU (NVENC, Quick Sync, AMF, Media Foundation hardware). */
+	hardware: boolean,
+	/**  The session's test encode worked (`false` also when `CUTFRAME_ENCODERS` left it out). */
+	available: boolean,
+};
+
+/**  The export encoders of this machine (`getExportCapabilities`, `exportCapabilitiesChanged`). */
+export type ExportCapabilities = {
+	/**  `false` until the session's probe finished; `encoders` is empty until then. */
+	probed: boolean,
+	/**  Every candidate in priority order, H.264 first. */
+	encoders: EncoderStatus[],
+};
+
+/**
+ *  The session's encoder probe finished (once per session, after the first
+ *  `getExportCapabilities`). Replaces what `getExportCapabilities` returned; `probed` is `true`.
+ */
+export type ExportCapabilitiesChanged = ExportCapabilities;
+
+/**
  *  How a video's filmstrip is laid out: frame `i` shows media time `i * interval`, and tile `n`
  *  holds frames `n * frames_per_tile ..` side by side (the last tile holds the rest).
  */
@@ -1068,7 +1118,14 @@ export type IpcError =
  *  Update: the downloaded update or its signature did not verify against the app's updater
  *  key (or the file is not an installer). Nothing was installed.
  */
-{ kind: "updateRejected"; message: string };
+{ kind: "updateRejected"; message: string } | 
+/**
+ *  Export: the target file exists and the call did not ask to overwrite it. Nothing was
+ *  written; ask the user, then call again with `overwrite`.
+ */
+{ kind: "fileExists"; message: string } | 
+/**  Only one of these may run at a time and one is running (an export). */
+{ kind: "busy"; message: string };
 
 /**  The end of a job. After `cancel_job` the result is `{ Err: { kind: "cancelled" } }`. */
 export type JobFinished = {
@@ -1119,7 +1176,15 @@ export type JobStage =
  */
 "checkingMedia" | 
 /**  Looking for missing media files in a folder (`relinkMediaFolder`). */
-"searchingFolder";
+"searchingFolder" | 
+/**  Test-encoding with each export encoder, once per session (`getExportCapabilities`). */
+"probingEncoders" | 
+/**  Export: opening the encoder, the renderer and the output file. No progress value. */
+"exportPreparing" | 
+/**  Export: rendering and encoding frames; progress is frames done / frames. */
+"exportEncoding" | 
+/**  Export: flushing the encoders, finishing the MP4 and renaming it. No progress value. */
+"exportFinalizing";
 
 export type Keyframe<T> = {
 	/**  Offset from the clip's start, in flicks. */
@@ -1810,6 +1875,9 @@ export type VideoAccelerationView = {
 	encoders: string[],
 };
 
+/**  Video codec of an export (export.md §6). */
+export type VideoCodec = "h264" | "hevc";
+
 /**  Visual properties of a clip that draws (everything on video and text tracks). */
 export type VisualProps = VisualProps_Serialize | VisualProps_Deserialize;
 
@@ -1954,6 +2022,7 @@ export type MockCommandHandlers = {
     checkForUpdate: () => UpdateInfo_Serialize | null | Promise<UpdateInfo_Serialize | null>,
     installUpdate: () => null | Promise<null>,
     restartApp: () => null | Promise<null>,
+    getExportCapabilities: () => ExportCapabilities | Promise<ExportCapabilities>,
 };
 
 /**
@@ -2053,6 +2122,7 @@ export function mockCommands(handlers: Partial<MockCommandHandlers> = {}): void 
             case "check_for_update": return mockCommandHandler(mockHandlers.checkForUpdate, "check_for_update", args);
             case "install_update": return mockCommandHandler(mockHandlers.installUpdate, "install_update", args);
             case "restart_app": return mockCommandHandler(mockHandlers.restartApp, "restart_app", args);
+            case "get_export_capabilities": return mockCommandHandler(mockHandlers.getExportCapabilities, "get_export_capabilities", args);
             default: throw new Error(`No mock handler registered for command '${cmd}'`);
         }
     }, { shouldMockEvents: true });

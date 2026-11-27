@@ -22,8 +22,8 @@ use uuid::Uuid;
 use super::IpcError;
 use super::events::PlaybackTick;
 use super::types::{
-    AboutInfo, AppInfo, BuildProfile, CacheInfo, JobId, PreviewMode, PreviewRect, ProjectState,
-    RecentProject, RecoveryEntry, SeekMode, ShuttleKey, UpdateInfo,
+    AboutInfo, AppInfo, BuildProfile, CacheInfo, ExportCapabilities, JobId, PreviewMode,
+    PreviewRect, ProjectState, RecentProject, RecoveryEntry, SeekMode, ShuttleKey, UpdateInfo,
 };
 use crate::import;
 use crate::logging::LogDir;
@@ -1692,4 +1692,14 @@ pub fn install_update(app: AppHandle) -> Result<(), IpcError> {
 #[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub async fn restart_app(app: AppHandle) -> Result<(), IpcError> {
     updater::restart(app).await
+}
+
+/// The export encoders of this machine (export.md §4.4). The first call of a session starts a
+/// short probe job (stage `probingEncoders`, 1-3 s of test encodes) and returns `probed: false`
+/// with no encoders; `exportCapabilitiesChanged` brings the result. Later calls return the
+/// cached result. Never blocks: call it when the export dialog opens.
+#[tauri::command]
+#[specta::specta]
+pub fn get_export_capabilities(state: State<'_, AppState>) -> ExportCapabilities {
+    state.encoder_probe.capabilities(&state.jobs)
 }

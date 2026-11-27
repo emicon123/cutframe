@@ -3,6 +3,9 @@
 //!
 //! - `P = clamp(available_parallelism / 4, 1, 3)` worker threads serve two FIFO queues; the
 //!   interactive queue always goes before the background queue.
+//! - Long jobs (export, the encoder probe) run on a dedicated named thread instead
+//!   ([`JobManager::start_dedicated`]), registered in the same map, so `cancel_job`, progress and
+//!   `job-finished` work the same (export.md §5.1).
 //! - A job is split into tasks. The registry maps each running [`JobId`] to its cancel flag and
 //!   progress counter; a ticker emits `job-progress` at most 10 Hz per job, only when it moved.
 //! - A job ends with [`JobContext::finish`], which emits `job-finished` exactly once. No
@@ -21,7 +24,7 @@ use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 
 use crate::ipc::IpcError;
-use crate::ipc::events::{JobFinished, JobProgress, MediaJobReport};
+use crate::ipc::events::{ExportCapabilitiesChanged, JobFinished, JobProgress, MediaJobReport};
 use crate::ipc::types::{JobId, JobStage};
 use crate::media_status::StatusUpdate;
 use crate::state::AppState;
@@ -34,6 +37,8 @@ pub trait JobHost: Send + Sync + 'static {
     fn job_progress(&self, event: JobProgress);
     fn job_finished(&self, event: JobFinished);
     fn media_job_report(&self, event: MediaJobReport);
+    /// The session's encoder probe finished (export.md §4.4).
+    fn export_capabilities_changed(&self, event: ExportCapabilitiesChanged);
     /// Runs `edit` on the document like a command handler does: under the document lock,
     /// publishing the snapshot and emitting `project-changed` if `edit` returns `Ok(true)`.
     fn edit(
@@ -86,6 +91,15 @@ pub enum Priority {
     Interactive,
     /// Prefetch the user does not wait for: preview generation, media checks (0240).
     Background,
+}
+
+/// Scheduling priority of a dedicated job thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThreadPriority {
+    Normal,
+    /// `THREAD_PRIORITY_BELOW_NORMAL` (Windows): the UI, preview and audio feeder win under load
+    /// (export.md §4.7).
+    BelowNormal,
 }
 
 type Task = Box<dyn FnOnce() + Send>;
@@ -192,6 +206,51 @@ impl JobManager {
         priority: Priority,
         first: impl FnOnce(JobContext) + Send + 'static,
     ) -> JobId {
+        let context = self.register(stage);
+        let id = context.id;
+        context.spawn(priority, first);
+        id
+    }
+
+    /// Like [`Self::start`], but runs `body` on a new thread named `thread_name` instead of the
+    /// pool, for long jobs that would block the pool (export). Registered in the same map:
+    /// `cancel`, the 10 Hz ticker and `finish` work as usual. If `body` panics before it
+    /// finished the job, the job finishes with `internal`. Returns at once.
+    pub fn start_dedicated(
+        &self,
+        stage: JobStage,
+        thread_name: &str,
+        priority: ThreadPriority,
+        body: impl FnOnce(JobContext) + Send + 'static,
+    ) -> JobId {
+        let context = self.register(stage);
+        let id = context.id;
+        let fallback = context.clone();
+        let spawned = std::thread::Builder::new()
+            .name(thread_name.to_owned())
+            .spawn(move || {
+                if priority == ThreadPriority::BelowNormal {
+                    engine::media::readers::lower_thread_priority();
+                }
+                let guard = context.clone();
+                let run = std::panic::AssertUnwindSafe(move || body(context));
+                if std::panic::catch_unwind(run).is_err() {
+                    tracing::error!(job = %id.0, "a dedicated job panicked");
+                    if guard.is_registered() {
+                        guard.finish(Err(IpcError::Internal("the job panicked".into())));
+                    }
+                }
+            });
+        if let Err(err) = spawned {
+            fallback.finish(Err(IpcError::Internal(format!(
+                "cannot start the job thread: {err}"
+            ))));
+        }
+        id
+    }
+
+    /// Adds a job to the registry and returns its context.
+    fn register(&self, stage: JobStage) -> JobContext {
         let id = JobId::new();
         let cancel = Arc::new(AtomicBool::new(false));
         let progress = Arc::new(Progress::default());
@@ -205,14 +264,12 @@ impl JobManager {
             },
         );
         self.inner.jobs_changed.notify_all();
-        let context = JobContext {
+        JobContext {
             id,
             cancel,
             progress,
             inner: Arc::clone(&self.inner),
-        };
-        context.spawn(priority, first);
-        id
+        }
     }
 
     /// A handle that queues tasks that belong to no job (no events), e.g. `media://` misses.
@@ -322,6 +379,29 @@ impl JobContext {
     /// Sets the amount of work; progress is `done / total` from then on.
     pub fn set_total(&self, total: usize) {
         self.progress.total.store(total, Ordering::Relaxed);
+    }
+
+    /// Changes the stage reported by the next `job-progress` (one is sent even if the progress
+    /// did not move).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the export job sets its stages (task 0390 step 6)"
+        )
+    )]
+    pub fn set_stage(&self, stage: JobStage) {
+        if let Some(job) = lock(&self.inner.jobs).get_mut(&self.id)
+            && job.stage != stage
+        {
+            job.stage = stage;
+            job.reported = None;
+        }
+    }
+
+    /// The job has not finished yet.
+    fn is_registered(&self) -> bool {
+        lock(&self.inner.jobs).contains_key(&self.id)
     }
 
     /// Counts one unit of work as done.
@@ -447,6 +527,12 @@ impl JobHost for TauriJobHost {
         }
     }
 
+    fn export_capabilities_changed(&self, event: ExportCapabilitiesChanged) {
+        if let Err(err) = event.emit(&self.app) {
+            tracing::warn!(%err, "failed to emit export-capabilities-changed");
+        }
+    }
+
     fn edit(
         &self,
         edit: &mut dyn FnMut(&mut Document) -> Result<bool, CommandError>,
@@ -503,6 +589,7 @@ pub(crate) mod tests {
         Progress(JobProgress),
         Finished(JobFinished),
         Report(MediaJobReport),
+        Capabilities(ExportCapabilitiesChanged),
     }
 
     impl FakeHost {
@@ -539,6 +626,10 @@ pub(crate) mod tests {
 
         fn media_job_report(&self, event: MediaJobReport) {
             lock(&self.events).push(Recorded::Report(event));
+        }
+
+        fn export_capabilities_changed(&self, event: ExportCapabilitiesChanged) {
+            lock(&self.events).push(Recorded::Capabilities(event));
         }
 
         fn edit(
@@ -723,6 +814,131 @@ pub(crate) mod tests {
         jobs.cancel(id);
         wait_finished(&rx);
         jobs.cancel(id); // finished: ignored
+        assert!(host.events().contains(&Recorded::Finished(JobFinished {
+            job_id: id,
+            result: Err(IpcError::Cancelled("cancelled".into())),
+        })));
+    }
+
+    /// Waits until `host` recorded an event matching `pred`.
+    pub(crate) fn wait_for(host: &FakeHost, what: &str, pred: impl Fn(&Recorded) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !host.events().iter().any(&pred) {
+            assert!(Instant::now() < deadline, "no {what}");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn a_dedicated_job_runs_on_its_own_thread_and_changes_stage() {
+        let (host, rx) = FakeHost::new();
+        // One worker, kept busy: the dedicated job must not need the pool.
+        let jobs = JobManager::with_workers(host.clone(), 1);
+        let (block_tx, block_rx) = mpsc::channel::<()>();
+        jobs.spawner().run(Priority::Interactive, move || {
+            block_rx.recv_timeout(Duration::from_secs(20)).ok();
+        });
+        let (step_tx, step_rx) = mpsc::channel::<()>();
+        let (name_tx, name_rx) = mpsc::channel::<Option<String>>();
+        let id = jobs.start_dedicated(
+            JobStage::ExportPreparing,
+            "export-test",
+            ThreadPriority::BelowNormal,
+            move |ctx| {
+                name_tx
+                    .send(std::thread::current().name().map(str::to_owned))
+                    .ok();
+                step_rx.recv().ok();
+                ctx.set_stage(JobStage::ExportEncoding);
+                ctx.set_total(4);
+                ctx.step_done();
+                step_rx.recv().ok();
+                ctx.set_stage(JobStage::ExportFinalizing);
+                step_rx.recv().ok();
+                ctx.finish(Ok(()));
+            },
+        );
+        assert_eq!(name_rx.recv().unwrap().as_deref(), Some("export-test"));
+        let stage_seen = |stage: JobStage| move |e: &Recorded| matches!(e, Recorded::Progress(p) if p.stage == stage);
+        wait_for(&host, "preparing", stage_seen(JobStage::ExportPreparing));
+        step_tx.send(()).unwrap();
+        wait_for(&host, "encoding", |e| {
+            matches!(e, Recorded::Progress(p)
+                if p.stage == JobStage::ExportEncoding && p.progress == Some(0.25))
+        });
+        step_tx.send(()).unwrap();
+        // The progress did not move: the stage change alone produces the next event.
+        wait_for(&host, "finalizing", stage_seen(JobStage::ExportFinalizing));
+        step_tx.send(()).unwrap();
+        assert_eq!(wait_finished(&rx), id);
+        block_tx.send(()).ok();
+
+        let stages: Vec<JobStage> = host
+            .events()
+            .iter()
+            .filter_map(|e| match e {
+                Recorded::Progress(p) => Some(p.stage),
+                _ => None,
+            })
+            .collect();
+        let mut order = stages.clone();
+        order.dedup();
+        assert_eq!(
+            order,
+            [
+                JobStage::ExportPreparing,
+                JobStage::ExportEncoding,
+                JobStage::ExportFinalizing
+            ],
+            "{stages:?}"
+        );
+        assert!(matches!(host.events().last(), Some(Recorded::Finished(_))));
+    }
+
+    #[test]
+    fn a_panicking_dedicated_job_still_finishes_once() {
+        let (host, rx) = FakeHost::new();
+        let jobs = JobManager::with_workers(host.clone(), 1);
+        let id = jobs.start_dedicated(
+            JobStage::ProbingEncoders,
+            "panic-test",
+            ThreadPriority::Normal,
+            |_ctx| panic!("test panic"),
+        );
+        assert_eq!(wait_finished(&rx), id);
+        let finished: Vec<_> = host
+            .events()
+            .into_iter()
+            .filter_map(|e| match e {
+                Recorded::Finished(f) => Some(f),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(finished.len(), 1);
+        assert!(matches!(finished[0].result, Err(IpcError::Internal(_))));
+    }
+
+    #[test]
+    fn a_dedicated_job_can_be_cancelled() {
+        let (host, rx) = FakeHost::new();
+        let jobs = JobManager::with_workers(host.clone(), 1);
+        let (started_tx, started_rx) = mpsc::channel::<()>();
+        let id = jobs.start_dedicated(
+            JobStage::ExportEncoding,
+            "cancel-test",
+            ThreadPriority::BelowNormal,
+            move |ctx| {
+                started_tx.send(()).ok();
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !ctx.is_cancelled() && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                ctx.finish(Err(IpcError::Cancelled("cancelled".into())));
+            },
+        );
+        started_rx.recv().unwrap();
+        jobs.cancel(id);
+        assert_eq!(wait_finished(&rx), id);
         assert!(host.events().contains(&Recorded::Finished(JobFinished {
             job_id: id,
             result: Err(IpcError::Cancelled("cancelled".into())),

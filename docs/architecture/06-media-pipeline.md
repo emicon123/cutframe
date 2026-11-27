@@ -269,12 +269,35 @@ platform serves `http://media.localhost/` or `media://localhost/`, and appends `
 Both report `media-job-report` (one `MediaFileResult` per file, or per missing asset for a folder)
 and then `job-finished`; relinking is one undo step.
 
-## 11. What is not here yet
+## 11. Export encoders
+
+`engine::export` holds the parts of the export pipeline that exist so far (task 0390,
+[export design](../design/export.md)): `plan` (pure: output size, frame rate, frame and sample
+counts in flicks, YouTube bitrate table, size estimate), `output` (path rules, the
+`<stem>.cutframe-partial.mp4` name, the overwrite and lock check) and `encoders`:
+
+- **Candidates**, best first: H.264 NVENC, Quick Sync, AMF, Media Foundation hardware MFT,
+  Microsoft's Media Foundation software encoder, OpenH264; HEVC the first four. Each has a `Full`
+  and, where it differs, a `Safe` option set (no B-frames, no multipass, faster preset). Private
+  options are set one by one with `av_opt_set` on the unopened context, so an unknown name or value
+  is an error; a test sets every one against the linked build. Frames go in as system-memory NV12
+  (YUV 4:2:0 planar for OpenH264).
+- **Probe**: `ProbeReport::run` initialises COM (multithreaded) and test-encodes each allowed
+  candidate at 1280 x 720, 30 fps, 4 Mbps: 8 grey frames, flush, at least one packet. `Full` first,
+  then `Safe`. `CUTFRAME_ENCODERS=<keys>` limits the candidates (excluded ones are not tried).
+  On the reference laptop (RTX 3070 Ti + Iris Xe) all candidates except AMF pass, in about 2.6 s;
+  the Media Foundation hardware MFT found is NVIDIA's.
+- **Session cache**: `src-tauri/src/export.rs` runs the probe once per session as a dedicated job
+  (`probingEncoders`) on the first `getExportCapabilities`, caches it in `AppState` and emits
+  `export-capabilities-changed` ([05](05-ipc-contract.md) §4.6).
+
+## 12. What is not here yet
 
 The pipeline above is the **implemented** import/preview/relink path. Decode-on-demand for the
 preview (reader threads, D3D12VA hardware decode) is part of the render graph and described in
-[07](07-preview-and-render.md) §9; the `/preview/frame` route serves its composited frame. Playback,
-audio output and export encoding are designed in `docs/design/` but not coded, and `MediaInfo` is the
+[07](07-preview-and-render.md) §9; the `/preview/frame` route serves its composited frame. Playback
+and audio output are described in [07](07-preview-and-render.md); the export loop (render, NV12,
+mux, the job) is designed in `docs/design/export.md` and being built, and `MediaInfo` is the
 only decode result stored in the project.
 
 ## Links

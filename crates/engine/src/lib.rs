@@ -8,6 +8,7 @@
 
 pub mod audio;
 pub mod color;
+pub mod export;
 pub mod media;
 pub mod playback;
 pub mod preview;

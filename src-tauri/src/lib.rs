@@ -1,6 +1,7 @@
 //! Desktop shell: wires the engine and the project model to the UI through Tauri.
 
 mod autosave;
+mod export;
 mod ffmpeg_check;
 mod import;
 mod ipc;
@@ -32,8 +33,8 @@ use tauri_specta::{Builder, Event, collect_commands, collect_events};
 
 use crate::ipc::commands;
 use crate::ipc::events::{
-    AppInfoChanged, JobFinished, JobProgress, MediaJobReport, OpenFileRequested, PlaybackTick,
-    ProjectChanged, QuitRequested, UpdateProgress,
+    AppInfoChanged, ExportCapabilitiesChanged, JobFinished, JobProgress, MediaJobReport,
+    OpenFileRequested, PlaybackTick, ProjectChanged, QuitRequested, UpdateProgress,
 };
 use crate::jobs::{JobManager, Priority, TauriJobHost};
 use crate::preview::Preview;
@@ -125,6 +126,7 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             commands::check_for_update,
             commands::install_update,
             commands::restart_app,
+            commands::get_export_capabilities,
         ])
         .events(collect_events![
             ProjectChanged,
@@ -135,7 +137,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             OpenFileRequested,
             AppInfoChanged,
             UpdateProgress,
-            PlaybackTick
+            PlaybackTick,
+            ExportCapabilitiesChanged
         ])
         // The only place the UI gets the project file extension from (ADR-0002 amendment §1).
         .constant("PROJECT_FILE_EXTENSION", app_core::PROJECT_FILE_EXTENSION)

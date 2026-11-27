@@ -124,9 +124,12 @@ FFmpeg is LGPL, shared (DLLs) and never vendored as source. The pin is a single 
 - The installer bundles `.ffmpeg/bin/*.dll` next to the executable plus `LICENSE.txt` and
   `NOTICE.txt` under `licenses/ffmpeg/` (`bundle.resources` in `src-tauri/tauri.conf.json`).
 
-Encoder policy is a second, independent guard: `engine::media::encoders` has an allowlist per target
-(H.264, HEVC, AV1, AAC, Opus) and a hard denylist for GPL and nonfree encoders (`libx264`,
-`libx265`, `libxvid`, `libfdk_aac`, OpenH264, …) that applies even if the linked FFmpeg offers them.
+Encoder policy is a second, independent guard: export only ever opens the encoders named in the
+closed candidate table of `engine::export::encoders` (NVENC, Quick Sync, AMF, Media Foundation,
+OpenH264 as the last resort for H.264, export.md decision F28), so a GPL encoder (`libx264`,
+`libx265`, ...) is never used even if a linked FFmpeg offered it. Tests assert that the linked
+build has none of them and has every encoder and muxer export needs
+(`required_encoders_present`, also logged at startup by `ffmpeg_check.rs`).
 
 ## 5. Licence policy for Rust crates
 

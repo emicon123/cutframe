@@ -169,7 +169,19 @@ Backend: `src-tauri/src/updater.rs` (`UpdateSlot`: idle → available → downlo
 installing; a failed download goes back to available, a failed install back to ready). The plugin's
 JS API has no capability; the endpoint and key are `plugins.updater` in `tauri.conf.json`.
 
-### 4.6 Preview placement
+### 4.6 Export (task 0390, export.md §6)
+
+| Command | Arguments | Returns | Notes |
+|---|---|---|---|
+| `getExportCapabilities` | — | `ExportCapabilities { probed, encoders: EncoderStatus[] }` | Never blocks. The first call of a session starts the encoder probe (a job with stage `probingEncoders`, about 1-3 s of test encodes) and returns `probed: false` with no encoders; `export-capabilities-changed` brings the result once; later calls return the cache |
+
+`EncoderStatus` is `{ codec: "h264" \| "hevc", encoder, hardware, available }`, one per candidate in
+priority order, H.264 first; `encoder` is `nvenc`, `qsv`, `amf`, `mfHardware`, `mfSoftware` or
+`openH264` (the same keys as `CUTFRAME_ENCODERS`). `checkExport` and `startExport` follow with the
+rest of task 0390. Backend: `src-tauri/src/export.rs` (`EncoderProbe`, cached in `AppState`),
+`engine::export::encoders` ([06](06-media-pipeline.md) §11).
+
+### 4.7 Preview placement
 
 | Command | Arguments | Returns | Notes |
 |---|---|---|---|
@@ -178,7 +190,7 @@ JS API has no capability; the endpoint and key are `plugins.updater` in `tauri.c
 
 These are called by a `ResizeObserver` in `PreviewArea`, not by a user action, and are infallible.
 
-### 4.7 Playback and transport
+### 4.8 Playback and transport
 
 The engine owns the playhead (task 0330, playback.md §8). Every handler is synchronous and never
 blocks (measured: about 0.2 µs on average); all fail with `unavailable` when there is no preview
@@ -216,6 +228,8 @@ Every fallible command rejects with `IpcError`, serialized as `{ kind, message }
 | `internal` | A bug in the backend | "Report this"; log has the message |
 | `cancelled` | Only as a `job-finished` result | Remove the job's UI |
 | `updateRejected` | The downloaded update or its signature did not verify (or it is not an installer) | "Could not be verified"; nothing installed |
+| `fileExists` | Export: the target exists and `overwrite` was not set | Ask "Replace?", then call again with `overwrite` |
+| `busy` | Export: one is already running | Export stays disabled while one runs |
 
 `message` is English diagnostics for the log. It is **never** shown to the user: the UI translates
 `kind` (ADR-0003 §4-5). `ipc/error.rs` has a test that asserts the exact `kind` strings, so renaming
@@ -239,6 +253,7 @@ jobs are logged in `JobHandle::finish` (`warn`; `cancelled` at `info`). Log file
 | `open-file-requested` | `{ path }` | A second launch passed a `.cutframe` path |
 | `quit-requested` | — | Close was stopped because the project is dirty |
 | `app-info-changed` | `AppInfo` | The GPU was lost/restarted or the preview gave up |
+| `export-capabilities-changed` | `ExportCapabilities` | Once per session, when the encoder probe started by the first `getExportCapabilities` finished (before its `job-finished`) |
 | `update-progress` | `{ state: "downloading", downloaded, total? }` \| `{ state: "ready" }` \| `{ state: "failed", error }` | During an `installUpdate` download, ≤ 10 Hz; byte counts are decimal strings; exactly one `ready` or `failed` per download |
 | `playback-tick` | `PlaybackTick { time, state, rate, looping, seek, droppedFrames, target }` | From the render thread: at most 60 Hz while playing, and once after every play, pause, shuttle, seek, step, loop toggle, preroll end, end of playback, project replacement and audio device loss |
 
@@ -271,8 +286,13 @@ Long work is a job, not a blocking command: `importMedia`, `relinkMedia`, `relin
 
 - A job runs on a pool of `clamp(cores/4, 1, 3)` workers, with `Interactive` and `Background`
   priorities (imports and relinks are interactive; preview generation and media checks are
-  background).
-- `JobStage` is a stable key: `probing`, `generatingPreviews`, `checkingMedia`, `searchingFolder`.
+  background). Long jobs that would hold a worker for seconds or minutes (the encoder probe, export)
+  run on their own named thread instead (`JobManager::start_dedicated`, optionally at below-normal
+  priority), registered in the same map, so progress, `cancel_job` and `job-finished` are the same.
+- `JobStage` is a stable key: `probing`, `generatingPreviews`, `checkingMedia`, `searchingFolder`,
+  `probingEncoders`, `exportPreparing`, `exportEncoding`, `exportFinalizing`. A job may change its
+  stage while it runs (`JobContext::set_stage`); the next `job-progress` carries the new stage even
+  if the progress did not move.
 - `progress` is `null` until the total is known (folder walking) and `0..=1` afterwards.
 - `cancel_job` sets a flag; the job checks it between files and finishes with `cancelled`.
 - A job that changes the model (an import finishing, a relink) goes through `JobHost::edit`, which

@@ -7,8 +7,14 @@ use engine::transport::PlayState;
 
 use super::IpcError;
 use super::types::{
-    AppInfo, JobId, JobStage, MediaFileResult, PlaybackTarget, ProjectState, TransportStateView,
+    AppInfo, ExportCapabilities, JobId, JobStage, MediaFileResult, PlaybackTarget, ProjectState,
+    TransportStateView,
 };
+
+/// The session's encoder probe finished (once per session, after the first
+/// `getExportCapabilities`). Replaces what `getExportCapabilities` returned; `probed` is `true`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type, Event)]
+pub struct ExportCapabilitiesChanged(pub ExportCapabilities);
 
 /// Emitted after every change to the project (edit, undo, redo, new, open, save).
 /// The UI keeps the payload with the highest `revision` and drops older ones.
