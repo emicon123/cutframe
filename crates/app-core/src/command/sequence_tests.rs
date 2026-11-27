@@ -69,6 +69,24 @@ enum Op {
         track: usize,
         index: u32,
     },
+    Speed {
+        clip: usize,
+        percent: u16,
+        drag: bool,
+    },
+    Reverse {
+        clip: usize,
+        on: bool,
+    },
+    Freeze {
+        clip: Option<usize>,
+        ms: i64,
+    },
+    Property {
+        clip: usize,
+        value: usize,
+        drag: bool,
+    },
     Undo,
     Redo,
 }
@@ -94,6 +112,12 @@ fn op() -> impl Strategy<Value = Op> {
         2 => (0..64usize).prop_map(|clip| Op::Detach { clip }),
         2 => (0..64usize, 0..4usize).prop_map(|(clip, media)| Op::Replace { clip, media }),
         1 => (0..6usize, 0..7u32).prop_map(|(track, index)| Op::MoveTrack { track, index }),
+        2 => (0..64usize, prop_oneof![Just(10u16), Just(50), Just(100), Just(150), Just(200), Just(400), 10..=10_000u16], any::<bool>())
+            .prop_map(|(clip, percent, drag)| Op::Speed { clip, percent, drag }),
+        1 => (0..64usize, any::<bool>()).prop_map(|(clip, on)| Op::Reverse { clip, on }),
+        2 => (prop::option::of(0..64usize), 0..12_000i64).prop_map(|(clip, ms)| Op::Freeze { clip, ms }),
+        2 => (0..64usize, 0..PROPERTY_VALUES.len(), any::<bool>())
+            .prop_map(|(clip, value, drag)| Op::Property { clip, value, drag }),
         1 => Just(Op::Undo),
         1 => Just(Op::Redo),
     ]
@@ -102,6 +126,17 @@ fn op() -> impl Strategy<Value = Op> {
 fn ms(ms: i64) -> Time {
     Time(ms * S / 1000)
 }
+
+/// Property values the sequences set, valid and not.
+const PROPERTY_VALUES: [PropertyValue; 7] = [
+    PropertyValue::Volume(2.0),
+    PropertyValue::Volume(9.0),
+    PropertyValue::FadeIn(Time(3 * S)),
+    PropertyValue::FadeOut(Time(S / 2)),
+    PropertyValue::Opacity(0.5),
+    PropertyValue::PreservePitch(false),
+    PropertyValue::Rotation(f32::NAN),
+];
 
 /// Video and colour clips on the main track, overlays over them (one pair linked to sound), a
 /// music bed and loose sound on the audio track. Media: `empty()`'s plus a 2 s video with sound.
@@ -119,7 +154,14 @@ fn sample(magnetic: bool, lengths: &[u8]) -> Project {
         }
         if i % 2 == 0 {
             let len = len.min(4.0);
-            let v = p.push_clip(MAIN, video(&p, at, len, 0.5));
+            // Some clips play at half speed backwards (their range is half as long).
+            let clip = video(&p, at, len, 0.5);
+            let clip = if i % 4 == 2 {
+                with_speed(clip, 50, true)
+            } else {
+                clip
+            };
+            let v = p.push_clip(MAIN, clip);
             if i % 4 == 0 {
                 let s = p.push_clip(AUDIO, sound(&p, at, len, 0.5));
                 link(&mut p, &[v, s]);
@@ -228,6 +270,22 @@ fn command(
             Box::new(ReplaceClipMedia::new(pick(project, clip)?, media))
         }
         Op::MoveTrack { track: tr, index } => Box::new(MoveTrack::new(track(tr)?, index as usize)),
+        Op::Speed { clip, percent, .. } => {
+            let speed = crate::time::Speed::new(percent)?;
+            Box::new(SetClipSpeed::new(vec![pick(project, clip)?], speed))
+        }
+        Op::Reverse { clip, on } => Box::new(SetClipReverse::new(vec![pick(project, clip)?], on)),
+        Op::Freeze { clip, ms: m } => {
+            let clip = match clip {
+                Some(c) => Some(pick(project, c)?),
+                None => None,
+            };
+            Box::new(InsertFreezeFrame::new(clip, ms(m), Time(S)))
+        }
+        Op::Property { clip, value, .. } => Box::new(SetClipProperty::new(
+            vec![pick(project, clip)?],
+            PROPERTY_VALUES[value],
+        )),
         Op::Undo | Op::Redo => return None,
     })
 }
@@ -270,11 +328,20 @@ proptest! {
                     let before = doc.project().clone();
                     let Some(command) = command(&before, op, &mut clipboard) else { continue };
                     let gesture = matches!(op, Op::Move { .. } | Op::Trim { .. });
-                    let result = if gesture {
+                    let drag = matches!(op, Op::Speed { drag: true, .. } | Op::Property { drag: true, .. });
+                    let result = if drag {
+                        // An update, then the same value committed: one entry from the base.
+                        let again = super::sequence_tests::command(&before, op, &mut clipboard.clone());
+                        match doc.edit(EditPhase::Update, command) {
+                            Ok(()) => doc.edit(EditPhase::Commit, again.expect("same command")),
+                            Err(err) => Err(err),
+                        }
+                    } else if gesture {
                         doc.edit(EditPhase::Commit, command)
                     } else {
                         doc.execute(command)
                     };
+                    prop_assert!(!doc.has_gesture(), "every gesture is closed");
                     if result.is_err() {
                         prop_assert_eq!(doc.project(), &before, "a failed edit changes nothing");
                     }
@@ -452,9 +519,9 @@ proptest! {
             if let Some(Anchor::Inside { clip, content }) = anchor_of(old_main, old.start)
                 && let Some(anchor) = new_main.iter().find(|c| c.id == clip)
             {
-                let offset = (content - anchor.source_in()).flicks();
-                if (0..=anchor.duration.flicks()).contains(&offset) {
-                    prop_assert_eq!(new.start, anchor.start + Time(offset), "follower keeps its anchor offset");
+                let offset = anchor.offset_of_content(content);
+                if Time::ZERO < offset && offset < anchor.duration {
+                    prop_assert_eq!(new.start, anchor.start + offset, "follower keeps its anchor offset");
                 }
             }
         }

@@ -3,15 +3,17 @@
 use std::path::{Path, PathBuf};
 
 use app_core::command::{
-    AddClips, AddTrack, Batch, Command, DeleteClips, DeleteGap, DetachAudio, Edge, HistoryLabel,
-    LinkClips, MoveClips, MoveTrack, NewClipSource, PasteClips, Placement, RemoveClipsOfMedia,
-    RemoveMedia, RemoveTrack, RenameProject, RenameTrack, ReplaceClipMedia, SetMagnetic,
+    AddClips, AddTrack, Batch, Command, CommandError, DeleteClips, DeleteGap, DetachAudio, Edge,
+    HistoryLabel, InsertFreezeFrame, LinkClips, MoveClips, MoveTrack, NewClipSource, PasteClips,
+    Placement, PropertyValue, RemoveClipsOfMedia, RemoveMedia, RemoveTrack, RenameProject,
+    RenameTrack, ReplaceClipMedia, SetClipProperty, SetClipReverse, SetClipSpeed, SetMagnetic,
     SetProjectSettings, SetTrackFlag, Side, SplitClips, TrackFlag, TrackTarget, TrimClip,
     TrimToPlayhead, UnlinkClips,
 };
 use app_core::serialization::{self, CURRENT_SCHEMA_VERSION};
 use app_core::{
-    ClipId, EditPhase, MAX_IPC_FLICKS, MediaId, Project, ProjectSettings, Time, TrackId, TrackKind,
+    ClipId, Document, EditPhase, FrameRate, MAX_IPC_FLICKS, MediaId, Project, ProjectSettings,
+    Speed, Time, TrackId, TrackKind,
 };
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
@@ -68,8 +70,8 @@ pub fn add_track(
 /// - `drop`: on an existing track or a new one (`new.index` is clamped into the section that fits
 ///   the first clip) from `start`. On the magnetic main track a drop is an insert.
 ///
-/// Video clips take the media's whole length (with its sound when it has audio), images 5 s and
-/// colour cards 5 s. Fails with `overlap` for an occupied range, `trackLocked` for a locked
+/// Video clips take the media's whole length at 1x (with its sound when it has audio), images the
+/// "image and freeze-frame duration" preference (snapped to the frame grid) and colour cards 5 s. Fails with `overlap` for an occupied range, `trackLocked` for a locked
 /// target, and `invalidEdit` for no sources, unknown media or tracks, a clip that does not fit the
 /// track (e.g. audio-only media on a video track), or a time outside `0..=2^53` flicks.
 #[tauri::command]
@@ -95,10 +97,46 @@ pub fn add_clips(
             time.flicks()
         )));
     }
+    let preference = state.preferences().get().default_image_duration;
     let command = AddClips::new(sources, placement);
     let ids = command.clip_ids().to_vec();
-    state.edit(&app, |doc| doc.execute(Box::new(command)).map(Some))?;
+    state.edit(&app, |doc| {
+        let duration = still_duration(preference, doc.project().settings.frame_rate);
+        let command = command.with_image_duration(duration);
+        doc.execute(Box::new(command)).map(Some)
+    })?;
     Ok(ids)
+}
+
+/// The length of a new image or freeze frame: the preference rounded to the nearest whole project
+/// frame, at least one frame.
+fn still_duration(preference: Time, rate: FrameRate) -> Time {
+    let frame = rate.frame_duration().flicks();
+    let frames = (preference.flicks() + frame / 2).div_euclid(frame).max(1);
+    Time::from_frames(frames, rate)
+}
+
+/// Runs `command` as `phase`, or records nothing when it would not change the committed state
+/// (`changes` is false, checked against the open gesture's base): a commit then closes a
+/// gesture of the same kind back to its base without a history entry, and an update shows the
+/// base. Returns `Some` when the project changed.
+fn edit_if_changed(
+    doc: &mut Document,
+    phase: EditPhase,
+    changes: bool,
+    command: Box<dyn Command>,
+) -> Result<Option<()>, CommandError> {
+    if changes {
+        return doc.edit(phase, command).map(Some);
+    }
+    match (doc.gesture_label(), phase) {
+        (None, _) => Ok(None),
+        (Some(open), EditPhase::Commit) if open == command.label() => {
+            Ok(doc.gesture_cancel().then_some(()))
+        }
+        // An update back to the base value, or another kind of edit (`gestureMismatch`).
+        _ => doc.edit(phase, command).map(Some),
+    }
 }
 
 /// `time` if it is exact over IPC (within ±2^53 flicks, ADR-0003 §3), else `invalidEdit`.
@@ -459,6 +497,132 @@ pub fn replace_clip_media(
             .map(Some)
     })?;
     Ok(())
+}
+
+/// Sets one inspector property on every listed clip that has it (`setClipProperty`): visual
+/// properties (`position`, `scale`, `rotation`, `opacity`, `crop`, `flip`, `fit`) on clips with
+/// `visual`, audio properties (`volume`, `fadeIn`, `fadeOut`, `preservePitch`) on clips with
+/// `audio`; the others are skipped. Linked clips are not expanded (send the selection). Fades are
+/// clamped per clip to its duration minus the other fade, so a drag stops at the limit.
+///
+/// Sliders are an ADR-0006 gesture (`update` per animation frame, `commit` on release,
+/// `cancelGesture` on Escape); typed values and toggles are one `commit`. A value every clip
+/// already has records nothing (no history entry; no event unless a gesture closes).
+///
+/// Errors: `trackLocked` (a clip that has the property is on a locked track), `invalidEdit` (no
+/// listed clip has the property; a value out of range: volume 0..=4, opacity 0..=1, scale non-zero
+/// and at most 100 in size, crop insets >= 0 with left + right and top + bottom < 1, finite
+/// numbers, fades >= 0; no clips, unknown clip, a time outside ±2^53 flicks). A failed `update`
+/// keeps the last valid value.
+#[tauri::command]
+#[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
+pub fn set_clip_property(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    clips: Vec<ClipId>,
+    value: PropertyValue,
+    phase: EditPhase,
+) -> Result<(), IpcError> {
+    if let PropertyValue::FadeIn(time) | PropertyValue::FadeOut(time) = value {
+        ipc_time(time)?;
+    }
+    let command = SetClipProperty::new(clips, value);
+    state.edit(&app, |doc| {
+        let changes = command.changes(&doc.committed())?;
+        edit_if_changed(doc, phase, changes, Box::new(command))
+    })?;
+    Ok(())
+}
+
+/// Sets the speed (in percent: 100 = 1x, 10..=10000) of clips and their linked members
+/// (`setClipSpeed`). Only video and audio media clips change; images, freeze frames, colour and
+/// text clips are skipped. Each keeps its start and its used source range, so its duration becomes
+/// the range divided by the speed; on the magnetic main track the later clips ripple and the
+/// overlays, captions and audio over them follow (B-roll stays over the same moment of a sped-up
+/// clip). The new duration is in the next `projectChanged`. Fades shrink to fit.
+///
+/// The slider is an ADR-0006 gesture like `moveClips`; presets and typed values are one `commit`.
+/// A speed every clip already has records nothing. An out-of-range speed fails argument parsing,
+/// so clamp before sending.
+///
+/// Errors: `overlap` (a clip off the magnetic main track would run into its neighbour; during a
+/// drag the last valid state stays), `trackLocked`, `invalidEdit` (no video or audio clip among
+/// them, a clip that would get shorter than one frame, no clips, unknown clip).
+#[tauri::command]
+#[specta::specta]
+// Gesture updates are rejected (overlap) many times a second during a drag: debug, not warn.
+#[tracing::instrument(skip_all, err(Debug, level = "debug"))]
+pub fn set_clip_speed(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    clips: Vec<ClipId>,
+    speed: Speed,
+    phase: EditPhase,
+) -> Result<(), IpcError> {
+    let command = SetClipSpeed::new(clips, speed);
+    state.edit(&app, |doc| {
+        let changes = command.changes(&doc.committed())?;
+        edit_if_changed(doc, phase, changes, Box::new(command))
+    })?;
+    Ok(())
+}
+
+/// Plays clips and their linked members backwards, or forwards again (`setClipReverse`). Only
+/// video and audio media clips change; start, duration and used source range stay, nothing moves.
+/// A value every clip already has records nothing.
+///
+/// Errors: `trackLocked`, `invalidEdit` (no video or audio clip among them, no clips, unknown
+/// clip).
+#[tauri::command]
+#[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
+pub fn set_clip_reverse(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    clips: Vec<ClipId>,
+    reverse: bool,
+) -> Result<(), IpcError> {
+    let command = SetClipReverse::new(clips, reverse);
+    state.edit(&app, |doc| {
+        let changes = command.changes(doc.project())?;
+        edit_if_changed(doc, EditPhase::Commit, changes, Box::new(command))
+    })?;
+    Ok(())
+}
+
+/// Inserts a freeze frame of the frame shown at `at` (`insertFreezeFrame`, Shift+F) and returns
+/// its clip id (select it). `clip` is the video clip to freeze, or `null` for the main-track clip
+/// under `at`. The freeze lasts the "image and freeze-frame duration" preference (snapped to the
+/// frame grid) and shows exactly the frame the preview shows at `at`. Inside the clip it splits
+/// the clip (and its linked clips) at the playhead frame and goes between the halves; in the
+/// clip's first frame it goes before the clip, in its last frame after it. On the main track the
+/// later clips ripple and the clips over them follow (detached audio of the right half moves too,
+/// leaving silence under the freeze); on an overlay track that track's later clips move right.
+/// The freeze has the clip's visual props, no sound and no link.
+///
+/// Errors: `overlap` (a moved overlay clip would run into another), `trackLocked`, `invalidEdit`
+/// (no clip under `at`, not a video clip on a video track, unknown clip, a time outside
+/// `0..=2^53` flicks).
+#[tauri::command]
+#[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
+pub fn insert_freeze_frame(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    clip: Option<ClipId>,
+    at: Time,
+) -> Result<ClipId, IpcError> {
+    let at = ipc_position(at)?;
+    let preference = state.preferences().get().default_image_duration;
+    let id = state.edit(&app, |doc| {
+        let duration = still_duration(preference, doc.project().settings.frame_rate);
+        let command = InsertFreezeFrame::new(clip, at, duration);
+        let id = command.clip_id();
+        doc.execute(Box::new(command))?;
+        Ok(Some(id))
+    })?;
+    id.ok_or_else(|| IpcError::Internal("the freeze frame was not inserted".into()))
 }
 
 /// Turns a track's mute, hide or lock flag on or off (`setTrackMuted`, `setTrackHidden`,
@@ -1362,6 +1526,112 @@ mod tests {
             );
         }
         assert_eq!(about_info(&ffmpeg, None).log_dir, None);
+    }
+
+    #[test]
+    fn still_durations_snap_to_the_nearest_frame() {
+        let rate = FrameRate::FPS_30;
+        let frame = rate.frame_duration();
+        assert_eq!(
+            still_duration(Time::from_seconds(5), rate),
+            Time::from_seconds(5)
+        );
+        assert_eq!(
+            still_duration(Time::from_seconds(5), FrameRate::NTSC_30),
+            Time::from_frames(150, FrameRate::NTSC_30),
+            "5 s is 149.85 frames at 29.97 fps"
+        );
+        assert_eq!(
+            still_duration(frame + Time(frame.flicks() / 2), rate),
+            Time(frame.flicks() * 2)
+        );
+        assert_eq!(still_duration(Time(1), rate), frame, "at least one frame");
+    }
+
+    /// A project with a video clip (with sound) on the main track and a colour card after it.
+    fn with_video() -> (Document, ClipId) {
+        let mut project = Project::new("Edit");
+        project.media.push(app_core::media::samples::video(1));
+        let add = AddClips::new(
+            vec![NewClipSource::Media {
+                media: project.media[0].id,
+            }],
+            Placement::Append,
+        );
+        let id = add.clip_ids()[0];
+        let mut doc = Document::new(project);
+        doc.execute(Box::new(add)).unwrap();
+        (doc, id)
+    }
+
+    fn speed_edit(doc: &mut Document, id: ClipId, percent: u16, phase: EditPhase) -> Option<()> {
+        let command = SetClipSpeed::new(vec![id], Speed::new(percent).unwrap());
+        let changes = command.changes(&doc.committed()).unwrap();
+        edit_if_changed(doc, phase, changes, Box::new(command)).unwrap()
+    }
+
+    #[test]
+    fn an_unchanged_value_records_nothing_and_a_drag_back_closes_the_gesture() {
+        let (mut doc, id) = with_video();
+        let entries = doc.history_len();
+        // A commit of the value the clip has: no entry, no change.
+        assert_eq!(speed_edit(&mut doc, id, 100, EditPhase::Commit), None);
+        assert_eq!(doc.history_len(), entries);
+
+        // A drag that ends where it started: the gesture closes without an entry.
+        let base = doc.snapshot();
+        assert_eq!(speed_edit(&mut doc, id, 200, EditPhase::Update), Some(()));
+        assert_ne!(doc.project(), &*base);
+        assert_eq!(speed_edit(&mut doc, id, 100, EditPhase::Update), Some(()));
+        assert_eq!(doc.project(), &*base, "the update shows the base value");
+        assert!(doc.has_gesture());
+        assert_eq!(speed_edit(&mut doc, id, 100, EditPhase::Commit), Some(()));
+        assert!(!doc.has_gesture());
+        assert_eq!(doc.history_len(), entries);
+        assert_eq!(doc.project(), &*base);
+
+        // A real change is one entry.
+        assert_eq!(speed_edit(&mut doc, id, 200, EditPhase::Update), Some(()));
+        assert_eq!(speed_edit(&mut doc, id, 250, EditPhase::Commit), Some(()));
+        assert_eq!(doc.history_len(), entries + 1);
+        assert_eq!(doc.undo_label(), Some(HistoryLabel::SetClipSpeed));
+
+        // An unchanged property while another kind of gesture is open is a mismatch.
+        assert_eq!(speed_edit(&mut doc, id, 300, EditPhase::Update), Some(()));
+        let property = SetClipProperty::new(vec![id], PropertyValue::Volume(1.0));
+        assert!(!property.changes(&doc.committed()).unwrap());
+        assert!(matches!(
+            edit_if_changed(&mut doc, EditPhase::Commit, false, Box::new(property)),
+            Err(CommandError::GestureMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn freeze_frame_and_reverse_go_through_the_document() {
+        let (mut doc, id) = with_video();
+        let frame = doc.project().settings.frame_rate.frame_duration();
+        let duration = still_duration(Time::from_seconds(5), doc.project().settings.frame_rate);
+        let command = InsertFreezeFrame::new(None, Time(frame.flicks() * 30), duration);
+        let freeze = command.clip_id();
+        doc.execute(Box::new(command)).unwrap();
+        let (_, clip) = doc.project().clip(freeze).unwrap();
+        assert_eq!(
+            (clip.start, clip.duration),
+            (Time(frame.flicks() * 30), Time::from_seconds(5))
+        );
+
+        let command = SetClipReverse::new(vec![id], true);
+        assert!(command.changes(doc.project()).unwrap());
+        doc.execute(Box::new(command)).unwrap();
+        assert!(doc.project().clip(id).unwrap().1.reversed());
+        assert_eq!(
+            IpcError::from(CommandError::PropertyNotApplicable),
+            IpcError::InvalidEdit("the edit does not apply to these clips".into())
+        );
+        assert!(matches!(
+            IpcError::from(CommandError::InvalidValue),
+            IpcError::InvalidEdit(_)
+        ));
     }
 
     /// Every fallible command logs its error (kind and message) at the IPC boundary, so the log

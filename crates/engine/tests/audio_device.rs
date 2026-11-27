@@ -36,10 +36,7 @@ fn plays_two_seconds_on_the_default_device() {
         name: "sine".into(),
         start: Time::from_seconds(start),
         duration: Time::from_seconds(1),
-        source: ClipSource::Media {
-            media: asset.id,
-            source_in: Time::ZERO,
-        },
+        source: ClipSource::media_at(asset.id, Time::ZERO),
         link: None,
         visual: None,
         audio: Some(AudioProps {

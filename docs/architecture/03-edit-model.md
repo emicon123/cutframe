@@ -72,6 +72,10 @@ each one repeating the "apply to a draft" code.
 | `TrimToPlayhead` | `trimToPlayhead` | Q / W: cuts the part of clips left or right of the playhead | nothing changed, locked track |
 | `SetMagnetic` | `setMagnetic` | turns the magnetic main track on or off (on = repack) | — |
 | `PasteClips` | `pasteClips` / `duplicateClips` | paste at the playhead, or duplicate after the selection | empty clipboard, removed media |
+| `SetClipProperty` | `setClipProperty` | one inspector property (visual or audio) on every listed clip that has it; fades clamp per clip; a gesture for sliders | no clip has it, out-of-range value, locked track |
+| `SetClipSpeed` | `setClipSpeed` | speed of video/audio clips and their links: start and used range stay, duration = range / speed, main track ripples, followers keep their content moment; a gesture for the slider | no video/audio clip, under one frame, overlap off the magnetic track, locked track |
+| `SetClipReverse` | `setClipReverse` | reverse on/off for video/audio clips and their links; nothing moves | no video/audio clip, locked track |
+| `InsertFreezeFrame` | `insertFreezeFrame` | splits a video clip at the playhead frame and inserts a `freeze` still of the shown frame; later clips ripple | no clip there, not a video clip, locked track, overlap |
 | `Batch` | chosen by caller | several edits as one entry (e.g. remove media + its clips) | first failing child |
 
 Selection is **not** in the model: the UI owns it and passes clip ids to every command. The clipboard
@@ -166,7 +170,7 @@ an `Anchor` (`timeline.rs:223`) resolved against the main track **before** the e
 
 | Anchor | Meaning |
 |---|---|
-| `Inside { clip, content }` | the time lies in main clip `clip`; `content` is the source time under it |
+| `Inside { clip, content }` | the time lies in main clip `clip`; `content` is `Clip::content_at` the time (the mapped source time, or the offset for images, freeze, colour and text). An anchor clip whose source did not change keeps the exact offset; otherwise `offset_of_content` finds the moment again (a sped-up clip) |
 | `Gap { next }` | the time is in a gap before main clip `next` (only with magnetic off) |
 | `AfterEnd` | at or after the end of the main track |
 
@@ -202,14 +206,16 @@ otherwise `track` is ignored and only time changes. A clip that would start befo
 fails with `Overlap` — except on the magnetic main track, where insertion order decides.
 
 **Trim (`TrimClip`).** The edge is **clamped**, never rejected: to the source range (`source_in >=
-0`, source end `<= media duration`), to at least one project frame, to neighbouring clips (except on
+0`, source end `<= media duration`, with the clip's speed and direction via `Clip::extend_room`), to
+at least one project frame, to neighbouring clips (except on
 the magnetic main track) and to the same limits of linked members that shared the edge. A start trim
-moves `source_in` with the edge so the picture stays put; on the magnetic main track the clip keeps
+moves `source_in` with the edge so the picture stays put (`Clip::sub_source_in`; on a reversed clip the end edge moves
+`source_in`); on the magnetic main track the clip keeps
 its start and the content shifts instead. Keyframes are retimed, fades shortened.
 
 **Split (`SplitClips`).** A clip splits only when the playhead lies strictly inside with both halves
-at least one project frame long. The right half gets a new id, `source_in` advanced (video and
-audio; images keep 0), the same props with keyframes partitioned, no fade-in; the left half loses its
+at least one project frame long. Both halves get the `source_in` of their part (`Clip::sub_source_in`, video and
+audio; images keep 0; speed and reverse are kept), the same props with keyframes partitioned, no fade-in; the left half loses its
 fade-out. Right halves of one link group share one new link. Nothing moves, so nothing follows.
 
 **Delete.** `DeleteClips` removes the selection and its linked members. On the magnetic main track

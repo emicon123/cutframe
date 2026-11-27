@@ -37,7 +37,7 @@ flowchart LR
 
 | Field | Type | Meaning and invariant |
 |---|---|---|
-| `schema_version` | `u32` | Always `CURRENT_SCHEMA_VERSION` (3) in memory; a loaded older file was migrated first ([04](04-persistence-and-lifecycle.md) §4) |
+| `schema_version` | `u32` | Always `CURRENT_SCHEMA_VERSION` (4) in memory; a loaded older file was migrated first ([04](04-persistence-and-lifecycle.md) §4) |
 | `id` | `ProjectId` | UUID v7, stable across saves; the home screen and recovery use it |
 | `name` | `String` | Not empty (`ValidationError::EmptyName`); shown in the window title |
 | `settings` | `ProjectSettings` | Canvas size, frame rate, sample rate — the render/export target, not an edit |
@@ -78,17 +78,30 @@ never follow the main track.
 | `id` | `ClipId`, UUID v7, unique across the project |
 | `name` | Display name (file name, "Colour", or the text of a title) |
 | `start`, `duration` | Timeline position and length in flicks; `end() = start + duration` |
-| `source` | What it shows or plays: `media { media, source_in }`, `color { color }`, `text { content }` |
+| `source` | What it shows or plays: `media { media, source_in, speed, reverse }`, `freeze { media, source_time }` (a held still of a video, video tracks only, no sound), `color { color }`, `text { content }` |
 | `link` | `Option<LinkId>`: every clip of one link group moves, trims, splits and deletes together. A group with fewer than two members is normalised away |
 | `visual` | Present **exactly** on clips of video and text tracks |
 | `audio` | Present on clips that make sound: audio-track clips, and video-track media clips whose media has audio that was not detached |
 
-Two helpers carry rules that must not be duplicated:
+The source mapping lives only in `Clip` (`model.rs`, design `clip-speed-audio.md` §3.2); commands and
+the engine call these helpers and never compute source times themselves. `Speed` (`time.rs`) is an
+integer percent (`10..=10_000`, 100 = 1x, rejected on load otherwise); all mapping is `i128` integer
+math. With `p` = speed, `a = source_in`, `d = duration`, `o = t - start`:
 
-- `Clip::source_time(t)` (`model.rs:222`) is the only timeline→source mapping: `source_in + (t -
-  start)` for `t` inside the clip, `None` outside and for colour/text.
-- `Clip::source_end()` is `source_in + duration`, the end of the used source range; trimming reads
-  it to know how much source is left.
+- `Clip::source_end()` = `a + ceil(d × p / 100)`, the exclusive end of the used range (`None` for
+  freeze, colour and text).
+- `Clip::source_time(t)` = `a + floor(o × p / 100)` forward, `source_end - 1 - floor(o × p / 100)`
+  reversed, for `t` inside the clip; a freeze clip returns its `source_time`. At 1x forward this is
+  the old `source_in + (t - start)`.
+- `Clip::frame_sample_time(t_n, frame)`: the source time at the frame centre, the time a video layer
+  samples (and a freeze frame copies).
+- `Clip::sub_source_in(offset, duration)`: `source_in` of a part of the clip (split, trim), keeping
+  every content moment in place within one flick; reversed, the left part's `source_in` moves.
+- `Clip::extend_room(media_len)`: how far each edge can grow before the range leaves the media
+  (trim clamps).
+- `Clip::content_at(t)` / `offset_of_content(c)`: the anchor content of followers and its inverse.
+
+Images always have `speed` 1x and `reverse` false, so they still run from `source_in == 0`.
 
 `source_in` is a **timestamp**, never a frame index (ADR-0002 §6): a variable-frame-rate source has
 no single frame grid, so the renderer seeks by time.
@@ -141,7 +154,7 @@ returns `value`; task 0520 replaces the body with interpolation.
 | Type | Fields | Range checked by `check(duration)` |
 |---|---|---|
 | `VisualProps` | `position`, `scale`, `rotation`, `opacity`, `crop`, `flip`, `fit` | finite position; scale non-zero and `abs <= 100`; opacity `0..=1`; crop insets `>= 0` with `left+right < 1`, `top+bottom < 1` |
-| `AudioProps` | `volume`, `fade_in`, `fade_out` | volume `0..=MAX_VOLUME` (4, i.e. +12 dB); fades `>= 0`, sum `<= duration` |
+| `AudioProps` | `volume`, `fade_in`, `fade_out`, `preserve_pitch` (time-stretch vs. tape-style resample off 1x, default true) | volume `0..=MAX_VOLUME` (4, i.e. +12 dB); fades `>= 0`, sum `<= duration` |
 
 Keyframes are sorted, unique in `time` and inside `0..=duration` — the same invariant is used when a
 trim retimes them (`timeline::retime_keyframes`, [03](03-edit-model.md) §7).

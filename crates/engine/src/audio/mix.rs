@@ -73,6 +73,8 @@ pub fn mix_block(
             while a < k1 {
                 let n = (k1 - a).min(MIX_CHUNK_FRAMES);
                 let t = start + sample_offset(a as i64, sample_rate);
+                // TODO(0370 step 5): pace per voice (speed, reverse, pitch, silent above 4x).
+                // Until then a sped-up clip reads 1x audio from its mapped source time.
                 let Some(source_time) = clip.source_time(t) else {
                     break;
                 };
@@ -231,7 +233,7 @@ pub(crate) mod tests {
             name: "A".into(),
             start,
             duration,
-            source: ClipSource::Media { media, source_in },
+            source: ClipSource::media_at(media, source_in),
             link: None,
             visual: None,
             audio: Some(AudioProps::default()),

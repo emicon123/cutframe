@@ -39,7 +39,7 @@ fn track_of(project: &Project) -> HashMap<ClipId, usize> {
 }
 
 /// [`CommandError::TrackLocked`] for the first clip of `ids` that is on a locked track.
-fn ensure_unlocked<'a>(
+pub(super) fn ensure_unlocked<'a>(
     project: &Project,
     ids: impl IntoIterator<Item = &'a ClipId>,
 ) -> Result<(), CommandError> {
@@ -53,8 +53,15 @@ fn ensure_unlocked<'a>(
     Ok(())
 }
 
-/// Whether a start trim or split moves the clip's `source_in`: video and audio media. Images
-/// keep `source_in == 0`; colour and text clips have none.
+/// Sets the `source_in` of a media clip.
+pub(super) fn set_source_in(clip: &mut Clip, value: Time) {
+    if let ClipSource::Media { source_in, .. } = &mut clip.source {
+        *source_in = value;
+    }
+}
+
+/// Whether a trim or split moves the clip's `source_in`: video and audio media. Images keep
+/// `source_in == 0`; freeze, colour and text clips have none.
 fn has_source_in(project: &Project, clip: &Clip) -> bool {
     match &clip.source {
         ClipSource::Media { media, .. } => project
@@ -72,9 +79,9 @@ fn has_source_in(project: &Project, clip: &Clip) -> bool {
 /// [`CommandError::TrackLocked`].
 ///
 /// A clip splits only when `at` lies inside it with both halves at least one project frame long;
-/// others are skipped. The right half gets a new id, `source_in` advanced by the left half's
-/// length (video and audio), the same props with keyframes partitioned, and no fade-in; the left
-/// half loses its fade-out. The right halves of one link group share one new link. Nothing
+/// others are skipped. The right half gets a new id and, for video and audio, the source range of
+/// its part (speed and reverse kept; [`Clip::sub_source_in`]), the same props with keyframes
+/// partitioned, and no fade-in; the left half loses its fade-out. The right halves of one link group share one new link. Nothing
 /// moves, so nothing follows. Fails with [`CommandError::NothingToSplit`] when no clip split.
 #[derive(Debug)]
 pub struct SplitClips {
@@ -171,15 +178,23 @@ impl Command for SplitClips {
     }
 }
 
-/// Cuts `left` at `at` (inside it) and returns the right half with id `id`.
+/// Cuts `left` at `at` (inside it) and returns the right half with id `id`. With
+/// `shifts_source` (video and audio media) both halves get the `source_in` of their part
+/// ([`Clip::sub_source_in`]): forward the right half's moves up, reversed the left half's does.
 fn split_clip(left: &mut Clip, at: Time, id: ClipId, shifts_source: bool) -> Clip {
     let offset = at - left.start;
+    let rest = left.end() - at;
+    let (left_in, right_in) = (
+        left.sub_source_in(Time::ZERO, offset),
+        left.sub_source_in(offset, rest),
+    );
     let mut right = left.clone();
     right.id = id;
     right.start = at;
-    right.duration = left.end() - at;
-    if shifts_source && let ClipSource::Media { source_in, .. } = &mut right.source {
-        *source_in = *source_in + offset;
+    right.duration = rest;
+    if shifts_source {
+        set_source_in(left, left_in);
+        set_source_in(&mut right, right_in);
     }
     left.duration = offset;
     if let Some(audio) = &mut left.audio {

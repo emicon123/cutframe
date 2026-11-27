@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
+use super::cut::set_source_in;
 use super::{Command, CommandError, HistoryLabel, TrackTarget};
 use crate::media::MediaKind;
 use crate::model::{Clip, ClipId, ClipSource, LinkId, Project, Track, TrackId};
@@ -285,13 +286,15 @@ impl MoveClips {
 /// Moves one edge of a clip to `time` (`trimClip`, design §4.3).
 ///
 /// The edge is **clamped**, never rejected: to the source range of video and audio media
-/// (`source_in` at least 0, source end at most the media's duration; images, colour and text clips
-/// have no limit), to at least one project frame (or the clip's current length if it is shorter), to the neighbouring
+/// (`source_in` at least 0, source end at most the media's duration, with the clip's speed and
+/// direction: [`Clip::extend_room`]; images, freeze, colour and text clips have no limit), to at
+/// least one project frame (or the clip's current length if it is shorter), to the neighbouring
 /// clips (except on the magnetic main track), and to the same limits of every linked clip whose
 /// same edge was at the same time: those members trim by the same amount (§3.5).
 ///
-/// A start trim moves `source_in` with the edge, so the content stays in place. On the magnetic
-/// main track the clip keeps its start instead (its content shifts) and the later main clips
+/// A trim keeps the content in place: the source range follows the edge ([`Clip::sub_source_in`];
+/// forward a start trim moves `source_in`, reversed an end trim does). On the magnetic main
+/// track the clip keeps its start instead (its content shifts) and the later main clips
 /// ripple; its trimmed linked members do the same, so they stay in sync. When a main clip changes,
 /// the clips on other tracks follow (§3.7). Keyframes are retimed and fades shortened to fit.
 ///
@@ -403,12 +406,16 @@ impl TrimClip {
             let prev = m.index.checked_sub(1).map(|i| &clips[i]);
             let next = clips.get(m.index + 1);
             let neighbours = !m.rippling_track;
+            let (start_room, end_room) = m.source_length.map_or((i64::MAX, i64::MAX), |len| {
+                let (start, end) = c.extend_room(len);
+                (start.flicks(), end.flicks())
+            });
             match self.edge {
                 // `d` > 0 shortens the clip from the start.
                 Edge::Start => {
                     hi = hi.min(c.duration.flicks() - min_len);
                     if m.has_source_in {
-                        lo = lo.max(-c.source_in().flicks());
+                        lo = lo.max(-start_room);
                     }
                     if ripple {
                         // The start stays and the end moves by -d.
@@ -425,9 +432,7 @@ impl TrimClip {
                 // `d` > 0 lengthens the clip at the end.
                 Edge::End => {
                     lo = lo.max(min_len - c.duration.flicks());
-                    if let (Some(length), Some(end)) = (m.source_length, c.source_end()) {
-                        hi = hi.min((length - end).flicks());
-                    }
+                    hi = hi.min(end_room);
                     if let Some(next) = next.filter(|_| neighbours) {
                         hi = hi.min((next.start - c.end()).flicks());
                     }
@@ -447,10 +452,9 @@ impl TrimClip {
             let c = &mut next.tracks[m.track].clips[m.index];
             match self.edge {
                 Edge::Start => {
-                    if m.has_source_in
-                        && let ClipSource::Media { source_in, .. } = &mut c.source
-                    {
-                        *source_in = *source_in + d;
+                    if m.has_source_in {
+                        let source_in = c.sub_source_in(d, c.duration - d);
+                        set_source_in(c, source_in);
                     }
                     c.duration = c.duration - d;
                     if !ripple {
@@ -459,6 +463,11 @@ impl TrimClip {
                     retime_keyframes(c, d);
                 }
                 Edge::End => {
+                    if m.has_source_in {
+                        // Reversed clips keep their range's top: the end edge moves `source_in`.
+                        let source_in = c.sub_source_in(Time::ZERO, c.duration + d);
+                        set_source_in(c, source_in);
+                    }
                     c.duration = c.duration + d;
                     retime_keyframes(c, Time::ZERO);
                 }

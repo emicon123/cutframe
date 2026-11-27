@@ -36,7 +36,7 @@ fn clip(media: MediaId, start: Time, duration: Time, source_in: Time) -> Clip {
         name: "A".into(),
         start,
         duration,
-        source: ClipSource::Media { media, source_in },
+        source: ClipSource::media_at(media, source_in),
         link: None,
         visual: None,
         audio: Some(AudioProps::default()),

@@ -66,10 +66,7 @@ pub fn video(project: &Project, start: f64, duration: f64, source_in: f64) -> Cl
         name: "clip".into(),
         start: t(start),
         duration: t(duration),
-        source: ClipSource::Media {
-            media: project.media[0].id,
-            source_in: t(source_in),
-        },
+        source: ClipSource::media_at(project.media[0].id, t(source_in)),
         link: None,
         visual: Some(VisualProps::default()),
         audio: Some(AudioProps::default()),
@@ -86,10 +83,7 @@ pub fn sound(project: &Project, start: f64, duration: f64, source_in: f64) -> Cl
 
 pub fn image(project: &Project, start: f64, duration: f64) -> Clip {
     Clip {
-        source: ClipSource::Media {
-            media: project.media[2].id,
-            source_in: Time::ZERO,
-        },
+        source: ClipSource::media_at(project.media[2].id, Time::ZERO),
         audio: None,
         ..video(project, start, duration, 0.0)
     }
@@ -140,4 +134,18 @@ pub fn clip(project: &Project, id: ClipId) -> &Clip {
 
 pub fn track_of(project: &Project, id: ClipId) -> usize {
     project.clip(id).expect("clip exists").0
+}
+
+/// `clip` (a media clip) with speed `percent` and `reverse`; its duration is unchanged, so the
+/// caller keeps the used range inside the media.
+pub fn with_speed(mut clip: Clip, percent: u16, reverse_on: bool) -> Clip {
+    if let ClipSource::Media { speed, reverse, .. } = &mut clip.source {
+        *speed = crate::time::Speed::new(percent).expect("valid speed");
+        *reverse = reverse_on;
+    }
+    clip
+}
+
+pub fn speed(percent: u16) -> crate::time::Speed {
+    crate::time::Speed::new(percent).expect("valid speed")
 }

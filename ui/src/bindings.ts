@@ -22,8 +22,8 @@ export const commands = {
 	 *  - `drop`: on an existing track or a new one (`new.index` is clamped into the section that fits
 	 *    the first clip) from `start`. On the magnetic main track a drop is an insert.
 	 * 
-	 *  Video clips take the media's whole length (with its sound when it has audio), images 5 s and
-	 *  colour cards 5 s. Fails with `overlap` for an occupied range, `trackLocked` for a locked
+	 *  Video clips take the media's whole length at 1x (with its sound when it has audio), images the
+	 *  "image and freeze-frame duration" preference (snapped to the frame grid) and colour cards 5 s. Fails with `overlap` for an occupied range, `trackLocked` for a locked
 	 *  target, and `invalidEdit` for no sources, unknown media or tracks, a clip that does not fit the
 	 *  track (e.g. audio-only media on a video track), or a time outside `0..=2^53` flicks.
 	 */
@@ -183,6 +183,66 @@ export const commands = {
 	 *  video track, media without sound on an audio track, any media on a text track).
 	 */
 	replaceClipMedia: (clip: ClipId, media: MediaId, options?: InvokeOptions) => __TAURI_INVOKE<null>("replace_clip_media", { clip, media }, options),
+	/**
+	 *  Sets one inspector property on every listed clip that has it (`setClipProperty`): visual
+	 *  properties (`position`, `scale`, `rotation`, `opacity`, `crop`, `flip`, `fit`) on clips with
+	 *  `visual`, audio properties (`volume`, `fadeIn`, `fadeOut`, `preservePitch`) on clips with
+	 *  `audio`; the others are skipped. Linked clips are not expanded (send the selection). Fades are
+	 *  clamped per clip to its duration minus the other fade, so a drag stops at the limit.
+	 * 
+	 *  Sliders are an ADR-0006 gesture (`update` per animation frame, `commit` on release,
+	 *  `cancelGesture` on Escape); typed values and toggles are one `commit`. A value every clip
+	 *  already has records nothing (no history entry; no event unless a gesture closes).
+	 * 
+	 *  Errors: `trackLocked` (a clip that has the property is on a locked track), `invalidEdit` (no
+	 *  listed clip has the property; a value out of range: volume 0..=4, opacity 0..=1, scale non-zero
+	 *  and at most 100 in size, crop insets >= 0 with left + right and top + bottom < 1, finite
+	 *  numbers, fades >= 0; no clips, unknown clip, a time outside ±2^53 flicks). A failed `update`
+	 *  keeps the last valid value.
+	 */
+	setClipProperty: (clips: ClipId[], value: PropertyValue, phase: EditPhase, options?: InvokeOptions) => __TAURI_INVOKE<null>("set_clip_property", { clips, value, phase }, options),
+	/**
+	 *  Sets the speed (in percent: 100 = 1x, 10..=10000) of clips and their linked members
+	 *  (`setClipSpeed`). Only video and audio media clips change; images, freeze frames, colour and
+	 *  text clips are skipped. Each keeps its start and its used source range, so its duration becomes
+	 *  the range divided by the speed; on the magnetic main track the later clips ripple and the
+	 *  overlays, captions and audio over them follow (B-roll stays over the same moment of a sped-up
+	 *  clip). The new duration is in the next `projectChanged`. Fades shrink to fit.
+	 * 
+	 *  The slider is an ADR-0006 gesture like `moveClips`; presets and typed values are one `commit`.
+	 *  A speed every clip already has records nothing. An out-of-range speed fails argument parsing,
+	 *  so clamp before sending.
+	 * 
+	 *  Errors: `overlap` (a clip off the magnetic main track would run into its neighbour; during a
+	 *  drag the last valid state stays), `trackLocked`, `invalidEdit` (no video or audio clip among
+	 *  them, a clip that would get shorter than one frame, no clips, unknown clip).
+	 */
+	setClipSpeed: (clips: ClipId[], speed: Speed, phase: EditPhase, options?: InvokeOptions) => __TAURI_INVOKE<null>("set_clip_speed", { clips, speed, phase }, options),
+	/**
+	 *  Plays clips and their linked members backwards, or forwards again (`setClipReverse`). Only
+	 *  video and audio media clips change; start, duration and used source range stay, nothing moves.
+	 *  A value every clip already has records nothing.
+	 * 
+	 *  Errors: `trackLocked`, `invalidEdit` (no video or audio clip among them, no clips, unknown
+	 *  clip).
+	 */
+	setClipReverse: (clips: ClipId[], reverse: boolean, options?: InvokeOptions) => __TAURI_INVOKE<null>("set_clip_reverse", { clips, reverse }, options),
+	/**
+	 *  Inserts a freeze frame of the frame shown at `at` (`insertFreezeFrame`, Shift+F) and returns
+	 *  its clip id (select it). `clip` is the video clip to freeze, or `null` for the main-track clip
+	 *  under `at`. The freeze lasts the "image and freeze-frame duration" preference (snapped to the
+	 *  frame grid) and shows exactly the frame the preview shows at `at`. Inside the clip it splits
+	 *  the clip (and its linked clips) at the playhead frame and goes between the halves; in the
+	 *  clip's first frame it goes before the clip, in its last frame after it. On the main track the
+	 *  later clips ripple and the clips over them follow (detached audio of the right half moves too,
+	 *  leaving silence under the freeze); on an overlay track that track's later clips move right.
+	 *  The freeze has the clip's visual props, no sound and no link.
+	 * 
+	 *  Errors: `overlap` (a moved overlay clip would run into another), `trackLocked`, `invalidEdit`
+	 *  (no clip under `at`, not a video clip on a video track, unknown clip, a time outside
+	 *  `0..=2^53` flicks).
+	 */
+	insertFreezeFrame: (clip: ClipId | null, at: Time, options?: InvokeOptions) => __TAURI_INVOKE<ClipId>("insert_freeze_frame", { clip, at }, options),
 	/**
 	 *  Turns a track's mute, hide or lock flag on or off (`setTrackMuted`, `setTrackHidden`,
 	 *  `setTrackLocked`). Works on every track, the main track and locked tracks included. Setting
@@ -585,6 +645,11 @@ export type AudioProps_Deserialize = {
 	/**  Lengths of the linear fades, each >= 0, sum <= clip duration. Not animatable. */
 	fadeIn: Time,
 	fadeOut: Time,
+	/**
+	 *  With a speed other than 1x: keep the pitch (time-stretch) or play faster and higher like
+	 *  tape (resample). Default true. Not animatable (F1.80).
+	 */
+	preservePitch: boolean,
 };
 
 /**  Audio properties of a clip that makes sound. */
@@ -594,6 +659,11 @@ export type AudioProps_Serialize = {
 	/**  Lengths of the linear fades, each >= 0, sum <= clip duration. Not animatable. */
 	fadeIn: Time,
 	fadeOut: Time,
+	/**
+	 *  With a speed other than 1x: keep the pitch (time-stretch) or play faster and higher like
+	 *  tape (resample). Default true. Not animatable (F1.80).
+	 */
+	preservePitch: boolean,
 };
 
 export type AudioSummary = {
@@ -629,10 +699,20 @@ export type ClipId = string;
 /**  What a clip shows or plays. */
 export type ClipSource = 
 /**
- *  A video, audio or image file. `source_in` is the media time at the clip's start, in
- *  flicks (seeked by timestamp, never a frame index); always 0 for images.
+ *  A video, audio or image file. `source_in` is the lowest media time of the used source
+ *  range, in flicks (seeked by timestamp, never a frame index); always 0 for images. The
+ *  range is `source_in..`[`Clip::source_end`]; see [`Clip::source_time`] for the mapping.
  */
-{ kind: "media"; media: MediaId; sourceIn: Time } | 
+{ kind: "media"; media: MediaId; sourceIn: Time; 
+/**  Playback speed; always [`Speed::NORMAL`] on image media. */
+speed: Speed; 
+/**  Plays the used source range backwards. Always false on image media. */
+reverse: boolean } | 
+/**
+ *  A still of video `media` at media time `source_time`: the frame a sample-and-hold lookup
+ *  at that time returns (freeze frame, F1.82). Video tracks only; no audio.
+ */
+{ kind: "freeze"; media: MediaId; sourceTime: Time } | 
 /**  A solid colour card. */
 { kind: "color"; color: Rgba8 } | 
 /**  A title. Task 0510 adds the style fields and the rendering. */
@@ -645,7 +725,10 @@ export type ClipView_Deserialize = {
 	name: string,
 	start: Time,
 	duration: Time,
-	/**  Media (with `sourceIn`), colour or text. */
+	/**
+	 *  Media (with `sourceIn`, `speed` in percent and `reverse`), freeze frame (`sourceTime`),
+	 *  colour or text.
+	 */
 	source: ClipSource,
 	/**  Clips with the same link move, trim, split and delete together. */
 	link?: LinkId | null,
@@ -653,8 +736,17 @@ export type ClipView_Deserialize = {
 	visual?: VisualProps_Deserialize | null,
 	/**  Present on clips that make sound. */
 	audio?: AudioProps_Deserialize | null,
-	/**  Length of the clip's media, for trim limits; `None` for images, colour and text clips. */
+	/**
+	 *  Length of the clip's media, for trim limits; `None` for images, colour and text clips.
+	 *  Freeze frames report their video's length.
+	 */
 	sourceDuration?: Time | null,
+	/**
+	 *  End (exclusive) of the media range a video or audio clip uses: it plays `sourceIn` up to
+	 *  here at its speed, or from here down to `sourceIn` when reversed. Draw filmstrips and
+	 *  waveforms over this range. `None` for freeze, colour and text clips.
+	 */
+	sourceEnd?: Time | null,
 };
 
 export type ClipView_Serialize = {
@@ -662,7 +754,10 @@ export type ClipView_Serialize = {
 	name: string,
 	start: Time,
 	duration: Time,
-	/**  Media (with `sourceIn`), colour or text. */
+	/**
+	 *  Media (with `sourceIn`, `speed` in percent and `reverse`), freeze frame (`sourceTime`),
+	 *  colour or text.
+	 */
 	source: ClipSource,
 	/**  Clips with the same link move, trim, split and delete together. */
 	link: LinkId | null,
@@ -670,8 +765,17 @@ export type ClipView_Serialize = {
 	visual: VisualProps_Serialize | null,
 	/**  Present on clips that make sound. */
 	audio: AudioProps_Serialize | null,
-	/**  Length of the clip's media, for trim limits; `None` for images, colour and text clips. */
+	/**
+	 *  Length of the clip's media, for trim limits; `None` for images, colour and text clips.
+	 *  Freeze frames report their video's length.
+	 */
 	sourceDuration: Time | null,
+	/**
+	 *  End (exclusive) of the media range a video or audio clip uses: it plays `sourceIn` up to
+	 *  here at its speed, or from here down to `sourceIn` when reversed. Draw filmstrips and
+	 *  waveforms over this range. `None` for freeze, colour and text clips.
+	 */
+	sourceEnd: Time | null,
 };
 
 /**  Insets as fractions of the display-oriented source. */
@@ -851,7 +955,15 @@ export type HistoryLabel = "addTrack" | "removeTrack" | "renameTrack" | "renameP
 /**  Locking or unlocking a track. */
 "setTrackLocked" | 
 /**  Reordering a track within its section. */
-"moveTrack";
+"moveTrack" | 
+/**  Setting one clip property in the inspector (one drag, typed value or toggle). */
+"setClipProperty" | 
+/**  Changing the speed of clips (one drag, typed value or preset). */
+"setClipSpeed" | 
+/**  Turning reverse playback of clips on or off. */
+"setClipReverse" | 
+/**  Inserting a freeze frame of the frame under the playhead. */
+"insertFreezeFrame";
 
 export type HistoryState = HistoryState_Serialize | HistoryState_Deserialize;
 
@@ -1164,8 +1276,8 @@ export type MediaView_Serialize = {
 /**  What a new clip shows. */
 export type NewClipSource = 
 /**
- *  A media item: the whole source range of a video or audio file, or an image for
- *  [`DEFAULT_IMAGE_DURATION`].
+ *  A media item: the whole source range of a video or audio file at 1x, or an image for
+ *  the command's image duration ([`AddClips::with_image_duration`]).
  */
 { kind: "media"; media: MediaId } | 
 /**  A colour card for [`DEFAULT_COLOR_DURATION`]. */
@@ -1384,6 +1496,30 @@ export type ProjectView_Serialize = {
 };
 
 /**
+ *  One property and its new value. Animatable properties set `Animated.value`; tier 1 writes no
+ *  keyframes (task 0520 defines "set at playhead" when keyframes exist).
+ */
+export type PropertyValue = 
+/**  Offset of the clip's centre from the canvas centre, in canvas widths and heights. */
+{ property: "position"; value: Vec2 } | 
+/**  Non-zero, |s| <= 100 on each axis. */
+{ property: "scale"; value: Vec2 } | 
+/**  Degrees, clockwise, finite. */
+{ property: "rotation"; value: number | null } | 
+/**  0..=1. */
+{ property: "opacity"; value: number | null } | 
+/**  Each inset >= 0, left + right < 1, top + bottom < 1. */
+{ property: "crop"; value: CropInsets } | { property: "flip"; value: Flip } | { property: "fit"; value: FitMode } | 
+/**  Linear gain, 0..=4. */
+{ property: "volume"; value: number | null } | 
+/**  Fade-in length, >= 0; clamped per clip to its duration minus its fade-out. */
+{ property: "fadeIn"; value: Time } | 
+/**  Fade-out length, >= 0; clamped per clip to its duration minus its fade-in. */
+{ property: "fadeOut"; value: Time } | 
+/**  Keep the pitch at speeds other than 1x. */
+{ property: "preservePitch"; value: boolean };
+
+/**
  *  The user tried to close the main window while the project has unsaved changes. The close was
  *  stopped: ask Save / Don't save / Cancel, then call `confirmClose` to close or do nothing to stay
  *  open. A clean project closes without this event.
@@ -1497,6 +1633,15 @@ export type Side =
 "left" | 
 /**  Delete right of the playhead (W): the end edge moves to the playhead. */
 "right";
+
+/**
+ *  Playback speed of a clip in percent of normal: 100 = 1x (design `clip-speed-audio.md` §3.1).
+ * 
+ *  Always within [`Speed::MIN`]`..=`[`Speed::MAX`]: deserialization rejects anything else, so no
+ *  code ever divides by an invalid speed. All mapping is integer math on flicks (`i128`), so
+ *  preview, export and edits agree to the flick. TypeScript sees it as a `number` (percent).
+ */
+export type Speed = number;
 
 /**
  *  A point in time or a duration, in flicks.
@@ -1658,6 +1803,10 @@ export type MockCommandHandlers = {
     unlinkClips: (args: { clips: ClipId[] }) => null | Promise<null>,
     detachAudio: (args: { clips: ClipId[] }) => ClipId[] | Promise<ClipId[]>,
     replaceClipMedia: (args: { clip: ClipId; media: MediaId }) => null | Promise<null>,
+    setClipProperty: (args: { clips: ClipId[]; value: PropertyValue; phase: EditPhase }) => null | Promise<null>,
+    setClipSpeed: (args: { clips: ClipId[]; speed: Speed; phase: EditPhase }) => null | Promise<null>,
+    setClipReverse: (args: { clips: ClipId[]; reverse: boolean }) => null | Promise<null>,
+    insertFreezeFrame: (args: { clip: ClipId | null; at: Time }) => ClipId | Promise<ClipId>,
     setTrackFlag: (args: { track: TrackId; flag: TrackFlag; value: boolean }) => null | Promise<null>,
     moveTrack: (args: { track: TrackId; index: number }) => null | Promise<null>,
     removeTrack: (args: { id: TrackId }) => null | Promise<null>,
@@ -1750,6 +1899,10 @@ export function mockCommands(handlers: Partial<MockCommandHandlers> = {}): void 
             case "unlink_clips": return mockCommandHandler(mockHandlers.unlinkClips, "unlink_clips", args);
             case "detach_audio": return mockCommandHandler(mockHandlers.detachAudio, "detach_audio", args);
             case "replace_clip_media": return mockCommandHandler(mockHandlers.replaceClipMedia, "replace_clip_media", args);
+            case "set_clip_property": return mockCommandHandler(mockHandlers.setClipProperty, "set_clip_property", args);
+            case "set_clip_speed": return mockCommandHandler(mockHandlers.setClipSpeed, "set_clip_speed", args);
+            case "set_clip_reverse": return mockCommandHandler(mockHandlers.setClipReverse, "set_clip_reverse", args);
+            case "insert_freeze_frame": return mockCommandHandler(mockHandlers.insertFreezeFrame, "insert_freeze_frame", args);
             case "set_track_flag": return mockCommandHandler(mockHandlers.setTrackFlag, "set_track_flag", args);
             case "move_track": return mockCommandHandler(mockHandlers.moveTrack, "move_track", args);
             case "remove_track": return mockCommandHandler(mockHandlers.removeTrack, "remove_track", args);

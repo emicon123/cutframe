@@ -137,8 +137,9 @@ impl Command for UnlinkClips {
 
 /// Moves the sound of video-track media clips onto audio tracks (`detachAudio`, design §3.5).
 ///
-/// For each listed video-track clip with `audio` props, a new audio clip with the same media,
-/// `source_in`, `start`, `duration` and name takes over the `audio` props, and the video clip's
+/// For each listed video-track clip with `audio` props, a new audio clip with the same source
+/// (media, `source_in`, speed, direction), `start`, `duration` and name takes over the `audio`
+/// props, and the video clip's
 /// `audio` becomes `None`. The two are linked: the new clip joins the video clip's group, or both
 /// get a new link. The new clip goes on the first unlocked audio track where its range is free
 /// and no member of its group lies, else on a new audio track at the top of the audio section.

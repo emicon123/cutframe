@@ -49,7 +49,7 @@ fn asset_at(path: &Path) -> MediaAsset {
 
 fn media_clip(media: MediaId, start: Time, duration: Time, source_in: Time) -> Clip {
     Clip {
-        source: ClipSource::Media { media, source_in },
+        source: ClipSource::media_at(media, source_in),
         ..Clip::color("V", start, duration, Rgba8::BLACK)
     }
 }

@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use app_core::media::MediaId;
-use app_core::{ClipSource, MediaAsset, Project, Time};
+use app_core::{MediaAsset, Project, Time};
 
 use super::GpuContext;
 use super::compositor::{Compositor, CompositorConfig, create_canvas};
@@ -286,10 +286,7 @@ fn unknown_media(project: &Project, plan: &RenderPlan) -> Option<MediaId> {
                 .iter()
                 .flat_map(|track| &track.clips)
                 .find(|clip| clip.id == layer.clip)
-                .and_then(|clip| match clip.source {
-                    ClipSource::Media { media, .. } => Some(media),
-                    _ => None,
-                })
+                .and_then(|clip| clip.source.media())
         })
 }
 

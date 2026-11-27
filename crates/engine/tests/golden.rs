@@ -104,10 +104,7 @@ fn color_clip(start: Time, duration: Time, color: Rgba8) -> Clip {
 
 fn media_clip(asset: &MediaAsset, start: Time, duration: Time, source_in: Time) -> Clip {
     Clip {
-        source: ClipSource::Media {
-            media: asset.id,
-            source_in,
-        },
+        source: ClipSource::media_at(asset.id, source_in),
         ..Clip::color("Media", start, duration, Rgba8::BLACK)
     }
 }

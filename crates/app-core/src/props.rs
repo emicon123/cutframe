@@ -154,6 +154,9 @@ pub struct AudioProps {
     /// Lengths of the linear fades, each >= 0, sum <= clip duration. Not animatable.
     pub fade_in: Time,
     pub fade_out: Time,
+    /// With a speed other than 1x: keep the pitch (time-stretch) or play faster and higher like
+    /// tape (resample). Default true. Not animatable (F1.80).
+    pub preserve_pitch: bool,
 }
 
 impl Default for AudioProps {
@@ -162,6 +165,7 @@ impl Default for AudioProps {
             volume: Animated::constant(1.0),
             fade_in: Time::ZERO,
             fade_out: Time::ZERO,
+            preserve_pitch: true,
         }
     }
 }

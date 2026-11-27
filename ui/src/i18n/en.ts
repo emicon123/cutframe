@@ -342,6 +342,10 @@ export const en = {
       setTrackHidden: "Toggle Track Visibility",
       setTrackLocked: "Toggle Track Lock",
       moveTrack: "Move Track",
+      setClipProperty: "Change Clip Property",
+      setClipSpeed: "Change Speed",
+      setClipReverse: "Toggle Reverse",
+      insertFreezeFrame: "Freeze Frame",
     } satisfies Record<HistoryLabel, string>,
     /** Shown for a key this UI build does not know. */
     unknown: "Last Action",

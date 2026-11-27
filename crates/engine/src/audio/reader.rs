@@ -561,7 +561,11 @@ impl AudioSources {
                 if clip.start <= from || clip.start > until || clip.audio.is_none() {
                     continue;
                 }
-                let ClipSource::Media { media, source_in } = clip.source else {
+                // TODO(0370 step 5): speed and reverse (a reversed clip starts at its source end).
+                let ClipSource::Media {
+                    media, source_in, ..
+                } = clip.source
+                else {
                     continue;
                 };
                 let Some(asset) = project.media_asset(media) else {

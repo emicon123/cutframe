@@ -73,6 +73,7 @@ fn collect(
             if !inclusive && clip.start == from {
                 continue;
             }
+            // TODO(0370 step 3): prime freeze frames (a still pace) too.
             let ClipSource::Media { media, .. } = clip.source else {
                 continue;
             };
@@ -105,6 +106,7 @@ fn is_video(project: &Project, media: MediaId) -> bool {
 }
 
 /// `next` follows `previous` directly in the timeline and in the same media's source.
+// TODO(0370 step 4): the halves of a split reversed clip continue downwards.
 fn continues(previous: &Clip, next: &Clip) -> bool {
     previous.end() == next.start
         && previous.source.media().is_some()
@@ -125,7 +127,7 @@ mod tests {
 
     fn media_clip(media: MediaId, start: Time, duration: Time, source_in: Time) -> Clip {
         Clip {
-            source: ClipSource::Media { media, source_in },
+            source: ClipSource::media_at(media, source_in),
             ..Clip::color("V", start, duration, Rgba8::BLACK)
         }
     }

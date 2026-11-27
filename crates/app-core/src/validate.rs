@@ -12,7 +12,7 @@ use crate::model::{
     TrackKind,
 };
 use crate::props::PropertyName;
-use crate::time::{MAX_IPC_FLICKS, Time};
+use crate::time::{MAX_IPC_FLICKS, Speed, Time};
 
 /// Canvas width and height limits, in pixels. Both must also be even (yuv420 encoders need it).
 pub const CANVAS_SIZE_RANGE: std::ops::RangeInclusive<u32> = 16..=8192;
@@ -272,12 +272,15 @@ fn validate_clip(
             }
         }
         (
-            &ClipSource::Media {
+            ClipSource::Media {
                 media: id,
                 source_in,
+                speed,
+                reverse,
             },
             TrackKind::Video | TrackKind::Audio,
         ) => {
+            let id = *id;
             let asset = media.get(&id).ok_or(ValidationError::ClipMediaMissing {
                 clip: clip.id,
                 media: id,
@@ -293,15 +296,45 @@ fn validate_clip(
                     media: id,
                 });
             }
-            let range_ok = match asset.info.duration {
-                None => source_in == Time::ZERO,
-                Some(duration) => {
-                    source_in >= Time::ZERO
-                        && source_in
-                            .flicks()
-                            .checked_add(clip.duration.flicks())
-                            .is_some_and(|end| end <= duration.flicks())
+            let range_ok = if asset.kind == MediaKind::Image {
+                *source_in == Time::ZERO && *speed == Speed::NORMAL && !reverse
+            } else {
+                match asset.info.duration {
+                    None => *source_in == Time::ZERO,
+                    // `source_end` saturates instead of overflowing, so a huge speed x
+                    // duration is out of range too.
+                    Some(duration) => {
+                        *source_in >= Time::ZERO
+                            && clip.source_end().is_some_and(|end| end <= duration)
+                    }
                 }
+            };
+            if !range_ok {
+                return Err(ValidationError::SourceRange { clip: clip.id });
+            }
+        }
+        // Invariant 8: a still of a video, on a video track, without sound.
+        (
+            &ClipSource::Freeze {
+                media: id,
+                source_time,
+            },
+            TrackKind::Video,
+        ) => {
+            let asset = media.get(&id).ok_or(ValidationError::ClipMediaMissing {
+                clip: clip.id,
+                media: id,
+            })?;
+            if asset.kind != MediaKind::Video || asset.info.video.is_none() || clip.audio.is_some()
+            {
+                return Err(ValidationError::ClipMediaMismatch {
+                    clip: clip.id,
+                    media: id,
+                });
+            }
+            let range_ok = match asset.info.duration {
+                None => source_time == Time::ZERO,
+                Some(duration) => Time::ZERO <= source_time && source_time < duration,
             };
             if !range_ok {
                 return Err(ValidationError::SourceRange { clip: clip.id });
@@ -558,10 +591,7 @@ mod tests {
         let (video, song, photo) = (samples::video(1), samples::audio(2), samples::image(3));
         let link = LinkId::new();
         let media = |name: &str, media: MediaId, source_in: i64, duration: i64| Clip {
-            source: ClipSource::Media {
-                media,
-                source_in: Time(source_in),
-            },
+            source: ClipSource::media_at(media, Time(source_in)),
             ..clip_named(name, 0, duration)
         };
         let mut main_clip = media("Main", video.id, 10, 1000);
@@ -699,10 +729,7 @@ mod tests {
         let mut project = timeline();
         let missing = MediaId::new();
         let clip = named(&mut project, "Photo");
-        clip.source = ClipSource::Media {
-            media: missing,
-            source_in: Time::ZERO,
-        };
+        clip.source = ClipSource::media_at(missing, Time::ZERO);
         let id = clip.id;
         assert_eq!(
             project.validate(),
@@ -716,10 +743,7 @@ mod tests {
         let mut project = timeline();
         let song = project.media[1].id;
         let clip = named(&mut project, "Photo");
-        clip.source = ClipSource::Media {
-            media: song,
-            source_in: Time::ZERO,
-        };
+        clip.source = ClipSource::media_at(song, Time::ZERO);
         let id = clip.id;
         assert_eq!(
             project.validate(),
@@ -780,6 +804,130 @@ mod tests {
                 "{name} {source_in} {duration}"
             );
         }
+    }
+
+    #[test]
+    fn source_ranges_use_the_speed_and_images_play_at_normal_speed() {
+        use crate::model::ClipSource;
+        use crate::time::Speed;
+
+        let s = Time::from_seconds;
+        // (clip, duration, speed percent, reverse, valid): the video and the song are 5 s and 3 s.
+        let cases: [(&str, Time, u16, bool, bool); 7] = [
+            ("Detached", s(2), 250, false, true),
+            ("Detached", s(2), 250, true, true),
+            ("Detached", s(2) + Time(1), 250, true, false),
+            ("Song", s(30), 10, false, true),
+            ("Song", s(1), 10_000, false, false),
+            ("Photo", s(9), 200, false, false),
+            ("Photo", s(9), 100, true, false),
+        ];
+        for (name, duration, percent, reverse_on, ok) in cases {
+            let mut project = timeline();
+            project.magnetic = false;
+            for clip in project.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()) {
+                clip.link = None;
+            }
+            let clip = named(&mut project, name);
+            if let ClipSource::Media {
+                source_in,
+                speed,
+                reverse,
+                ..
+            } = &mut clip.source
+            {
+                *source_in = Time::ZERO;
+                *speed = Speed::new(percent).unwrap();
+                *reverse = reverse_on;
+            }
+            clip.duration = duration;
+            let id = clip.id;
+            let expected = if ok {
+                Ok(())
+            } else {
+                Err(ValidationError::SourceRange { clip: id })
+            };
+            assert_eq!(
+                project.validate(),
+                expected,
+                "{name} {percent} {reverse_on}"
+            );
+        }
+    }
+
+    #[test]
+    fn freeze_frames_are_stills_of_video_on_video_tracks() {
+        use crate::model::ClipSource;
+
+        let freeze = |project: &Project, media: usize, source_time: i64| Clip {
+            source: ClipSource::Freeze {
+                media: project.media[media].id,
+                source_time: Time(source_time),
+            },
+            ..clip_named("Freeze", 1 << 41, 100)
+        };
+        let five = Time::from_seconds(5).flicks();
+        let mut project = timeline();
+        project.magnetic = false;
+        let main = project.main_index().unwrap();
+        let place = |project: &mut Project, track: usize, clip: Clip| {
+            let id = clip.id;
+            project.tracks[track].clips.push(clip);
+            id
+        };
+        let mut ok = project.clone();
+        let clip = freeze(&ok, 0, five - 1);
+        place(&mut ok, main, clip);
+        assert_eq!(ok.validate(), Ok(()));
+
+        let cases = [(0, five, "at the media's end"), (0, -1, "before the media")];
+        for (media, time, why) in cases {
+            let mut broken = project.clone();
+            let clip = freeze(&broken, media, time);
+            let id = place(&mut broken, main, clip);
+            assert_eq!(
+                broken.validate(),
+                Err(ValidationError::SourceRange { clip: id }),
+                "{why}"
+            );
+        }
+        for media in [1, 2] {
+            let mut broken = project.clone();
+            let clip = freeze(&broken, media, 0);
+            let id = place(&mut broken, main, clip);
+            let media = broken.media[media].id;
+            assert_eq!(
+                broken.validate(),
+                Err(ValidationError::ClipMediaMismatch { clip: id, media }),
+                "a freeze needs a video"
+            );
+        }
+        let mut broken = project.clone();
+        let mut clip = freeze(&broken, 0, 0);
+        clip.audio = Some(crate::props::AudioProps::default());
+        let id = place(&mut broken, main, clip);
+        assert_eq!(
+            broken.validate(),
+            Err(ValidationError::ClipMediaMismatch {
+                clip: id,
+                media: broken.media[0].id
+            }),
+            "a freeze has no sound"
+        );
+        let mut broken = project.clone();
+        let mut clip = freeze(&broken, 0, 0);
+        clip.visual = None;
+        clip.audio = Some(crate::props::AudioProps::default());
+        let audio = broken.tracks.len() - 1;
+        let id = place(&mut broken, audio, clip);
+        assert_eq!(
+            broken.validate(),
+            Err(ValidationError::ClipTrackMismatch {
+                clip: id,
+                kind: TrackKind::Audio
+            }),
+            "freeze frames live on video tracks"
+        );
     }
 
     #[test]

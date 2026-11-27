@@ -4,9 +4,12 @@ mod arrange;
 mod clipboard;
 mod clips;
 mod cut;
+mod freeze;
 mod linking;
+mod properties;
 #[cfg(test)]
 mod sequence_tests;
+mod speed;
 #[cfg(test)]
 mod test_support;
 mod tracks;
@@ -17,7 +20,10 @@ pub use clips::{
     AddClips, NewClipSource, Placement, RemoveClipsOfMedia, ReplaceClipMedia, TrackTarget,
 };
 pub use cut::{DeleteClips, DeleteGap, SetMagnetic, Side, SplitClips, TrimToPlayhead};
+pub use freeze::InsertFreezeFrame;
 pub use linking::{DetachAudio, LinkClips, UnlinkClips};
+pub use properties::{PropertyKey, PropertyValue, SetClipProperty};
+pub use speed::{SetClipReverse, SetClipSpeed};
 pub use tracks::{MoveTrack, SetTrackFlag, TrackFlag};
 
 use serde::{Deserialize, Serialize};
@@ -85,6 +91,14 @@ pub enum HistoryLabel {
     SetTrackLocked,
     /// Reordering a track within its section.
     MoveTrack,
+    /// Setting one clip property in the inspector (one drag, typed value or toggle).
+    SetClipProperty,
+    /// Changing the speed of clips (one drag, typed value or preset).
+    SetClipSpeed,
+    /// Turning reverse playback of clips on or off.
+    SetClipReverse,
+    /// Inserting a freeze frame of the frame under the playhead.
+    InsertFreezeFrame,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -155,6 +169,14 @@ pub enum CommandError {
     /// The replacement media is shorter than the clip.
     #[error("the media is shorter than the clip")]
     MediaTooShort,
+    /// None of the listed clips has the property, or the edit does not apply to them (e.g. a
+    /// speed for an image, a freeze frame of a colour card).
+    #[error("the edit does not apply to these clips")]
+    PropertyNotApplicable,
+    /// A value outside its range (e.g. a volume above 4, a negative fade, a speed that would make
+    /// a clip shorter than one frame).
+    #[error("the value is out of range")]
+    InvalidValue,
     /// The edit would leave an invalid project (e.g. past the largest supported time). Commands
     /// that build clips check their result, so this never leaves the project broken.
     #[error("the edit would make the project invalid: {0}")]
@@ -925,10 +947,7 @@ mod tests {
             project.media[2].id,
         );
         let clip = |media| Clip {
-            source: ClipSource::Media {
-                media,
-                source_in: Time::ZERO,
-            },
+            source: ClipSource::media_at(media, Time::ZERO),
             ..Clip::color("C", Time::ZERO, Time(10), Rgba8::BLACK)
         };
         project.tracks[0].clips = vec![

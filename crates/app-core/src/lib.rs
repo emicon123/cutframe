@@ -22,7 +22,9 @@ pub use model::{
 pub use props::{
     Animated, AudioProps, CropInsets, Easing, FitMode, Flip, Keyframe, Vec2, VisualProps,
 };
-pub use time::{FLICKS_PER_SECOND, FrameRate, MAX_IPC_FLICKS, Rational, Time};
+pub use time::{
+    FLICKS_PER_SECOND, FrameRate, MAX_IPC_FLICKS, MAX_SOUNDING_SPEED, Rational, Speed, Time,
+};
 pub use validate::ValidationError;
 
 /// Extension of project files, without the leading dot (ADR-0002 amendment §1).

@@ -14,7 +14,7 @@ import {
 const media = (id: string, extra: Partial<LinkClip> = {}): LinkClip => ({
   id,
   duration: 100,
-  source: { kind: "media", media: "m1", sourceIn: 0 },
+  source: { kind: "media", media: "m1", sourceIn: 0, speed: 100, reverse: false },
   audio: {},
   ...extra,
 });

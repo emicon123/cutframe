@@ -173,3 +173,74 @@ fn replace_rejects_locked_tracks_and_unknown_ids() {
         Err(CommandError::TrackLocked(p.tracks[MAIN].id))
     );
 }
+
+#[test]
+fn replace_keeps_speed_and_direction_and_checks_the_used_range() {
+    let mut p = with_more_media();
+    // 2 s at 2x uses 4 s of the 5 s video.
+    let v = p.push_clip(MAIN, with_speed(video(&p, 0.0, 2.0, 1.0), 200, true));
+    let silent = p.media[3].id;
+    let after = assert_reversible(&mut ReplaceClipMedia::new(v, silent), &p);
+    let c = clip(&after, v);
+    assert_eq!(
+        (c.speed(), c.reversed(), c.source_in()),
+        (speed(200), true, t(1.0))
+    );
+    // The 2 s video cannot hold 4 s of source.
+    let short = p.media[4].id;
+    assert_eq!(
+        try_apply(&p, ReplaceClipMedia::new(v, short)),
+        Err(CommandError::MediaTooShort)
+    );
+    // An image plays at 1x.
+    let photo = p.media[2].id;
+    let after = assert_reversible(&mut ReplaceClipMedia::new(v, photo), &p);
+    let c = clip(&after, v);
+    assert_eq!(
+        (c.speed(), c.reversed(), c.duration),
+        (speed(100), false, t(2.0))
+    );
+}
+
+#[test]
+fn replace_of_a_freeze_frame_needs_a_video() {
+    let mut p = with_more_media();
+    let freeze = Clip {
+        source: ClipSource::Freeze {
+            media: p.media[0].id,
+            source_time: t(3.0),
+        },
+        audio: None,
+        ..color(0.0, 2.0)
+    };
+    let f = p.push_clip(MAIN, freeze);
+    let short = p.media[4].id;
+    let after = assert_reversible(&mut ReplaceClipMedia::new(f, short), &p);
+    assert_eq!(
+        clip(&after, f).source,
+        ClipSource::Freeze {
+            media: short,
+            source_time: Time::ZERO
+        },
+        "3 s is past the end of a 2 s video"
+    );
+    assert_eq!(clip(&after, f).audio, None, "a freeze stays silent");
+    let silent = p.media[3].id;
+    let after = assert_reversible(&mut ReplaceClipMedia::new(f, silent), &p);
+    assert_eq!(
+        clip(&after, f).source,
+        ClipSource::Freeze {
+            media: silent,
+            source_time: t(3.0)
+        }
+    );
+    let photo = p.media[2].id;
+    assert_eq!(
+        try_apply(&p, ReplaceClipMedia::new(f, photo)),
+        Err(CommandError::MediaKindMismatch {
+            id: photo,
+            expected: MediaKind::Video,
+            got: MediaKind::Image
+        })
+    );
+}

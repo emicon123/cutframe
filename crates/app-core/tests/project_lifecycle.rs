@@ -152,10 +152,7 @@ fn track(kind: TrackKind, contiguous: bool, song: MediaId) -> impl Strategy<Valu
                             let mut audio = AudioProps::default();
                             audio.volume.value = volume;
                             Clip {
-                                source: ClipSource::Media {
-                                    media: song,
-                                    source_in: start,
-                                },
+                                source: ClipSource::media_at(song, start),
                                 visual: None,
                                 audio: Some(audio),
                                 ..Clip::color(name, start, duration, Rgba8::BLACK)

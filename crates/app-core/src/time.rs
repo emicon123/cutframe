@@ -198,6 +198,93 @@ impl Neg for Time {
     }
 }
 
+/// Playback speed of a clip in percent of normal: 100 = 1x (design `clip-speed-audio.md` §3.1).
+///
+/// Always within [`Speed::MIN`]`..=`[`Speed::MAX`]: deserialization rejects anything else, so no
+/// code ever divides by an invalid speed. All mapping is integer math on flicks (`i128`), so
+/// preview, export and edits agree to the flick. TypeScript sees it as a `number` (percent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+#[serde(try_from = "u16", into = "u16")]
+pub struct Speed(u16);
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[error("speed {0}% is outside 10..=10000%")]
+pub struct SpeedError(pub u16);
+
+impl Speed {
+    /// 1x.
+    pub const NORMAL: Speed = Speed(100);
+    /// Lowest speed in percent (0.1x).
+    pub const MIN: u16 = 10;
+    /// Highest speed in percent (100x).
+    pub const MAX: u16 = 10_000;
+
+    /// `percent` if it is within `MIN..=MAX`.
+    pub const fn new(percent: u16) -> Option<Speed> {
+        if percent >= Self::MIN && percent <= Self::MAX {
+            Some(Speed(percent))
+        } else {
+            None
+        }
+    }
+
+    pub const fn percent(self) -> u16 {
+        self.0
+    }
+
+    /// Source length played in timeline length `d`: `floor(d x p / 100)` (negative `d` floors
+    /// too). Saturates at the `i64` range.
+    pub fn source_floor(self, d: Time) -> Time {
+        Time(saturate(
+            (i128::from(d.0) * i128::from(self.0)).div_euclid(100),
+        ))
+    }
+
+    /// `ceil(d x p / 100)`. Saturates at the `i64` range.
+    pub fn source_ceil(self, d: Time) -> Time {
+        Time(saturate(
+            -(-(i128::from(d.0) * i128::from(self.0))).div_euclid(100),
+        ))
+    }
+
+    /// Longest timeline length whose source length fits in `s`: `floor(s x 100 / p)`.
+    pub fn timeline_floor(self, s: Time) -> Time {
+        Time(saturate(
+            (i128::from(s.0) * 100).div_euclid(i128::from(self.0)),
+        ))
+    }
+
+    /// `ceil(s x 100 / p)`: the inverse of [`Speed::source_floor`] for `p >= 100`.
+    pub fn timeline_ceil(self, s: Time) -> Time {
+        Time(saturate(
+            -(-(i128::from(s.0) * 100)).div_euclid(i128::from(self.0)),
+        ))
+    }
+}
+
+impl Default for Speed {
+    fn default() -> Self {
+        Speed::NORMAL
+    }
+}
+
+impl TryFrom<u16> for Speed {
+    type Error = SpeedError;
+    fn try_from(percent: u16) -> Result<Self, Self::Error> {
+        Speed::new(percent).ok_or(SpeedError(percent))
+    }
+}
+
+impl From<Speed> for u16 {
+    fn from(speed: Speed) -> Self {
+        speed.0
+    }
+}
+
+/// Voices faster than this are silent, in preview and export (`clip-speed-audio.md` §5.3).
+pub const MAX_SOUNDING_SPEED: Speed = Speed(400);
+
 /// A frame rate as a rational number of frames per second, e.g. `30000/1001` for 29.97 fps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
@@ -279,6 +366,41 @@ impl From<FrameRate> for FrameRateRepr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn speed_bounds_and_serde() {
+        assert_eq!(Speed::new(9), None);
+        assert_eq!(Speed::new(10_001), None);
+        assert_eq!(Speed::new(10).map(Speed::percent), Some(10));
+        assert_eq!(Speed::new(10_000).map(Speed::percent), Some(10_000));
+        assert_eq!(serde_json::to_value(Speed::NORMAL).unwrap(), 100);
+        assert_eq!(serde_json::from_str::<Speed>("100").unwrap(), Speed::NORMAL);
+        for bad in ["9", "10001", "0", "-1", "1.5"] {
+            assert!(serde_json::from_str::<Speed>(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn speed_mapping_rounds_as_documented() {
+        let half = Speed::new(50).unwrap();
+        let double = Speed::new(200).unwrap();
+        let odd = Speed::new(150).unwrap();
+        assert_eq!(half.source_floor(Time(3)), Time(1));
+        assert_eq!(half.source_ceil(Time(3)), Time(2));
+        assert_eq!(half.source_floor(Time(-3)), Time(-2));
+        assert_eq!(half.source_ceil(Time(-3)), Time(-1));
+        assert_eq!(double.timeline_floor(Time(7)), Time(3));
+        assert_eq!(double.timeline_ceil(Time(7)), Time(4));
+        assert_eq!(odd.source_floor(Time(3)), Time(4));
+        assert_eq!(odd.timeline_ceil(Time(4)), Time(3));
+        // No overflow at the extremes: 2^53 flicks at 100x.
+        let max = Speed::new(Speed::MAX).unwrap();
+        assert_eq!(
+            max.source_ceil(Time(MAX_IPC_FLICKS)),
+            Time(MAX_IPC_FLICKS * 100)
+        );
+        assert_eq!(Speed::NORMAL.source_floor(Time(12_345)), Time(12_345));
+    }
 
     #[test]
     fn common_frame_rates_are_flick_aligned() {

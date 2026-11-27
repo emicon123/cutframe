@@ -559,3 +559,31 @@ mod props {
         }
     }
 }
+
+#[test]
+fn images_take_the_given_duration_and_media_clips_start_at_normal_speed() {
+    let p = project();
+    let mut command = AddClips::new(vec![media(&p, 2), media(&p, 0)], Placement::Append)
+        .with_image_duration(Time::from_seconds(2));
+    let ids = command.clip_ids().to_vec();
+    let after = assert_reversible(&mut command, &p);
+    let (_, image) = after.clip(ids[0]).unwrap();
+    assert_eq!(image.duration, Time::from_seconds(2));
+    let (_, video) = after.clip(ids[1]).unwrap();
+    assert_eq!(video.start, Time::from_seconds(2));
+    assert_eq!(
+        video.source,
+        ClipSource::media_at(p.media[0].id, Time::ZERO)
+    );
+    assert!(video.audio.as_ref().unwrap().preserve_pitch);
+    let mut zero =
+        AddClips::new(vec![media(&p, 2)], Placement::Append).with_image_duration(Time::ZERO);
+    let mut edited = p.clone();
+    assert_eq!(zero.apply(&mut edited), Err(CommandError::InvalidValue));
+    // Without a duration, images get the default.
+    let (after, ids) = add(&p, vec![media(&p, 2)], Placement::Append);
+    assert_eq!(
+        after.clip(ids[0]).unwrap().1.duration,
+        DEFAULT_IMAGE_DURATION
+    );
+}

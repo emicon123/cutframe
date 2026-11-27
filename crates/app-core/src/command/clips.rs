@@ -21,8 +21,8 @@ use crate::timeline::{
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum NewClipSource {
-    /// A media item: the whole source range of a video or audio file, or an image for
-    /// [`DEFAULT_IMAGE_DURATION`].
+    /// A media item: the whole source range of a video or audio file at 1x, or an image for
+    /// the command's image duration ([`AddClips::with_image_duration`]).
     Media { media: MediaId },
     /// A colour card for [`DEFAULT_COLOR_DURATION`].
     Color { color: Rgba8 },
@@ -89,19 +89,30 @@ pub struct AddClips {
     sources: Vec<NewClipSource>,
     placement: Placement,
     ids: Vec<ClipId>,
+    image_duration: Time,
     track_ids: IdPool<TrackId>,
     previous: Option<Vec<Track>>,
 }
 
 impl AddClips {
+    /// Images get [`DEFAULT_IMAGE_DURATION`] unless [`AddClips::with_image_duration`] says
+    /// otherwise.
     pub fn new(sources: Vec<NewClipSource>, placement: Placement) -> Self {
         Self {
             ids: sources.iter().map(|_| ClipId::new()).collect(),
             sources,
             placement,
+            image_duration: DEFAULT_IMAGE_DURATION,
             track_ids: IdPool::default(),
             previous: None,
         }
+    }
+
+    /// The length of new image clips (the user's preference, snapped to the frame grid by the
+    /// caller). Fails the apply with [`CommandError::InvalidValue`] unless it is positive.
+    pub fn with_image_duration(mut self, duration: Time) -> Self {
+        self.image_duration = duration;
+        self
     }
 
     /// The ids of the new clips, one per source, in source order.
@@ -115,7 +126,7 @@ impl AddClips {
             .iter()
             .zip(&self.ids)
             .map(|(source, &id)| {
-                let (mut clip, lane) = new_clip(project, source)?;
+                let (mut clip, lane) = new_clip(project, source, self.image_duration)?;
                 clip.id = id;
                 Ok((clip, lane))
             })
@@ -124,7 +135,11 @@ impl AddClips {
 }
 
 /// A clip for `source` at start 0, with the props its kind of track needs.
-fn new_clip(project: &Project, source: &NewClipSource) -> Result<(Clip, Lane), CommandError> {
+fn new_clip(
+    project: &Project,
+    source: &NewClipSource,
+    image_duration: Time,
+) -> Result<(Clip, Lane), CommandError> {
     let id = match *source {
         NewClipSource::Color { color } => {
             let clip = Clip::color(color.to_string(), Time::ZERO, DEFAULT_COLOR_DURATION, color);
@@ -142,7 +157,7 @@ fn new_clip(project: &Project, source: &NewClipSource) -> Result<(Clip, Lane), C
         .to_owned();
     let has_audio = has_sound(asset);
     let (duration, lane) = match asset.kind {
-        MediaKind::Image => (DEFAULT_IMAGE_DURATION, Lane::Video),
+        MediaKind::Image => (image_duration, Lane::Video),
         MediaKind::Video => (asset.info.duration.unwrap_or_default(), Lane::Video),
         MediaKind::Audio => (asset.info.duration.unwrap_or_default(), Lane::Audio),
     };
@@ -151,10 +166,7 @@ fn new_clip(project: &Project, source: &NewClipSource) -> Result<(Clip, Lane), C
         name,
         start: Time::ZERO,
         duration,
-        source: ClipSource::Media {
-            media: id,
-            source_in: Time::ZERO,
-        },
+        source: ClipSource::media_at(id, Time::ZERO),
         link: None,
         visual: (lane == Lane::Video).then(VisualProps::default),
         audio: has_audio.then(AudioProps::default),
@@ -170,6 +182,9 @@ impl Command for AddClips {
     fn apply(&mut self, project: &mut Project) -> Result<(), CommandError> {
         if self.sources.is_empty() {
             return Err(CommandError::NothingToEdit);
+        }
+        if self.image_duration <= Time::ZERO {
+            return Err(CommandError::InvalidValue);
         }
         self.track_ids.rewind();
         let clips = self.clips(project)?;
@@ -400,8 +415,10 @@ impl Command for RemoveClipsOfMedia {
 /// Points a clip at other media (`replaceClipMedia`, design §4.14), keeping its start, duration,
 /// link and props; its name becomes the new media's default clip name.
 ///
-/// `source_in` stays when the new media is long enough from there, else it becomes 0; images
-/// always use 0. The clip's `audio` becomes `None` when the new media has no sound, stays `None`
+/// Speed and reverse stay. `source_in` stays when the new media is long enough for the used
+/// source range from there, else it becomes 0; images always use 0 at 1x. A freeze frame keeps
+/// its `source_time` when it lies inside the new video, else 0, and needs video media
+/// ([`CommandError::MediaKindMismatch`]). The clip's `audio` becomes `None` when the new media has no sound, stays `None`
 /// when the sound was detached (a video-track clip without `audio` whose old media had sound),
 /// and otherwise keeps its props (or gets defaults). A colour clip on a video track becomes a
 /// media clip. Nothing moves, so nothing follows, and linked members are not changed.
@@ -409,7 +426,7 @@ impl Command for RemoveClipsOfMedia {
 /// Fails, changing nothing, with [`CommandError::MediaNotFound`], [`CommandError::TrackLocked`],
 /// [`CommandError::TrackKindMismatch`] (audio-only media on a video track, media without sound on
 /// an audio track, any media on a text track) and [`CommandError::MediaTooShort`] (the media is
-/// shorter than the clip).
+/// shorter than the clip's used source range).
 #[derive(Debug)]
 pub struct ReplaceClipMedia {
     clip: ClipId,
@@ -457,12 +474,43 @@ impl Command for ReplaceClipMedia {
         if !fits {
             return Err(CommandError::TrackKindMismatch);
         }
-        let source_in = match asset.info.duration {
-            None => Time::ZERO,
-            Some(length) if old.duration > length => return Err(CommandError::MediaTooShort),
-            Some(length) if old.source_in() + old.duration <= length => old.source_in(),
-            Some(_) => Time::ZERO,
+        let source = match (&old.source, asset.kind) {
+            (&ClipSource::Freeze { source_time, .. }, kind) => {
+                if kind != MediaKind::Video || asset.info.video.is_none() {
+                    return Err(CommandError::MediaKindMismatch {
+                        id: self.media,
+                        expected: MediaKind::Video,
+                        got: kind,
+                    });
+                }
+                let inside = asset.info.duration.is_some_and(|len| source_time < len);
+                ClipSource::Freeze {
+                    media: self.media,
+                    source_time: if inside { source_time } else { Time::ZERO },
+                }
+            }
+            (_, MediaKind::Image) => ClipSource::media_at(self.media, Time::ZERO),
+            _ => {
+                // Speed and reverse stay, so the clip keeps its length and direction.
+                let (speed, reverse) = (old.speed(), old.reversed());
+                let span = speed.source_ceil(old.duration);
+                let source_in = match asset.info.duration {
+                    None => Time::ZERO,
+                    Some(length) if span > length => return Err(CommandError::MediaTooShort),
+                    Some(length) if old.source_end().is_some_and(|end| end <= length) => {
+                        old.source_in()
+                    }
+                    Some(_) => Time::ZERO,
+                };
+                ClipSource::Media {
+                    media: self.media,
+                    source_in,
+                    speed,
+                    reverse,
+                }
+            }
         };
+        let freeze = matches!(source, ClipSource::Freeze { .. });
         let detached = track.kind == TrackKind::Video
             && old.audio.is_none()
             && old
@@ -470,7 +518,7 @@ impl Command for ReplaceClipMedia {
                 .media()
                 .and_then(|m| project.media_asset(m))
                 .is_some_and(has_sound);
-        let audio = match (sound, detached) {
+        let audio = match (sound, detached || freeze) {
             (true, false) => Some(old.audio.clone().unwrap_or_default()),
             _ => None,
         };
@@ -481,10 +529,7 @@ impl Command for ReplaceClipMedia {
             .to_owned();
         let clip = Clip {
             name,
-            source: ClipSource::Media {
-                media: self.media,
-                source_in,
-            },
+            source,
             audio,
             ..old.clone()
         };

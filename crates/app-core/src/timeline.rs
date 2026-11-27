@@ -136,6 +136,7 @@ pub fn retime_keyframes(clip: &mut Clip, content_shift: Time) {
 /// Whether the main track's clips differ in position or content range between `before` and
 /// `after`: the test for "followers must follow" (§3.7).
 pub fn main_changed(before: &Project, after: &Project) -> bool {
+    // A reverse toggle changes no key: it moves nothing, so nothing follows it.
     let key = |c: &Clip| (c.id, c.start, c.duration, c.source_in());
     match (before.main(), after.main()) {
         (Some(a), Some(b)) => !a.clips.iter().map(key).eq(b.clips.iter().map(key)),
@@ -221,9 +222,8 @@ impl<T: Copy + Default> IdPool<T> {
 /// Where a non-main clip is attached to the main track, derived from positions (§3.7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Anchor {
-    /// The main clip `clip` contains the time. `content` is the source time under it for media
-    /// clips, or the offset from the clip's start for colour clips (images have `source_in` 0, so
-    /// both are `source_in + offset`).
+    /// The main clip `clip` contains the time. `content` is [`Clip::content_at`] the time: the
+    /// mapped source time for media clips, the offset from the clip's start for others.
     Inside { clip: ClipId, content: Time },
     /// The time lies in a gap before main clip `next` (only with magnetic off).
     Gap { next: ClipId },
@@ -241,7 +241,7 @@ pub fn anchor_of(main: &[Clip], t: Time) -> Option<Anchor> {
     Some(if next.start <= t {
         Anchor::Inside {
             clip: next.id,
-            content: next.source_in() + (t - next.start),
+            content: next.content_at(t),
         }
     } else {
         Anchor::Gap { next: next.id }
@@ -513,10 +513,15 @@ impl<'a> MainMapping<'a> {
             Some(Anchor::Gap { .. }) => self.shift_point(start),
             Some(Anchor::Inside { clip, content }) => match self.surviving(clip) {
                 Some(anchor) => {
-                    let offset = (content - anchor.source_in())
-                        .flicks()
-                        .clamp(0, anchor.duration.flicks());
-                    anchor.start + Time(offset)
+                    let old = self.old.iter().find(|c| c.id == clip).expect("old clip");
+                    // An unchanged source keeps the exact offset (slow speeds map several
+                    // timeline flicks to one source flick, so the content alone is lossy).
+                    let offset = if old.source == anchor.source {
+                        (start - old.start).clamp(Time::ZERO, anchor.duration)
+                    } else {
+                        anchor.offset_of_content(content)
+                    };
+                    anchor.start + offset
                 }
                 None => {
                     let removed = self.old.iter().find(|c| c.id == clip).expect("old clip");

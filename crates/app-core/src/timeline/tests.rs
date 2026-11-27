@@ -40,10 +40,7 @@ fn project(durations: &[i64]) -> Project {
 
 fn media_clip(name: &str, media: MediaId, start: i64, duration: i64, visual: bool) -> Clip {
     let mut clip = Clip::color(name, Time(start), Time(duration), Rgba8::BLACK);
-    clip.source = ClipSource::Media {
-        media,
-        source_in: Time::ZERO,
-    };
+    clip.source = ClipSource::media_at(media, Time::ZERO);
     if !visual {
         clip.visual = None;
         clip.audio = Some(AudioProps::default());
@@ -347,10 +344,7 @@ fn a_split_anchor_resolves_to_the_half_under_the_clip() {
     right.name = "M0b".into();
     right.start = Time(100);
     right.duration = Time(100);
-    right.source = ClipSource::Media {
-        media: before.media[0].id,
-        source_in: Time(100),
-    };
+    right.source = ClipSource::media_at(before.media[0].id, Time(100));
     main_clip(&mut before, "M0").duration = Time(100);
     main_mut(&mut before).clips.push(right);
     assert_eq!(before.validate(), Ok(()));

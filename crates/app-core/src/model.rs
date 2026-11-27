@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::media::{MediaAsset, MediaId};
 use crate::props::{AudioProps, VisualProps};
-use crate::time::{FrameRate, Time};
+use crate::time::{FrameRate, Speed, Time};
 
 macro_rules! id_type {
     ($(#[$meta:meta])* $name:ident) => {
@@ -48,7 +48,8 @@ id_type!(
     LinkId
 );
 
-/// Default length of a new image clip (F1.83 later takes it from preferences).
+/// Default length of a new image clip and of a freeze frame; the shell passes the user's
+/// preference instead (F1.83, [`crate::command::AddClips::with_image_duration`]).
 pub const DEFAULT_IMAGE_DURATION: Time = Time::from_seconds(5);
 /// Default length of a new colour clip.
 pub const DEFAULT_COLOR_DURATION: Time = Time::from_seconds(5);
@@ -155,10 +156,22 @@ pub struct Clip {
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ClipSource {
-    /// A video, audio or image file. `source_in` is the media time at the clip's start, in
-    /// flicks (seeked by timestamp, never a frame index); always 0 for images.
+    /// A video, audio or image file. `source_in` is the lowest media time of the used source
+    /// range, in flicks (seeked by timestamp, never a frame index); always 0 for images. The
+    /// range is `source_in..`[`Clip::source_end`]; see [`Clip::source_time`] for the mapping.
     #[serde(rename_all = "camelCase")]
-    Media { media: MediaId, source_in: Time },
+    Media {
+        media: MediaId,
+        source_in: Time,
+        /// Playback speed; always [`Speed::NORMAL`] on image media.
+        speed: Speed,
+        /// Plays the used source range backwards. Always false on image media.
+        reverse: bool,
+    },
+    /// A still of video `media` at media time `source_time`: the frame a sample-and-hold lookup
+    /// at that time returns (freeze frame, F1.82). Video tracks only; no audio.
+    #[serde(rename_all = "camelCase")]
+    Freeze { media: MediaId, source_time: Time },
     /// A solid colour card.
     Color { color: Rgba8 },
     /// A title. Task 0510 adds the style fields and the rendering.
@@ -166,10 +179,21 @@ pub enum ClipSource {
 }
 
 impl ClipSource {
+    /// The media of a media or freeze source.
     pub fn media(&self) -> Option<MediaId> {
         match self {
-            ClipSource::Media { media, .. } => Some(*media),
+            ClipSource::Media { media, .. } | ClipSource::Freeze { media, .. } => Some(*media),
             _ => None,
+        }
+    }
+
+    /// A media source at normal speed, forward, from `source_in`.
+    pub fn media_at(media: MediaId, source_in: Time) -> Self {
+        ClipSource::Media {
+            media,
+            source_in,
+            speed: Speed::NORMAL,
+            reverse: false,
         }
     }
 }
@@ -208,7 +232,7 @@ impl Clip {
         self.start + self.duration
     }
 
-    /// `source_in` of a media clip; 0 for colour and text clips.
+    /// `source_in` of a media clip; 0 for freeze, colour and text clips.
     pub fn source_in(&self) -> Time {
         match self.source {
             ClipSource::Media { source_in, .. } => source_in,
@@ -216,24 +240,184 @@ impl Clip {
         }
     }
 
-    /// The media time shown or played at timeline time `t`: `source_in + (t - start)` for `t` in
-    /// `start..end()`. `None` outside the clip and for colour and text clips. The only place the
-    /// timeline-to-source mapping lives; task 0370 adds speed here.
-    pub fn source_time(&self, t: Time) -> Option<Time> {
+    /// Speed of a media clip; [`Speed::NORMAL`] for every other clip.
+    pub fn speed(&self) -> Speed {
         match self.source {
-            ClipSource::Media { source_in, .. } if self.start <= t && t < self.end() => {
-                Some(source_in + (t - self.start))
-            }
+            ClipSource::Media { speed, .. } => speed,
+            _ => Speed::NORMAL,
+        }
+    }
+
+    /// Whether a media clip plays backwards.
+    pub fn reversed(&self) -> bool {
+        matches!(self.source, ClipSource::Media { reverse: true, .. })
+    }
+
+    // ---- Source mapping (design `clip-speed-audio.md` §3.2) ----------------------------------
+    //
+    // The only place the timeline-to-source mapping lives. With p = speed percent, a = source_in,
+    // d = duration and o = t - start:
+    //   span = ceil(d p / 100), source_end = a + span, k(o) = floor(o p / 100)
+    //   forward: source_time = a + k(o)      reverse: source_time = source_end - 1 - k(o)
+    // Both stay inside a..source_end for every t in start..end(). At 1x forward this is the
+    // plain `source_in + (t - start)`.
+
+    /// End of the used source range (exclusive) of a media clip: `source_in + ceil(duration x
+    /// speed)`. `None` for freeze, colour and text clips.
+    pub fn source_end(&self) -> Option<Time> {
+        match self.source {
+            ClipSource::Media {
+                source_in, speed, ..
+            } => Some(Time(
+                source_in
+                    .flicks()
+                    .saturating_add(speed.source_ceil(self.duration).flicks()),
+            )),
             _ => None,
         }
     }
 
-    /// End of the used source range (exclusive) of a media clip: `source_in + duration`.
-    pub fn source_end(&self) -> Option<Time> {
+    /// The media time shown or played at timeline time `t` in `start..end()`: the mapping above
+    /// for media clips, `source_time` itself for freeze clips. `None` outside the clip and for
+    /// colour and text clips.
+    pub fn source_time(&self, t: Time) -> Option<Time> {
+        if t < self.start || t >= self.end() {
+            return None;
+        }
         match self.source {
-            ClipSource::Media { source_in, .. } => Some(source_in + self.duration),
+            ClipSource::Media {
+                source_in,
+                speed,
+                reverse,
+                ..
+            } => {
+                let k = speed.source_floor(t - self.start);
+                Some(if reverse {
+                    self.source_end()? - Time(1) - k
+                } else {
+                    source_in + k
+                })
+            }
+            ClipSource::Freeze { source_time, .. } => Some(source_time),
             _ => None,
         }
+    }
+
+    /// Media time a video layer samples for project frame `t_n` (render-graph §4.1): the source
+    /// time at the frame centre `t_n + frame / 2` (kept inside the clip, so inside the used
+    /// range); `source_time` itself for a freeze clip. `None` when the clip does not contain
+    /// `t_n` and for colour and text clips. Shared by the render plan and
+    /// [`crate::command::InsertFreezeFrame`], so a freeze shows exactly the frame the preview
+    /// showed.
+    pub fn frame_sample_time(&self, t_n: Time, frame: Time) -> Option<Time> {
+        if t_n < self.start || t_n >= self.end() {
+            return None;
+        }
+        let centre = Time(t_n.flicks().saturating_add(frame.flicks() / 2));
+        self.source_time(centre.min(self.end() - Time(1)))
+    }
+
+    /// `source_in` of the part of this media clip that starts `offset` after its start and
+    /// lasts `duration` (a negative offset or a longer duration extends it), keeping every
+    /// content moment where it is on the timeline (within one flick):
+    /// - forward: `source_in + floor(offset x p / 100)`
+    /// - reverse: `source_end - floor(offset x p / 100) - ceil(duration x p / 100)`
+    ///
+    /// Split, trim and trim-to-playhead use it. Only meaningful for video and audio media
+    /// (images keep `source_in == 0`); 0 for every other source.
+    pub fn sub_source_in(&self, offset: Time, duration: Time) -> Time {
+        match self.source {
+            ClipSource::Media {
+                source_in,
+                speed,
+                reverse,
+                ..
+            } => {
+                if reverse {
+                    let end = self.source_end().unwrap_or(source_in);
+                    end - speed.source_floor(offset) - speed.source_ceil(duration)
+                } else {
+                    source_in + speed.source_floor(offset)
+                }
+            }
+            _ => Time::ZERO,
+        }
+    }
+
+    /// How far the start and the end edge of a video or audio media clip can be extended, in
+    /// timeline flicks, before the used source range leaves `0..media_len`. Each is at least 0.
+    /// Forward, extending the start lowers `source_in` and extending the end raises
+    /// `source_end`; reversed it is the other way round. Unlimited for every other source.
+    pub fn extend_room(&self, media_len: Time) -> (Time, Time) {
+        let ClipSource::Media {
+            source_in,
+            speed,
+            reverse,
+            ..
+        } = self.source
+        else {
+            return (Time(i64::MAX), Time(i64::MAX));
+        };
+        let end = self.source_end().unwrap_or(source_in);
+        let room = |t: Time| t.max(Time::ZERO);
+        // Exact limits: ceil(r p / 100) <= free source  <=>  r <= floor(free x 100 / p).
+        let below = room(speed.timeline_floor(source_in));
+        let above = room(speed.timeline_floor(media_len - end));
+        // Growing at the edge that keeps the other end of the range fixed: the whole range up to
+        // the limit, minus what the clip already uses.
+        let to_end = room(speed.timeline_floor(media_len - source_in) - self.duration);
+        let to_zero = room(speed.timeline_floor(end) - self.duration);
+        if reverse {
+            (above, to_zero)
+        } else {
+            (below, to_end)
+        }
+    }
+
+    /// The content under timeline time `t`, as anchors keep it (timeline-editing §3.7): the
+    /// mapped source time for media clips (images run at 1x from 0, so this is the offset), and
+    /// the offset from the start for freeze, colour and text clips.
+    pub fn content_at(&self, t: Time) -> Time {
+        let offset = t - self.start;
+        match self.source {
+            ClipSource::Media {
+                source_in,
+                speed,
+                reverse,
+                ..
+            } => {
+                let k = speed.source_floor(offset);
+                if reverse {
+                    self.source_end().unwrap_or(source_in) - Time(1) - k
+                } else {
+                    source_in + k
+                }
+            }
+            _ => offset,
+        }
+    }
+
+    /// The inverse of [`Clip::content_at`]: the offset from the start where `content` is shown,
+    /// clamped to `0..=duration`. Exact for speeds of 1x and above; slower speeds show one source
+    /// flick over several timeline flicks, so this returns the first of them.
+    pub fn offset_of_content(&self, content: Time) -> Time {
+        let offset = match self.source {
+            ClipSource::Media {
+                source_in,
+                speed,
+                reverse,
+                ..
+            } => {
+                let from = if reverse {
+                    self.source_end().unwrap_or(source_in) - Time(1) - content
+                } else {
+                    content - source_in
+                };
+                speed.timeline_ceil(from)
+            }
+            _ => content,
+        };
+        offset.clamp(Time::ZERO, self.duration)
     }
 }
 
@@ -414,3 +598,6 @@ impl Project {
             .unwrap_or_else(|| prefix.to_owned())
     }
 }
+
+#[cfg(test)]
+mod tests;

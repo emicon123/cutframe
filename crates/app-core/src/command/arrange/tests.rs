@@ -63,10 +63,7 @@ fn video(project: &Project, start: f64, duration: f64, source_in: f64) -> Clip {
         name: "clip".into(),
         start: t(start),
         duration: t(duration),
-        source: ClipSource::Media {
-            media: project.media[0].id,
-            source_in: t(source_in),
-        },
+        source: ClipSource::media_at(project.media[0].id, t(source_in)),
         link: None,
         visual: Some(VisualProps::default()),
         audio: Some(AudioProps::default()),
@@ -83,10 +80,7 @@ fn sound(project: &Project, start: f64, duration: f64, source_in: f64) -> Clip {
 
 fn image(project: &Project, start: f64, duration: f64) -> Clip {
     Clip {
-        source: ClipSource::Media {
-            media: project.media[2].id,
-            source_in: Time::ZERO,
-        },
+        source: ClipSource::media_at(project.media[2].id, Time::ZERO),
         audio: None,
         ..video(project, start, duration, 0.0)
     }
@@ -324,10 +318,7 @@ fn followers_move_with_their_main_clip_and_locked_tracks_stay() {
         Clip {
             visual: None,
             audio: Some(AudioProps::default()),
-            source: ClipSource::Media {
-                media: p.media[1].id,
-                source_in: Time::ZERO,
-            },
+            source: ClipSource::media_at(p.media[1].id, Time::ZERO),
             ..video(&p, 0.0, 3.0, 0.0)
         },
     );
@@ -798,4 +789,45 @@ proptest! {
         while doc.undo() {}
         prop_assert_eq!(doc.project(), &start);
     }
+}
+
+/// `clip` at `percent` speed, reversed or not.
+fn retimed(mut clip: Clip, percent: u16, reversed: bool) -> Clip {
+    if let ClipSource::Media { speed, reverse, .. } = &mut clip.source {
+        *speed = crate::time::Speed::new(percent).unwrap();
+        *reverse = reversed;
+    }
+    clip
+}
+
+#[test]
+fn trims_of_sped_up_and_reversed_clips_clamp_to_the_media_and_keep_the_content() {
+    let mut p = empty();
+    // 1 s at 2x reversed: source 3 s down to 1 s of the 5 s video.
+    let a = p.push_clip(OVERLAY, retimed(video(&p, 1.0, 1.0, 1.0), 200, true));
+    let shown = clip(&p, a).source_time(t(1.5));
+
+    let after = assert_reversible(&mut TrimClip::new(a, Edge::End, t(10.0), true), &p);
+    let c = clip(&after, a);
+    // The end reaches source 0: 1.5 s at 2x.
+    assert_eq!((c.start, c.duration), (t(1.0), t(1.5)));
+    assert_eq!((c.source_in(), c.source_end()), (Time::ZERO, Some(t(3.0))));
+    assert_eq!(c.source_time(t(1.5)), shown);
+
+    let after = assert_reversible(&mut TrimClip::new(a, Edge::Start, Time::ZERO, true), &p);
+    let c = clip(&after, a);
+    // The start reaches the media's end: 1 s more at 2x is 2 s of source.
+    assert_eq!((c.start, c.duration), (Time::ZERO, t(2.0)));
+    assert_eq!((c.source_in(), c.source_end()), (t(1.0), Some(t(5.0))));
+    assert_eq!(c.source_time(t(1.5)), shown);
+
+    let mut p = empty();
+    let b = p.push_clip(OVERLAY, retimed(video(&p, 1.0, 1.0, 1.0), 200, false));
+    let after = assert_reversible(&mut TrimClip::new(b, Edge::Start, Time::ZERO, true), &p);
+    let c = clip(&after, b);
+    // Forward, the start reaches source 0 after 0.5 s.
+    assert_eq!((c.start, c.source_in()), (t(0.5), Time::ZERO));
+    let after = assert_reversible(&mut TrimClip::new(b, Edge::End, t(10.0), true), &p);
+    assert_eq!(clip(&after, b).source_end(), Some(t(5.0)));
+    assert_eq!(clip(&after, b).end(), t(3.0));
 }

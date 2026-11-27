@@ -111,7 +111,8 @@ pub struct ClipView {
     pub name: String,
     pub start: Time,
     pub duration: Time,
-    /// Media (with `sourceIn`), colour or text.
+    /// Media (with `sourceIn`, `speed` in percent and `reverse`), freeze frame (`sourceTime`),
+    /// colour or text.
     pub source: ClipSource,
     /// Clips with the same link move, trim, split and delete together.
     pub link: Option<LinkId>,
@@ -120,7 +121,12 @@ pub struct ClipView {
     /// Present on clips that make sound.
     pub audio: Option<AudioProps>,
     /// Length of the clip's media, for trim limits; `None` for images, colour and text clips.
+    /// Freeze frames report their video's length.
     pub source_duration: Option<Time>,
+    /// End (exclusive) of the media range a video or audio clip uses: it plays `sourceIn` up to
+    /// here at its speed, or from here down to `sourceIn` when reversed. Draw filmstrips and
+    /// waveforms over this range. `None` for freeze, colour and text clips.
+    pub source_end: Option<Time>,
 }
 
 impl ClipView {
@@ -139,6 +145,7 @@ impl ClipView {
                 .media()
                 .and_then(|id| project.media_asset(id))
                 .and_then(|m| m.info.duration),
+            source_end: clip.source_end(),
         }
     }
 }
@@ -757,8 +764,16 @@ mod tests {
         clip.source = ClipSource::Media {
             media: video,
             source_in: Time(5),
+            speed: app_core::Speed::new(250).unwrap(),
+            reverse: true,
         };
         project.tracks[0].clips.push(clip);
+        let mut freeze = Clip::color("F", Time(10), Time(10), app_core::Rgba8::BLACK);
+        freeze.source = ClipSource::Freeze {
+            media: video,
+            source_time: Time(7),
+        };
+        project.tracks[0].clips.push(freeze);
         assert_eq!(project.validate(), Ok(()));
 
         let view = ProjectState::new(
@@ -769,17 +784,31 @@ mod tests {
             &crate::media_status::MediaStatuses::default(),
         )
         .project;
-        assert_eq!(view.media[0].used_by, 1);
+        assert_eq!(
+            view.media[0].used_by, 2,
+            "the freeze frame uses the video too"
+        );
         assert_eq!(view.media[1].used_by, 0);
         assert_eq!(view.main_track, project.main_track);
         assert!(view.magnetic);
         let clip = &view.tracks[0].clips[0];
         assert_eq!(clip.source_duration, Some(Time::from_seconds(5)));
+        assert_eq!(clip.source_end, Some(Time(30)), "10 flicks at 2.5x from 5");
         let json = serde_json::to_value(clip).unwrap();
         assert_eq!(
             json["source"],
-            serde_json::json!({ "kind": "media", "media": video, "sourceIn": 5 })
+            serde_json::json!({
+                "kind": "media", "media": video, "sourceIn": 5, "speed": 250, "reverse": true
+            })
         );
+        assert_eq!(json["sourceEnd"], 30);
+        let freeze = serde_json::to_value(&view.tracks[0].clips[1]).unwrap();
+        assert_eq!(
+            freeze["source"],
+            serde_json::json!({ "kind": "freeze", "media": video, "sourceTime": 7 })
+        );
+        assert_eq!(freeze["sourceEnd"], serde_json::Value::Null);
+        assert_eq!(freeze["sourceDuration"], Time::from_seconds(5).flicks());
         assert_eq!(json["visual"]["fit"], "fit");
         assert_eq!(
             serde_json::to_value(&view.background).unwrap(),

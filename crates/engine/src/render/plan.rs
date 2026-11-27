@@ -183,6 +183,20 @@ fn layer(
         ClipSource::Color { color } => (LayerContent::Color(*color), None),
         // TODO(0510): text layers.
         ClipSource::Text { .. } => return None,
+        // TODO(0370 step 3): `frame_sample_time` for every video layer and a still pace. Until
+        // then a freeze frame is a video layer held at its source time.
+        ClipSource::Freeze { media, source_time } => match project.media_asset(*media) {
+            None => (LayerContent::Placeholder(PlaceholderKind::Offline), None),
+            Some(asset) => {
+                let info = asset.info.video.as_ref()?;
+                let content = LayerContent::Video {
+                    media: *media,
+                    sample_time: *source_time,
+                    convert: ConvertParams::for_video(info),
+                };
+                (content, Some(info.display_size()))
+            }
+        },
         ClipSource::Media { media, .. } => match project.media_asset(*media) {
             None => (LayerContent::Placeholder(PlaceholderKind::Offline), None),
             Some(asset) => {
@@ -282,7 +296,7 @@ mod tests {
 
     fn media_clip(id: u128, start: Time, duration: Time, media: MediaId, source_in: Time) -> Clip {
         Clip {
-            source: ClipSource::Media { media, source_in },
+            source: ClipSource::media_at(media, source_in),
             ..color_clip(id, start, duration, Rgba8::BLACK)
         }
     }

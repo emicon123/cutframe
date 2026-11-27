@@ -9,7 +9,7 @@ use serde_json::Value;
 use crate::model::Project;
 use crate::validate::ValidationError;
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+pub const CURRENT_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LoadError {
@@ -99,7 +99,39 @@ fn migrate(mut value: Value, version: u32) -> Result<Value, LoadError> {
             reason,
         })?;
     }
+    if version < 4 {
+        value = v3_to_v4(value);
+    }
     Ok(value)
+}
+
+/// v4 adds speed, reverse and pitch (design `clip-speed-audio.md` §7): every media source gains
+/// `speed: 100, reverse: false` and every audio prop `preservePitch: true`. Nothing else changes,
+/// so no clip can become invalid.
+fn v3_to_v4(mut value: Value) -> Value {
+    let Some(project) = value.as_object_mut() else {
+        return value;
+    };
+    let clips = project
+        .get_mut("tracks")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+        .filter_map(|track| track.get_mut("clips").and_then(Value::as_array_mut))
+        .flatten();
+    for clip in clips {
+        if let Some(source) = clip.get_mut("source").and_then(Value::as_object_mut)
+            && source.get("kind").and_then(Value::as_str) == Some("media")
+        {
+            source.insert("speed".to_owned(), Value::from(100));
+            source.insert("reverse".to_owned(), Value::Bool(false));
+        }
+        if let Some(audio) = clip.get_mut("audio").and_then(Value::as_object_mut) {
+            audio.insert("preservePitch".to_owned(), Value::Bool(true));
+        }
+    }
+    project.insert("schemaVersion".to_owned(), Value::from(4));
+    value
 }
 
 /// v2 adds the media list (design `media-import.md` §8). A v1 project has no media.
@@ -412,9 +444,10 @@ mod tests {
         );
     }
 
-    /// The v3 fixture is exactly what this version writes: load → save gives the same JSON.
+    /// The v3 fixture migrates to v4 with only the speed fields added: load → save gives the v3
+    /// JSON plus `speed`, `reverse` and `preservePitch`.
     #[test]
-    fn loads_v3_fixture_and_writes_it_back_unchanged() {
+    fn loads_v3_fixture_and_migrates_it_to_v4() {
         use crate::model::{CanvasBackground, ClipSource};
 
         let text = include_str!("../tests/fixtures/project-v3.json");
@@ -422,24 +455,96 @@ mod tests {
         assert_eq!(loaded.source_version, 3);
         let project = loaded.project;
         let written: Value = serde_json::from_str(&to_json(&project)).unwrap();
-        assert_eq!(written, serde_json::from_str::<Value>(text).unwrap());
+        let mut expected: Value = serde_json::from_str(text).unwrap();
+        expected["schemaVersion"] = Value::from(4);
+        for track in expected["tracks"].as_array_mut().unwrap() {
+            for clip in track["clips"].as_array_mut().unwrap() {
+                if clip["source"]["kind"] == "media" {
+                    clip["source"]["speed"] = Value::from(100);
+                    clip["source"]["reverse"] = Value::Bool(false);
+                }
+                if clip["audio"].is_object() {
+                    clip["audio"]["preservePitch"] = Value::Bool(true);
+                }
+            }
+        }
+        assert_eq!(written, expected);
 
         let names: Vec<_> = project.tracks.iter().map(|t| t.name.as_str()).collect();
         assert_eq!(names, ["Text 1", "Video 2", "Video 1", "Audio 1", "Music"]);
         assert_eq!(project.main_index(), Some(2));
         assert!(project.magnetic && project.tracks[3].locked);
         let main = &project.tracks[2].clips[0];
-        assert!(matches!(main.source, ClipSource::Media { .. }));
+        assert!(matches!(
+            main.source,
+            ClipSource::Media {
+                speed: crate::time::Speed::NORMAL,
+                reverse: false,
+                ..
+            }
+        ));
         assert_eq!(main.link, project.tracks[3].clips[0].link);
         assert!(main.link.is_some() && main.audio.is_none());
         assert_eq!(
             main.source_time(crate::time::Time::from_seconds(2)),
             Some(crate::time::Time::from_seconds(3))
         );
+        assert!(
+            project.tracks[4].clips[0]
+                .audio
+                .as_ref()
+                .unwrap()
+                .preserve_pitch
+        );
         let photo = project.tracks[1].clips[0].visual.as_ref().unwrap();
         assert_eq!(photo.rotation.value, 90.0);
         assert_eq!(photo.fit, crate::props::FitMode::Fill);
         assert!(matches!(project.background, CanvasBackground::Image { .. }));
+    }
+
+    /// The v4 fixture is exactly what this version writes: load → save gives the same JSON.
+    #[test]
+    fn loads_v4_fixture_and_writes_it_back_unchanged() {
+        use crate::model::ClipSource;
+        use crate::time::{Speed, Time};
+
+        let text = include_str!("../tests/fixtures/project-v4.json");
+        let loaded = load(text).unwrap();
+        assert_eq!(loaded.source_version, 4);
+        let project = loaded.project;
+        let written: Value = serde_json::from_str(&to_json(&project)).unwrap();
+        assert_eq!(written, serde_json::from_str::<Value>(text).unwrap());
+
+        let s = Time::from_seconds;
+        // A reversed 0.5x clip with its detached, linked sound.
+        let main = &project.tracks[2].clips[0];
+        let sound = &project.tracks[3].clips[0];
+        for clip in [main, sound] {
+            assert_eq!(
+                (clip.speed(), clip.reversed()),
+                (Speed::new(50).unwrap(), true)
+            );
+            assert_eq!(clip.source_end(), Some(s(4)));
+            assert_eq!(clip.source_time(Time::ZERO), Some(s(4) - Time(1)));
+        }
+        assert_eq!(main.link, sound.link);
+        // A 2x song that does not keep its pitch.
+        let song = &project.tracks[4].clips[0];
+        assert_eq!(song.speed(), Speed::new(200).unwrap());
+        assert!(!song.audio.as_ref().unwrap().preserve_pitch);
+        assert_eq!(song.source_end(), Some(s(20)));
+        // A freeze frame of the main video, two seconds in.
+        let freeze = &project.tracks[2].clips[2];
+        assert_eq!(
+            freeze.source,
+            ClipSource::Freeze {
+                media: main.source.media().unwrap(),
+                source_time: s(2)
+            }
+        );
+        assert_eq!(freeze.source_time(freeze.start), Some(s(2)));
+        // A 3 s image (not the 5 s default).
+        assert_eq!(project.tracks[1].clips[0].duration, s(3));
     }
 
     /// Pins the clip part of the file format (§9 example).
@@ -449,10 +554,7 @@ mod tests {
 
         let media = crate::media::samples::video(1);
         let clip = Clip {
-            source: ClipSource::Media {
-                media: media.id,
-                source_in: crate::time::Time(705_600_000),
-            },
+            source: ClipSource::media_at(media.id, crate::time::Time(705_600_000)),
             link: Some(LinkId(uuid::Uuid::nil())),
             ..Clip::color(
                 "IMG",
@@ -472,7 +574,24 @@ mod tests {
         );
         assert_eq!(
             value["source"],
-            serde_json::json!({ "kind": "media", "media": media.id, "sourceIn": 705_600_000 })
+            serde_json::json!({
+                "kind": "media", "media": media.id, "sourceIn": 705_600_000,
+                "speed": 100, "reverse": false
+            })
+        );
+        let freeze = ClipSource::Freeze {
+            media: media.id,
+            source_time: crate::time::Time(1_411_200_000),
+        };
+        assert_eq!(
+            serde_json::to_value(freeze).unwrap(),
+            serde_json::json!({ "kind": "freeze", "media": media.id, "sourceTime": 1_411_200_000 })
+        );
+        assert_eq!(
+            serde_json::to_value(crate::props::AudioProps::default()).unwrap(),
+            serde_json::json!({
+                "volume": { "value": 1.0 }, "fadeIn": 0, "fadeOut": 0, "preservePitch": true
+            })
         );
         assert_eq!(value["audio"], Value::Null);
         assert_eq!(

@@ -331,3 +331,31 @@ fn magnetic_on_fails_when_a_locked_main_track_would_move() {
         Err(CommandError::TrackLocked(_))
     ));
 }
+
+#[test]
+fn split_of_a_fast_reversed_clip_keeps_every_moment_in_place() {
+    let mut p = empty();
+    // 2 s at 2x reversed: source 4.5 s down to 0.5 s.
+    let v = p.push_clip(MAIN, with_speed(video(&p, 0.0, 2.0, 0.5), 200, true));
+    let original = clip(&p, v).clone();
+    let after = assert_reversible(&mut SplitClips::new(vec![v], t(0.5)), &p);
+    let main = &after.tracks[MAIN];
+    let (left, right) = (&main.clips[0], &main.clips[1]);
+    // The left half shows the top of the range, so its `source_in` moves.
+    assert_eq!(
+        (left.source_in(), left.source_end()),
+        (t(3.5), Some(t(4.5)))
+    );
+    assert_eq!(
+        (right.source_in(), right.source_end()),
+        (t(0.5), Some(t(3.5)))
+    );
+    for c in [left, right] {
+        assert_eq!((c.speed(), c.reversed()), (speed(200), true));
+    }
+    for ms in [0, 250, 499, 500, 1_000, 1_999] {
+        let at = Time(ms * S / 1000);
+        let half = if at < t(0.5) { left } else { right };
+        assert_eq!(half.source_time(at), original.source_time(at), "{ms} ms");
+    }
+}

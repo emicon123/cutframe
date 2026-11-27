@@ -502,10 +502,7 @@ fn offline_4k_hevc_decode_and_convert_rate() {
     project.settings.frame_rate = app_core::FrameRate::FPS_60;
     project.media = vec![asset.clone()];
     project.tracks[0].clips = vec![app_core::Clip {
-        source: app_core::ClipSource::Media {
-            media: asset.id,
-            source_in: Time::ZERO,
-        },
+        source: app_core::ClipSource::media_at(asset.id, Time::ZERO),
         ..app_core::Clip::color("clip", Time::ZERO, duration, Rgba8::BLACK)
     }];
     project.validate().expect("valid");

@@ -208,10 +208,7 @@ fn edit(media: &MediaAsset, clips: &[(i64, i64, i64)]) -> Project {
     let main = project.main_index().expect("main track");
     for &(start, duration, source_in) in clips {
         project.tracks[main].clips.push(app_core::Clip {
-            source: app_core::ClipSource::Media {
-                media: media.id,
-                source_in: ms(source_in),
-            },
+            source: app_core::ClipSource::media_at(media.id, ms(source_in)),
             ..app_core::Clip::color("V", ms(start), ms(duration), app_core::Rgba8::BLACK)
         });
     }
