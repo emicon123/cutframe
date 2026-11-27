@@ -70,6 +70,17 @@ flowchart LR
   `exportCapabilitiesChanged`) drives the progress card in the top bar (stage, percent, ETA
   computed in the UI, Cancel) and one toast per `ExportErrorKind`; `QuitExportDialog` asks before
   quitting during an export (`requestClose` cancels it and waits up to 2 s).
+- Preview controls (task 0340): `previewStore` (`features/preview/`) holds the quality (saved in
+  `localStorage` as `preview.quality.v1`, sent with `setPreviewQuality` at start-up and on change),
+  the zoom/pan view (`previewView.ts` math; `setPreviewView` at most once per frame; Ctrl+=/-/0,
+  Ctrl+wheel, drag to pan when zoomed) and full screen (`getCurrentWindow().setFullscreen`, the
+  preview area becomes `fixed inset-0` over the still-mounted panels, F toggles, Escape leaves).
+  Hover skimming (`timeline/skimming.ts`) sends `setSkim` at most once per frame while paused and
+  `null` on leave, press or blur; `uiStore.skimming` toggles it. Source preview (double-click,
+  Enter or "Preview in player" in the media bin) calls `setPlaybackTarget({ kind: "media" })`;
+  `playheadStore.source` mirrors media ticks while the timeline time stays put, and Escape or
+  "Back to timeline" returns. `KeyBinding.when(ctx)` lets Escape resolve in order: leave full
+  screen, leave the source preview, deselect.
 
 ## 3. Stores
 
