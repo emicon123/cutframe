@@ -31,7 +31,8 @@ UI mirrors it from `playback-tick` (task 0330, `docs/design/playback.md`).
 | Visibility rules, `frames` mode | `src-tauri/src/preview/mod.rs` | implemented |
 | Smoke test through the real path | `src-tauri/src/smoke_test.rs` | implemented |
 | Golden-frame tests (WARP) | `crates/engine/tests/golden.rs`, `tests/golden/*.png` | implemented |
-| Quality, zoom, skim, source preview | render-graph §8, playback.md | **target** (0340) |
+| Quality, zoom and pan (`preview_render_size`, `present_rect`) | `crates/engine/src/render/view.rs`, `present.rs` | implemented (task 0340, [§4](#4-the-preview-thread)) |
+| Skim, source preview (`PlaySource`, `source_project`) | `crates/engine/src/playback/source.rs`, `playback/mod.rs`, `preview.rs` | implemented (task 0340, [09](09-audio-and-playback.md) §8) |
 
 ## 2. Two ways to put a frame on screen
 
@@ -87,9 +88,11 @@ block on rendering.
 |---|---|
 | `Resize { width, height }` | new surface configuration (physical pixels); resets the present-rate window |
 | `SetVisible(bool)` | pauses/resumes drawing; a pause is not counted as a dropped frame |
+| `SetQuality(PreviewQuality)` / `SetView(PreviewView)` | `setPreviewQuality` / `setPreviewView` (the view already clamped); redraw and present on the next frame |
 | `SnapshotChanged` | sent by `AppState::publish` after it stores a new project in the shared `ArcSwap` |
-| `Seek { generation, mode }` | sent by `Playback` after a seek, step or project reset updated `TransportShared` |
+| `Seek { generation, mode }` | sent by `Playback` after a seek, step, target change or project reset updated `TransportShared` |
 | `Transport` | sent by `Playback` after a play, pause, shuttle, loop toggle, preroll end or end of playback |
+| `Skim` | sent by `Playback::set_skim` when the skim time changed; a redraw without a tick |
 | `FrameReady` | a reader decoded a frame a lookup was waiting for (coalesced by an `AtomicBool`) |
 | `Redraw` | an explicit redraw request (smoke test) |
 | `RenderFrame { width, height, reply }` | one offscreen frame through the compositor, answered on the same channel |
@@ -97,8 +100,10 @@ block on rendering.
 | `Shutdown` | the thread exits; dropping the handle sends it and joins |
 
 **Render on change** (render-graph §7). The loop blocks on the channel; each batch of wake messages
-(above, plus device recreation) produces at most one draw: `build_plan` at the playhead, the
-compositor with `FetchPolicy::BestAvailable`, and a present. When the plan and the frame identities
+(above, plus device recreation) produces at most one draw: `build_plan` at the playhead (or the skim
+time while one is set), the compositor with `FetchPolicy::BestAvailable`, and a present. The project
+is what `PlaySource` plays: the timeline snapshot, or a media item's source project. When the plan
+and the frame identities
 equal the last composite there is no acquire and no present, so a paused, idle preview costs no CPU
 and presents nothing (`--smoke-test` logs `idle_presents=0`). A layer whose frame is missing (not
 just stale) keeps the previous canvas for up to 250 ms, then is left out. The render thread owns the
@@ -129,7 +134,9 @@ always once after a change.
 **Present configuration.** `AutoVsync`, `desired_maximum_frame_latency = 2`, a **non-sRGB** surface
 format (`Bgra8Unorm`, else `Rgba8Unorm`, else the first non-sRGB one): working values are already
 display-referred R'G'B'. The present pass scales the `Rgba16Float` canvas bilinearly into the surface
-with a black letterbox. A failed acquire is retried after 16 ms (`Timeout`, `Outdated`, `Lost`) or
+at `present_rect`: letterboxed at `Fit`; at a zoom percentage the canvas (project pixels) times the
+percentage with the panned canvas point at the window centre, black outside the canvas. A failed
+acquire is retried after 16 ms (`Timeout`, `Outdated`, `Lost`) or
 100 ms (`Occluded`, validation); `Suboptimal` presents and then reconfigures.
 
 **Present statistics.** Once per `PRESENT_STATS_WINDOW = 5 s` of continuous drawing, the thread logs

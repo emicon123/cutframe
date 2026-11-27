@@ -40,7 +40,9 @@ use engine::media::readers::{ReaderOptions, ReaderPool};
 use engine::media::{fingerprint, probe};
 use engine::playback::pacing::{FramePicker, PREROLL_TIMEOUT, reached_end};
 use engine::playback::scheduler::{self, Need};
-use engine::playback::{AudioSink, EngineAudio, NoAudio, Playback, Rate, ShuttleKey, Timeline};
+use engine::playback::{
+    AudioSink, EngineAudio, NoAudio, PlaySource, Playback, Rate, ShuttleKey, Timeline,
+};
 use engine::render::{
     Compositor, GpuContext, MissingLayers, build_plan, create_canvas, render_size,
 };
@@ -227,16 +229,18 @@ fn playback_drops_no_frames() {
     );
     let working_set_before = working_set("WorkingSet64");
     let project = Arc::new(project());
-    let snapshot = Arc::new(ArcSwap::from(Arc::clone(&project)));
+    let snapshot = Arc::new(PlaySource::new(Arc::new(ArcSwap::from(Arc::clone(
+        &project,
+    )))));
     let timeline = Timeline::of(&project);
     let frame_rate = project.settings.frame_rate;
     let transport = Arc::new(TransportShared::new());
     // `CUTFRAME_PLAYBACK_AUDIO=1`: the audio engine is the clock (default device, or its null
     // output without one); else a silent wall clock.
     let audio: Arc<dyn AudioSink> = if env("CUTFRAME_PLAYBACK_AUDIO").is_some() {
-        Arc::new(EngineAudio::new(Arc::clone(&transport), Arc::clone(&snapshot)).expect("audio"))
+        Arc::new(EngineAudio::new(Arc::clone(&transport), snapshot.clone()).expect("audio"))
     } else {
-        Arc::new(NoAudio::new(Arc::clone(&transport), Arc::clone(&snapshot)))
+        Arc::new(NoAudio::new(Arc::clone(&transport), snapshot.clone()))
     };
     let playback = Playback::new(
         Arc::clone(&transport),
@@ -476,9 +480,9 @@ fn transport_commands_are_cheap() {
         Time::from_seconds(600),
         Rgba8::BLACK,
     ));
-    let snapshot = Arc::new(ArcSwap::from_pointee(project));
+    let snapshot = Arc::new(PlaySource::new(Arc::new(ArcSwap::from_pointee(project))));
     let shared = Arc::new(TransportShared::new());
-    let audio = Arc::new(NoAudio::new(Arc::clone(&shared), Arc::clone(&snapshot)));
+    let audio = Arc::new(NoAudio::new(Arc::clone(&shared), snapshot.clone()));
     let (tx, rx) = crossbeam_channel::unbounded();
     let playback = Playback::new(
         shared,

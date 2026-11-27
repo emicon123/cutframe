@@ -18,7 +18,7 @@ use crate::export::{EncoderProbe, ExportSlot};
 use crate::ipc::IpcError;
 use crate::ipc::events::{PlaybackTick, ProjectChanged};
 use crate::ipc::types::ProjectState;
-use crate::ipc::types::{JobId, MediaStatus};
+use crate::ipc::types::{JobId, MediaStatus, PlaybackTarget};
 use crate::jobs::JobManager;
 use crate::media_status::{self, MediaStatuses, StatusKey, StatusUpdate};
 use crate::preferences::{Preferences, Startup};
@@ -504,12 +504,7 @@ impl AppState {
     /// Moves the playhead (the `seek` command). Returns the new seek generation. `time` outside
     /// ±2^53 flicks is `invalidEdit`; no preview engine is `unavailable`.
     pub fn seek(&self, time: Time, mode: SeekMode) -> Result<u32, IpcError> {
-        if time.flicks().unsigned_abs() > MAX_IPC_FLICKS.unsigned_abs() {
-            return Err(IpcError::InvalidEdit(format!(
-                "seek time {} is outside ±2^53 flicks",
-                time.flicks()
-            )));
-        }
+        check_ipc_time(time, "seek")?;
         Ok(self.playback()?.seek(time, mode))
     }
 
@@ -548,6 +543,27 @@ impl AppState {
         if let Ok(playback) = self.playback() {
             playback.set_loop(on);
         }
+    }
+
+    /// Skim (`set_skim`): while paused the preview shows `time` instead of the playhead; `None`
+    /// shows the playhead again. `time` outside ±2^53 flicks is `invalidEdit`; without a preview
+    /// engine nothing happens.
+    pub fn set_skim(&self, time: Option<Time>) -> Result<(), IpcError> {
+        if let Some(time) = time {
+            check_ipc_time(time, "skim")?;
+        }
+        if let Ok(playback) = self.playback() {
+            playback.set_skim(time);
+        }
+        Ok(())
+    }
+
+    /// What the preview plays (`set_playback_target`). Returns the new seek generation. Media
+    /// that is not in the project is `invalidEdit`; no preview engine is `unavailable`.
+    pub fn set_playback_target(&self, target: PlaybackTarget) -> Result<u32, IpcError> {
+        self.playback()?
+            .set_target(target.into())
+            .map_err(|err| IpcError::InvalidEdit(err.to_string()))
     }
 
     /// The transport now (`get_playback`).
@@ -630,6 +646,17 @@ struct Session {
     /// Copied clips (design §6.3). Media ids belong to a project, so replacing the document
     /// clears it.
     clipboard: Option<ClipboardContent>,
+}
+
+/// `time` within ±2^53 flicks (ADR-0003 §3), else `invalidEdit` naming `what`.
+fn check_ipc_time(time: Time, what: &str) -> Result<(), IpcError> {
+    if time.flicks().unsigned_abs() > MAX_IPC_FLICKS.unsigned_abs() {
+        return Err(IpcError::InvalidEdit(format!(
+            "{what} time {} is outside ±2^53 flicks",
+            time.flicks()
+        )));
+    }
+    Ok(())
 }
 
 impl Session {
@@ -1227,6 +1254,66 @@ mod tests {
         unavailable(state.step_frames(1).map(|_| ()));
         state.set_loop(true);
         assert_eq!(state.playback_tick(), PlaybackTick::IDLE);
+    }
+
+    #[test]
+    fn skim_is_validated_and_needs_no_engine() {
+        let state = app_state();
+        assert_eq!(state.set_skim(Some(Time::ZERO)), Ok(()));
+        assert_eq!(state.set_skim(None), Ok(()));
+        let (state, probe) = app_state_with_preview();
+        for flicks in [MAX_IPC_FLICKS + 1, i64::MIN] {
+            assert!(matches!(
+                state.set_skim(Some(Time(flicks))),
+                Err(IpcError::InvalidEdit(_))
+            ));
+        }
+        assert_eq!(probe.next(WAIT), None, "a rejected skim changes nothing");
+    }
+
+    #[test]
+    fn playback_targets_switch_and_report_through_ticks() {
+        let (state, probe) = app_state_with_preview();
+        let mut project = timeline_of(10);
+        let video = app_core::media::samples::video(1);
+        let media = video.id;
+        project.media.push(video);
+        state.test_replace(project, None, CURRENT_SCHEMA_VERSION);
+        state.snapshot.store(state.session_snapshot());
+        state.seek(Time::from_seconds(7), SeekMode::Exact).unwrap();
+        while probe.next(WAIT).is_some() {}
+
+        let unknown = app_core::MediaId::new();
+        assert!(matches!(
+            state.set_playback_target(PlaybackTarget::Media { media: unknown }),
+            Err(IpcError::InvalidEdit(_))
+        ));
+        assert_eq!(state.playback_tick().target, PlaybackTarget::Timeline);
+
+        let generation = state
+            .set_playback_target(PlaybackTarget::Media { media })
+            .unwrap();
+        assert!(
+            matches!(probe.next(WAIT), Some(Wake::Seek { generation: g, .. }) if g == generation)
+        );
+        let tick = state.playback_tick();
+        assert_eq!(tick.target, PlaybackTarget::Media { media });
+        assert_eq!(tick.time, Time::ZERO, "media time");
+        assert_eq!(tick.seek, generation);
+
+        state.set_playback_target(PlaybackTarget::Timeline).unwrap();
+        let tick = state.playback_tick();
+        assert_eq!(tick.target, PlaybackTarget::Timeline);
+        assert_eq!(
+            tick.time,
+            Time::from_seconds(7),
+            "the timeline playhead is kept"
+        );
+
+        assert!(matches!(
+            app_state().set_playback_target(PlaybackTarget::Timeline),
+            Err(IpcError::Unavailable(_))
+        ));
     }
 
     /// A project of `seconds` of colour on the main track.

@@ -307,6 +307,45 @@ export const commands = {
 	 */
 	setPreviewVisible: (visible: boolean, options?: InvokeOptions) => __TAURI_INVOKE<void>("set_preview_visible", { visible }, options),
 	/**
+	 *  The preview's resolution (render-graph.md §8): the preview composites at the size it is
+	 *  shown at (at most the project canvas), divided by 1 (`full`), 2 (`half`) or 4 (`quarter`).
+	 *  A UI preference: send it on startup and when it changes. Takes effect on the next frame, also
+	 *  while playing. Fire-and-forget; nothing happens without a preview engine.
+	 */
+	setPreviewQuality: (quality: PreviewQuality, options?: InvokeOptions) => __TAURI_INVOKE<void>("set_preview_quality", { quality }, options),
+	/**
+	 *  The preview's zoom and pan (render-graph.md §8): `fit` shows the whole canvas letterboxed;
+	 *  `percent` shows canvas pixels at that percentage of screen pixels (clamped to
+	 *  `PREVIEW_ZOOM_MIN_PERCENT..=PREVIEW_ZOOM_MAX_PERCENT`), with `panX`/`panY` (canvas fractions
+	 *  from the centre, clamped to -0.5..=0.5) at the centre of the preview area, black outside the
+	 *  canvas. Takes effect on the next frame. Fire-and-forget; nothing happens without a preview
+	 *  engine. Full screen needs no command: the native preview follows `setPreviewRect`.
+	 */
+	setPreviewView: (view: PreviewView_Deserialize, options?: InvokeOptions) => __TAURI_INVOKE<void>("set_preview_view", { view }, options),
+	/**
+	 *  Hover skimming (playback.md §4.2): while paused, the preview shows `time` (clamped to the
+	 *  range of what plays; media time while a media item plays) instead of the playhead, without
+	 *  sound; `null` shows the playhead again (send it when the pointer leaves the timeline). Moves
+	 *  no playhead, makes no seek generation and sends no `playbackTick` (ticks keep reporting the
+	 *  playhead). Ignored while playing; play, a target change and a new project clear it; seek and
+	 *  step do not. Fails with `invalidEdit` for a time outside ±2^53 flicks; does nothing without a
+	 *  preview engine. Never blocks.
+	 */
+	setSkim: (time: Time | null, options?: InvokeOptions) => __TAURI_INVOKE<null>("set_skim", { time }, options),
+	/**
+	 *  What the preview plays (playback.md §8, source preview): `media` plays one media item on its
+	 *  own (picture fitted, its default audio stream, its own length and frame rate; an image is
+	 *  shown still for 5 s; offline media shows the offline placeholder) and every transport command
+	 *  (`togglePlayback`, `seek`, `stepFrames`, `shuttle`, `setLoop`) works in its media time;
+	 *  `timeline` plays the timeline again at the playhead it had before. A change pauses, clears
+	 *  the skim and makes a new seek generation, which is returned (ignore older ticks); the tick
+	 *  carries the new `target`. The same target again changes nothing and returns the current
+	 *  generation. Fails with `invalidEdit` for media that is not in the project and with
+	 *  `unavailable` without a preview engine. A new or opened project plays the timeline. Never
+	 *  blocks.
+	 */
+	setPlaybackTarget: (target: PlaybackTarget, options?: InvokeOptions) => __TAURI_INVOKE<number>("set_playback_target", { target }, options),
+	/**
 	 *  Moves the playhead to `time` and redraws the preview: `scrub` while the playhead is dragged
 	 *  (pauses playback, plays a short audio snippet), `exact` for a click, Home/End and the end of a
 	 *  drag (while playing, playback continues from there). `time` is clamped to `0..=` the timeline
@@ -584,6 +623,10 @@ export const MAX_IMPORT_FILES = 2000 as const;
 export const MEDIA_EXTENSIONS = ["mp4","mov","m4v","mkv","webm","avi","mpg","mpeg","mts","m2ts","3gp","mp3","wav","m4a","aac","flac","ogg","opus","jpg","jpeg","png","webp","bmp","tif","tiff","gif","heic","heif"] as const;
 
 export const POSTER_LONG_SIDE = 320 as const;
+
+export const PREVIEW_ZOOM_MAX_PERCENT = 400 as const;
+
+export const PREVIEW_ZOOM_MIN_PERCENT = 25 as const;
 
 export const PROJECT_FILE_EXTENSION = "cutframe" as const;
 
@@ -1634,22 +1677,28 @@ export type Placement =
  */
 { kind: "drop"; track: TrackTarget; start: Time };
 
+/**  What the preview plays (`setPlaybackTarget`, playback.md §8). */
+export type PlaybackTarget = 
+/**  The timeline (the default). */
+{ kind: "timeline" } | 
 /**
- *  What the preview plays. Only the timeline so far; a media item (source preview) comes with
- *  task 0340.
+ *  One media item on its own (source preview): its picture fitted, its default audio
+ *  stream, its own length and frame rate. Transport times are media times.
  */
-export type PlaybackTarget = { kind: "timeline" };
+{ kind: "media"; media: MediaId };
 
 /**
  *  The transport (playback.md §8): at most 60 Hz while playing, and once after every change
- *  (play, pause, shuttle, seek, step, loop toggle, end of playback, project replaced), so the
- *  last state always arrives. Ignore a tick whose `seek` is older than the generation the last
- *  `seek` or `stepFrames` returned. `getPlayback` returns the same payload.
+ *  (play, pause, shuttle, seek, step, loop toggle, target change, end of playback, project
+ *  replaced), so the last state always arrives; a skim change sends none. Ignore a tick whose
+ *  `seek` is older than the generation the last `seek` or `stepFrames` returned.
+ *  `getPlayback` returns the same payload.
  */
 export type PlaybackTick = {
 	/**
 	 *  Timeline time of the frame on screen (its start) while playing; the playhead while
-	 *  paused. Between ticks the UI may extrapolate `time + elapsed x rate` for drawing.
+	 *  paused. Media time while `target` is a media item. Never the skim time (`setSkim`).
+	 *  Between ticks the UI may extrapolate `time + elapsed x rate` for drawing.
 	 */
 	time: Time,
 	state: TransportStateView,
@@ -1660,6 +1709,7 @@ export type PlaybackTick = {
 	seek: number,
 	/**  Frames dropped since the last play start (skipped or shown late). */
 	droppedFrames: number,
+	/**  What plays (`setPlaybackTarget`). */
 	target: PlaybackTarget,
 };
 
@@ -1708,6 +1758,12 @@ export type PreviewMode =
 /**  No GPU available; the UI shows a placeholder. */
 "unavailable";
 
+/**
+ *  The preview's resolution (`setPreviewQuality`, render-graph.md §8): the composite at full,
+ *  half or quarter of the preview size. A UI preference.
+ */
+export type PreviewQuality = "full" | "half" | "quarter";
+
 /**  The preview area in physical pixels, relative to the webview's top-left corner. */
 export type PreviewRect = {
 	x: number,
@@ -1715,6 +1771,45 @@ export type PreviewRect = {
 	width: number,
 	height: number,
 };
+
+/**  Zoom and pan of the preview (`setPreviewView`, render-graph.md §8). */
+export type PreviewView = PreviewView_Serialize | PreviewView_Deserialize;
+
+/**  Zoom and pan of the preview (`setPreviewView`, render-graph.md §8). */
+export type PreviewView_Deserialize = {
+	zoom: PreviewZoom,
+	/**
+	 *  The canvas point shown at the centre of the preview area, relative to the canvas centre,
+	 *  in canvas widths: 0 centred, 0.5 the right edge, -0.5 the left edge. Clamped to
+	 *  -0.5..=0.5; ignored at `fit`. `null` (a float's generated type allows it) counts as 0.
+	 */
+	panX?: number | null,
+	/**  The same in canvas heights: 0.5 the bottom edge. */
+	panY?: number | null,
+};
+
+/**  Zoom and pan of the preview (`setPreviewView`, render-graph.md §8). */
+export type PreviewView_Serialize = {
+	zoom: PreviewZoom,
+	/**
+	 *  The canvas point shown at the centre of the preview area, relative to the canvas centre,
+	 *  in canvas widths: 0 centred, 0.5 the right edge, -0.5 the left edge. Clamped to
+	 *  -0.5..=0.5; ignored at `fit`. `null` (a float's generated type allows it) counts as 0.
+	 */
+	panX: number | null,
+	/**  The same in canvas heights: 0.5 the bottom edge. */
+	panY: number | null,
+};
+
+/**  The preview's zoom (`setPreviewView`). */
+export type PreviewZoom = 
+/**  The whole canvas fitted into the preview area (the default). */
+{ kind: "fit" } | 
+/**
+ *  Canvas pixels at `percent` % of screen (physical) pixels: 100 is one canvas pixel per
+ *  screen pixel. Clamped to `PREVIEW_ZOOM_MIN_PERCENT..=PREVIEW_ZOOM_MAX_PERCENT`.
+ */
+{ kind: "percent"; percent: number };
 
 /**
  *  Emitted after every change to the project (edit, undo, redo, new, open, save).
@@ -2254,6 +2349,10 @@ export type MockCommandHandlers = {
     openLogsFolder: () => null | Promise<null>,
     setPreviewRect: (args: { rect: PreviewRect }) => void | Promise<void>,
     setPreviewVisible: (args: { visible: boolean }) => void | Promise<void>,
+    setPreviewQuality: (args: { quality: PreviewQuality }) => void | Promise<void>,
+    setPreviewView: (args: { view: PreviewView_Deserialize }) => void | Promise<void>,
+    setSkim: (args: { time: Time | null }) => null | Promise<null>,
+    setPlaybackTarget: (args: { target: PlaybackTarget }) => number | Promise<number>,
     seek: (args: { time: Time; mode: SeekMode }) => number | Promise<number>,
     togglePlayback: () => null | Promise<null>,
     pausePlayback: () => null | Promise<null>,
@@ -2356,6 +2455,10 @@ export function mockCommands(handlers: Partial<MockCommandHandlers> = {}): void 
             case "open_logs_folder": return mockCommandHandler(mockHandlers.openLogsFolder, "open_logs_folder", args);
             case "set_preview_rect": return mockCommandHandler(mockHandlers.setPreviewRect, "set_preview_rect", args);
             case "set_preview_visible": return mockCommandHandler(mockHandlers.setPreviewVisible, "set_preview_visible", args);
+            case "set_preview_quality": return mockCommandHandler(mockHandlers.setPreviewQuality, "set_preview_quality", args);
+            case "set_preview_view": return mockCommandHandler(mockHandlers.setPreviewView, "set_preview_view", args);
+            case "set_skim": return mockCommandHandler(mockHandlers.setSkim, "set_skim", args);
+            case "set_playback_target": return mockCommandHandler(mockHandlers.setPlaybackTarget, "set_playback_target", args);
             case "seek": return mockCommandHandler(mockHandlers.seek, "seek", args);
             case "toggle_playback": return mockCommandHandler(mockHandlers.togglePlayback, "toggle_playback", args);
             case "pause_playback": return mockCommandHandler(mockHandlers.pausePlayback, "pause_playback", args);

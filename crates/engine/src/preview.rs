@@ -4,17 +4,22 @@
 //!
 //! All communication goes through a channel, so callers never block on rendering.
 //!
-//! **What it draws** (render-graph.md §4, §7, §8): the timeline frame at the playhead.
-//! [`build_plan`] at the [`TransportShared`] playhead and a render size fitted into the window
-//! (full quality; quality and zoom are task 0340), then the shared [`Compositor`] with
+//! **What it draws** (render-graph.md §4, §7, §8): the frame of what plays ([`PlaySource`]: the
+//! timeline, or one media item, task 0340) at the playhead, or at the skim time while paused
+//! ([`Playback::set_skim`]). [`build_plan`] at that time and the render size of
+//! [`preview_render_size`] (the canvas fitted into the window or scaled by the zoom, at most the
+//! canvas, divided by the [`PreviewQuality`]), then the shared [`Compositor`] with
 //! `FetchPolicy::BestAvailable` on the thread's own [`ReaderPool`], then a present pass that
-//! scales the canvas into the `Bgra8Unorm` surface with a black letterbox. A layer whose frame is
-//! missing (not stale) keeps the previous canvas for up to [`MISSING_HOLD`], then is left out.
-//! Readers report offline media through the `on_media_unavailable` callback.
+//! scales the canvas into the `Bgra8Unorm` surface at [`present_rect`] (letterboxed at `Fit`,
+//! zoomed and panned otherwise), black outside the canvas. Quality and view changes take effect
+//! on the next frame, also during playback: the canvas and the converted sources are made at
+//! the new size from the frames the readers hold, without restarting a reader. A layer whose
+//! frame is missing (not stale) keeps the previous canvas for up to [`MISSING_HOLD`], then is
+//! left out. Readers report offline media through the `on_media_unavailable` callback.
 //!
 //! **Render on change** (render-graph.md §7, ADR-0005 amendment): while paused the thread blocks
 //! on its channel and draws once per wake message ([`PreviewHandle::snapshot_changed`],
-//! [`PreviewHandle::seek`], transport changes, resize, becoming visible,
+//! [`PreviewHandle::seek`], transport changes, skim, resize, quality and view, becoming visible,
 //! [`FrameReadyNotifier::notify`], [`PreviewHandle::request_redraw`] and device recreation). A
 //! draw whose plan and frames equal the last composite presents nothing, unless the surface needs
 //! a new frame (resize, shown, redraw request).
@@ -31,8 +36,9 @@
 //! most 60 Hz while playing, once after every change). With the preview hidden it wakes every
 //! [`HIDDEN_PLAYBACK_WAKE`] for ticks and end detection and presents nothing.
 //!
-//! **Inputs:** the project snapshot (`Arc<ArcSwap<Project>>`, published by the shell after every
-//! change) and the [`TransportShared`] atomics are read lock-free when drawing. The engine never
+//! **Inputs:** what plays ([`PlaySource`] over the project snapshot `Arc<ArcSwap<Project>>`,
+//! published by the shell after every change) and the [`TransportShared`] atomics are read
+//! lock-free when drawing. The engine never
 //! takes the document lock (ADR-0004 §2).
 //!
 //! **GPU:** the thread creates the [`GpuContext`] (so the adapter can present to the window,
@@ -60,12 +66,14 @@ use crate::playback::pacing::{
 };
 use crate::playback::scheduler::{self, Need};
 use crate::playback::{
-    AudioSink, EngineAudio, NoAudio, Playback, PlaybackTicks, Rate, Timeline, TransportWake,
+    AudioSink, EngineAudio, NoAudio, PlaySource, Playback, PlaybackTicks, ProjectSource, Rate,
+    Timeline, TransportWake,
 };
 use crate::render::present::PresentPass;
 use crate::render::{
     AdapterMode, Compositor, FallbackReason, GpuContext, GpuError, GpuInfo, MissingLayers,
-    OUTPUT_FORMAT, OffscreenFrame, Readback, build_plan, create_canvas, render_size,
+    OUTPUT_FORMAT, OffscreenFrame, PreviewQuality, PreviewView, Readback, build_plan,
+    create_canvas, present_rect, preview_render_size, render_size,
 };
 use crate::transport::{PlayState, SeekMode, TransportShared};
 
@@ -89,9 +97,9 @@ pub const HIDDEN_PLAYBACK_WAKE: Duration = Duration::from_millis(16);
 /// What the preview starts with: the project, the transport and the audio path it plays with,
 /// and the callbacks to the shell.
 pub struct PreviewSetup {
-    /// The project to show; the shell stores new snapshots into it and calls
-    /// [`PreviewHandle::snapshot_changed`].
-    pub snapshot: Arc<ArcSwap<Project>>,
+    /// What to show: the shell's project snapshot (the shell stores new snapshots into it and
+    /// calls [`PreviewHandle::snapshot_changed`]), or a media item of it.
+    pub played: Arc<PlaySource>,
     /// The transport atomics, shared with the audio path.
     pub transport: Arc<TransportShared>,
     /// The audio path and master clock ([`NoAudio`]: no sound, a wall clock).
@@ -114,7 +122,8 @@ impl PreviewSetup {
     /// start. Callbacks do nothing until replaced.
     pub fn with_sound(snapshot: Arc<ArcSwap<Project>>) -> Self {
         let silent = Self::new(snapshot);
-        match EngineAudio::new(Arc::clone(&silent.transport), Arc::clone(&silent.snapshot)) {
+        let played: Arc<dyn ProjectSource> = Arc::clone(&silent.played) as _;
+        match EngineAudio::new(Arc::clone(&silent.transport), played) {
             Ok(audio) => Self {
                 audio: Arc::new(audio),
                 ..silent
@@ -129,9 +138,13 @@ impl PreviewSetup {
     /// A silent preview of `snapshot` ([`NoAudio`]) whose callbacks do nothing.
     pub fn new(snapshot: Arc<ArcSwap<Project>>) -> Self {
         let transport = Arc::new(TransportShared::new());
-        let audio = Arc::new(NoAudio::new(Arc::clone(&transport), Arc::clone(&snapshot)));
+        let played = Arc::new(PlaySource::new(snapshot));
+        let audio = Arc::new(NoAudio::new(
+            Arc::clone(&transport),
+            Arc::clone(&played) as _,
+        ));
         Self {
-            snapshot,
+            played,
             transport,
             audio,
             on_gpu_changed: Box::new(|_, _| {}),
@@ -170,6 +183,8 @@ enum Message {
         height: u32,
     },
     SetVisible(bool),
+    SetQuality(PreviewQuality),
+    SetView(PreviewView),
     /// The shell published a new project snapshot.
     SnapshotChanged,
     /// The playhead moved ([`TransportShared`] already holds the new time).
@@ -179,6 +194,8 @@ enum Message {
     },
     /// The transport's state, rate or loop changed.
     Transport,
+    /// The skim time changed ([`TransportShared`] holds it).
+    Skim,
     /// A reader decoded a frame (coalesced by [`FrameReadyNotifier`]).
     FrameReady,
     /// Draw and present once although no input changed (`--smoke-test`).
@@ -200,9 +217,12 @@ impl std::fmt::Debug for Message {
         f.write_str(match self {
             Message::Resize { .. } => "Resize",
             Message::SetVisible(_) => "SetVisible",
+            Message::SetQuality(_) => "SetQuality",
+            Message::SetView(_) => "SetView",
             Message::SnapshotChanged => "SnapshotChanged",
             Message::Seek { .. } => "Seek",
             Message::Transport => "Transport",
+            Message::Skim => "Skim",
             Message::FrameReady => "FrameReady",
             Message::Redraw => "Redraw",
             Message::DeviceLost { .. } => "DeviceLost",
@@ -291,12 +311,13 @@ impl PreviewHandle {
         let tx = tx.clone();
         let playback = Arc::new(Playback::new(
             Arc::clone(&setup.transport),
-            Arc::clone(&setup.snapshot),
+            Arc::clone(&setup.played),
             Arc::clone(&setup.audio),
             Box::new(move |wake| {
                 let message = match wake {
                     TransportWake::Changed => Message::Transport,
                     TransportWake::Seek { generation, mode } => Message::Seek { generation, mode },
+                    TransportWake::Skim => Message::Skim,
                 };
                 // A stopped render thread needs no wake.
                 let _ = tx.send(message);
@@ -314,7 +335,7 @@ impl PreviewHandle {
             presented: Arc::new(AtomicU64::new(0)),
             available: Arc::new(AtomicBool::new(true)),
             gpu: Arc::new(ArcSwapOption::empty()),
-            snapshot: setup.snapshot,
+            played: setup.played,
             transport: setup.transport,
             playback: Arc::clone(&playback),
             frame_ready: FrameReadyNotifier::new(tx.clone()),
@@ -408,6 +429,18 @@ impl PreviewHandle {
         self.send(Message::SetVisible(visible));
     }
 
+    /// The preview's resolution scale (render-graph.md §8). Takes effect on the next frame,
+    /// also during playback. Never blocks.
+    pub fn set_quality(&self, quality: PreviewQuality) {
+        self.send(Message::SetQuality(quality));
+    }
+
+    /// The preview's zoom and pan (render-graph.md §8), clamped ([`PreviewView::clamped`]).
+    /// Takes effect on the next frame. Never blocks.
+    pub fn set_view(&self, view: PreviewView) {
+        self.send(Message::SetView(view.clamped()));
+    }
+
     /// The snapshot passed at spawn holds a new project: redraw.
     pub fn snapshot_changed(&self) {
         self.send(Message::SnapshotChanged);
@@ -481,19 +514,22 @@ fn detached_info() -> GpuInfo {
 
 /// A wake message seen by a [`WakeProbe`].
 #[cfg(any(test, feature = "test-support"))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Wake {
     Resize {
         width: u32,
         height: u32,
     },
     SetVisible(bool),
+    SetQuality(PreviewQuality),
+    SetView(PreviewView),
     SnapshotChanged,
     Seek {
         generation: u32,
         mode: SeekMode,
     },
     Transport,
+    Skim,
     FrameReady,
     Redraw,
     /// Device loss, offscreen frame request or shutdown.
@@ -517,9 +553,12 @@ impl WakeProbe {
         Some(match message {
             Message::Resize { width, height } => Wake::Resize { width, height },
             Message::SetVisible(visible) => Wake::SetVisible(visible),
+            Message::SetQuality(quality) => Wake::SetQuality(quality),
+            Message::SetView(view) => Wake::SetView(view),
             Message::SnapshotChanged => Wake::SnapshotChanged,
             Message::Seek { generation, mode } => Wake::Seek { generation, mode },
             Message::Transport => Wake::Transport,
+            Message::Skim => Wake::Skim,
             Message::FrameReady => {
                 self.frame_ready.clear();
                 Wake::FrameReady
@@ -598,7 +637,8 @@ struct Shared {
     available: Arc<AtomicBool>,
     /// The current context, published for [`PreviewHandle::gpu`].
     gpu: Arc<ArcSwapOption<GpuContext>>,
-    snapshot: Arc<ArcSwap<Project>>,
+    /// What plays: the timeline snapshot or a media item's source project.
+    played: Arc<PlaySource>,
     transport: Arc<TransportShared>,
     playback: Arc<Playback>,
     /// Cleared before every draw; the readers notify it.
@@ -859,9 +899,9 @@ impl Scene {
         }
     }
 
-    /// Composites the frame at `time` of `project` into `slot`'s canvas, sized to fit `bounds`
-    /// (render-graph.md §8, full quality). `hold` applies the missing-layer rule of §7: a layer
-    /// whose frame is missing keeps the previous canvas for [`MISSING_HOLD`].
+    /// Composites the frame at `time` of `project` into `slot`'s canvas of `size` (the render
+    /// size, render-graph.md §8). `hold` applies the missing-layer rule of §7: a layer whose
+    /// frame is missing keeps the previous canvas for [`MISSING_HOLD`].
     #[allow(clippy::too_many_arguments)]
     fn compose(
         &mut self,
@@ -870,7 +910,7 @@ impl Scene {
         slot: &mut Option<Canvas>,
         project: &Arc<Project>,
         time: Time,
-        bounds: (u32, u32),
+        size: (u32, u32),
         hold: bool,
     ) -> Composed {
         if self
@@ -881,7 +921,6 @@ impl Scene {
             self.readers.set_project(project);
             self.project = Some(Arc::clone(project));
         }
-        let size = render_size((project.settings.width, project.settings.height), bounds, 1);
         let canvas = Canvas::ensure(slot, gpu, size);
         let plan = build_plan(project, time, size);
         let now = Instant::now();
@@ -955,6 +994,9 @@ struct RenderLoop {
     size: (u32, u32),
     window: Option<WindowTarget>,
     visible: bool,
+    /// The preview's resolution scale and zoom (render-graph.md §8).
+    quality: PreviewQuality,
+    view: PreviewView,
     /// Created on the first draw, dropped with the device.
     scene: Option<Scene>,
     /// The canvas presented into the window.
@@ -1046,6 +1088,8 @@ impl RenderLoop {
             window,
             // Hidden until the shell shows the window.
             visible: false,
+            quality: PreviewQuality::Full,
+            view: PreviewView::FIT,
             scene: None,
             canvas: None,
             offscreen: None,
@@ -1187,13 +1231,19 @@ impl RenderLoop {
                     // Becoming visible or a new size redraws anyway.
                     dirty = false;
                 } else if dirty {
-                    let time = self.shared.transport.playhead();
-                    retry = self.draw_window(time, false).retry;
+                    retry = self.draw_window(self.paused_time(), false).retry;
                     dirty = retry.is_some();
                 }
             }
             self.tick_if_due();
         }
+    }
+
+    /// What the paused preview shows: the skim time if any (playback.md §4.2), else the
+    /// playhead.
+    fn paused_time(&self) -> Time {
+        let transport = &self.shared.transport;
+        transport.skim().unwrap_or_else(|| transport.playhead())
     }
 
     /// Emits a `playback-tick` when the throttle allows one.
@@ -1231,7 +1281,7 @@ impl RenderLoop {
             self.run = Some(PlayRun::new(seek_gen, dropped));
             self.present_stats.reset();
         }
-        let project = self.shared.snapshot.load_full();
+        let project = self.shared.played.project();
         let timeline = Timeline::of(&project);
         let looping = transport.looping();
         let drawing = self.is_drawing();
@@ -1377,7 +1427,23 @@ impl RenderLoop {
                     Handled::Done
                 }
             }
-            Message::SnapshotChanged => Handled::Redraw,
+            Message::SetQuality(quality) => {
+                if quality == self.quality {
+                    return Handled::Done;
+                }
+                self.quality = quality;
+                self.force_present = true;
+                Handled::Redraw
+            }
+            Message::SetView(view) => {
+                if view == self.view {
+                    return Handled::Done;
+                }
+                self.view = view;
+                self.force_present = true;
+                Handled::Redraw
+            }
+            Message::SnapshotChanged | Message::Skim => Handled::Redraw,
             Message::Redraw => {
                 self.force_present = true;
                 Handled::Redraw
@@ -1427,10 +1493,16 @@ impl RenderLoop {
         self.scene.get_or_insert_with(|| Scene::new(gpu, shared))
     }
 
-    /// The frame at the playhead, letterboxed into `width` x `height` and read back.
+    /// The frame at the playhead (or the skim time), letterboxed into `width` x `height` at full
+    /// quality and read back.
     fn render_offscreen(&mut self, width: u32, height: u32) -> Option<OffscreenFrame> {
-        let project = self.shared.snapshot.load_full();
-        let time = self.shared.transport.playhead();
+        let project = self.shared.played.project();
+        let time = self.paused_time();
+        let size = render_size(
+            (project.settings.width, project.settings.height),
+            (width, height),
+            1,
+        );
         let gpu = Arc::clone(&self.gpu);
         let mut encoder = gpu
             .device
@@ -1447,15 +1519,7 @@ impl RenderLoop {
             let (gpu, shared) = (&self.gpu, &self.shared);
             self.scene.get_or_insert_with(|| Scene::new(gpu, shared))
         };
-        scene.compose(
-            &gpu,
-            &mut encoder,
-            &mut canvas,
-            &project,
-            time,
-            (width, height),
-            false,
-        );
+        scene.compose(&gpu, &mut encoder, &mut canvas, &project, time, size, false);
         let offscreen = self.offscreen.as_mut()?;
         offscreen.canvas = canvas;
         let canvas = offscreen.canvas.as_ref()?;
@@ -1514,7 +1578,9 @@ impl RenderLoop {
         else {
             return nothing;
         };
-        let project = self.shared.snapshot.load_full();
+        let project = self.shared.played.project();
+        let canvas_size = (project.settings.width, project.settings.height);
+        let size = preview_render_size(canvas_size, surface_size, self.quality, self.view);
         let gpu = Arc::clone(&self.gpu);
         let mut encoder = gpu
             .device
@@ -1522,15 +1588,9 @@ impl RenderLoop {
                 label: Some("preview"),
             });
         let mut canvas = self.canvas.take();
-        let composed = self.scene().compose(
-            &gpu,
-            &mut encoder,
-            &mut canvas,
-            &project,
-            time,
-            surface_size,
-            true,
-        );
+        let composed =
+            self.scene()
+                .compose(&gpu, &mut encoder, &mut canvas, &project, time, size, true);
         self.canvas = canvas;
         let late_layers = composed.late_layers;
         if !composed.drawn && !self.force_present && !always {
@@ -1584,14 +1644,13 @@ impl RenderLoop {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         if let Some(canvas) = &self.canvas {
-            target.present.encode(
+            target.present.encode_rect(
                 &gpu.device,
                 &gpu.queue,
                 &mut encoder,
                 &canvas.view,
-                canvas.size,
                 &view,
-                surface_size,
+                present_rect(canvas_size, surface_size, self.view),
             );
         }
         gpu.queue.submit([encoder.finish()]);
@@ -1758,6 +1817,66 @@ mod tests {
         assert_eq!(probe.next(SHORT), Some(Wake::Redraw));
         assert_eq!(probe.next(SHORT), None);
         assert!(preview.gpu().is_none());
+    }
+
+    #[test]
+    fn quality_view_and_skim_wake_the_render_thread() {
+        use crate::render::PreviewZoom;
+        let (preview, probe) = PreviewHandle::detached(snapshot(project_of(10)));
+        preview.set_quality(PreviewQuality::Half);
+        preview.set_view(PreviewView {
+            zoom: PreviewZoom::Percent(1000),
+            pan: (2.0, f32::NAN),
+        });
+        preview.playback().set_skim(Some(Time::from_seconds(3)));
+        assert_eq!(
+            probe.next(SHORT),
+            Some(Wake::SetQuality(PreviewQuality::Half))
+        );
+        assert_eq!(
+            probe.next(SHORT),
+            Some(Wake::SetView(PreviewView {
+                zoom: PreviewZoom::Percent(400),
+                pan: (0.5, 0.0),
+            })),
+            "clamped"
+        );
+        assert_eq!(probe.next(SHORT), Some(Wake::Skim));
+        assert_eq!(probe.next(SHORT), None, "a skim sends no tick request");
+    }
+
+    /// The render thread shows the skim time while paused and the playhead otherwise.
+    #[test]
+    fn the_paused_preview_shows_the_skim_time() {
+        let mut project = Project::new("Test");
+        let red = app_core::Rgba8::rgb(255, 0, 0);
+        let blue = app_core::Rgba8::rgb(0, 0, 255);
+        project.tracks[0].clips = vec![
+            app_core::Clip::color("R", Time::ZERO, Time::from_seconds(1), red),
+            app_core::Clip::color("B", Time::from_seconds(1), Time::from_seconds(1), blue),
+        ];
+        let preview = match PreviewHandle::spawn(PreviewSetup::new(snapshot(project))) {
+            Ok(preview) => preview,
+            Err(err) => {
+                eprintln!("skipping GPU test: {err}");
+                return;
+            }
+        };
+        let centre = |preview: &PreviewHandle| {
+            let frame = preview
+                .render_frame(16, 9, Duration::from_secs(30))
+                .expect("a frame");
+            let at = ((4 * 16 + 8) * 4) as usize;
+            [frame.rgba[at], frame.rgba[at + 1], frame.rgba[at + 2]]
+        };
+        assert_eq!(centre(&preview), [255, 0, 0]);
+        preview
+            .playback()
+            .set_skim(Some(Time::from_seconds(1) + Time(1)));
+        assert_eq!(centre(&preview), [0, 0, 255], "the skim time");
+        assert_eq!(preview.playback().status().time, Time::ZERO);
+        preview.playback().set_skim(None);
+        assert_eq!(centre(&preview), [255, 0, 0], "the playhead again");
     }
 
     /// The real render thread handles wakes while it has no window to draw into: it stays

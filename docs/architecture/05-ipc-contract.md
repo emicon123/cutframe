@@ -209,8 +209,13 @@ Backend: `src-tauri/src/export/` (`probe.rs`: `EncoderProbe`, cached in `AppStat
 |---|---|---|---|
 | `setPreviewRect` | `rect: PreviewRect` | — | Physical pixels, webview-relative |
 | `setPreviewVisible` | `visible: bool` | — | Native window show/hide |
+| `setPreviewQuality` | `quality: PreviewQuality` (`full` / `half` / `quarter`) | — | Render size divided by 1, 2, 4 (render-graph §8); a UI preference, next frame, also while playing |
+| `setPreviewView` | `view: PreviewView { zoom: { kind: "fit" } \| { kind: "percent", percent }, panX, panY }` | — | `percent` clamped to `PREVIEW_ZOOM_MIN_PERCENT..=PREVIEW_ZOOM_MAX_PERCENT` (25–400), pan in canvas fractions from the centre clamped to ±0.5 (`null` = 0), ignored at `fit`; black outside the canvas |
 
-These are called by a `ResizeObserver` in `PreviewArea`, not by a user action, and are infallible.
+`setPreviewRect` and `setPreviewVisible` are called by a `ResizeObserver` in `PreviewArea`, not by a
+user action. All four are infallible and fire-and-forget (nothing happens without a preview engine).
+Full screen needs no command: the main window goes full screen and the child window follows the
+rectangle (ADR-0005 amendment §5).
 
 ### 4.8 Playback and transport
 
@@ -225,12 +230,15 @@ engine.
 | `pausePlayback` | — | — | Pauses on the start of the frame on screen |
 | `shuttle` | `key: ShuttleKey` (`reverse` / `pause` / `forward`) | — | J/K/L: rates ±1, 2, 4, 8; only 1x has sound |
 | `stepFrames` | `frames: i32` | `u32` seek generation | Pauses, then moves whole frames, clamped |
-| `setLoop` | `on: bool` | — | Loops the whole timeline |
+| `setLoop` | `on: bool` | — | Loops the whole timeline (the media item while a media target plays) |
 | `getPlayback` | — | `PlaybackTick` | The current state (start-up, webview reload); paused at 0 without an engine |
+| `setSkim` | `time: Time \| null` | — | Task 0340. While paused the preview shows `time` (clamped) instead of the playhead, no sound, no generation, no tick; `null` shows the playhead. Ignored while playing; play, a target change and a new project clear it. `invalidEdit` outside ±2^53 flicks; a no-op without an engine |
+| `setPlaybackTarget` | `target: PlaybackTarget` (`{ kind: "timeline" }` / `{ kind: "media", media }`) | `u32` seek generation | Task 0340. Pauses, clears the skim, a new generation; `media` plays that item alone at media time 0 (the transport commands then act on media time), `timeline` returns to the kept timeline playhead. Same target: no change. `invalidEdit` for media not in the project. A new project plays the timeline |
 
 The UI mirrors the transport from `playback-tick` and ignores a tick whose `seek` is older than the
-last generation `seek` or `stepFrames` returned; `playheadStore.seekTo` sends `scrub` at most once
-per animation frame while the ruler is dragged and `exact` on press, release and jumps.
+last generation `seek`, `stepFrames` or `setPlaybackTarget` returned; `playheadStore.seekTo` sends
+`scrub` at most once per animation frame while the ruler is dragged and `exact` on press, release
+and jumps. The tick's `time` is media time while `target` is a media item, and never the skim time.
 
 ## 5. Errors
 
@@ -278,7 +286,7 @@ jobs are logged in `JobHandle::finish` (`warn`; `cancelled` at `info`). Log file
 | `export-capabilities-changed` | `ExportCapabilities` | Once per session, when the encoder probe started by the first `getExportCapabilities` finished (before its `job-finished`) |
 | `export-report` | `{ jobId, outcome }` | Once per export, just before its `job-finished`; not for a cancelled export. `outcome` is `{ kind: "done", path, bytes, encoder, elapsedMs }` or `{ kind: "failed", error: ExportErrorKind, media?, keptPath?, detail }` |
 | `update-progress` | `{ state: "downloading", downloaded, total? }` \| `{ state: "ready" }` \| `{ state: "failed", error }` | During an `installUpdate` download, ≤ 10 Hz; byte counts are decimal strings; exactly one `ready` or `failed` per download |
-| `playback-tick` | `PlaybackTick { time, state, rate, looping, seek, droppedFrames, target }` | From the render thread: at most 60 Hz while playing, and once after every play, pause, shuttle, seek, step, loop toggle, preroll end, end of playback, project replacement and audio device loss |
+| `playback-tick` | `PlaybackTick { time, state, rate, looping, seek, droppedFrames, target }` | From the render thread: at most 60 Hz while playing, and once after every play, pause, shuttle, seek, step, loop toggle, target change, preroll end, end of playback, project replacement and audio device loss (not after a skim change) |
 
 `quit-requested` and `confirmClose` are one protocol: the window's `CloseRequested` handler closes a
 clean project with no export immediately; otherwise it cancels the close and emits the event with

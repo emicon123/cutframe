@@ -23,8 +23,8 @@ use super::IpcError;
 use super::events::PlaybackTick;
 use super::types::{
     AboutInfo, AppInfo, BuildProfile, CacheInfo, ExportCapabilities, ExportCheck, ExportSettings,
-    JobId, PreviewMode, PreviewRect, ProjectState, RecentProject, RecoveryEntry, SeekMode,
-    ShuttleKey, UpdateInfo,
+    JobId, PlaybackTarget, PreviewMode, PreviewQuality, PreviewRect, PreviewView, ProjectState,
+    RecentProject, RecoveryEntry, SeekMode, ShuttleKey, UpdateInfo,
 };
 use crate::export;
 use crate::import;
@@ -842,6 +842,66 @@ pub fn set_preview_visible(app: AppHandle, state: State<'_, AppState>, visible: 
     if let Some(preview) = &state.preview {
         preview.set_visible(&app, visible);
     }
+}
+
+/// The preview's resolution (render-graph.md §8): the preview composites at the size it is
+/// shown at (at most the project canvas), divided by 1 (`full`), 2 (`half`) or 4 (`quarter`).
+/// A UI preference: send it on startup and when it changes. Takes effect on the next frame, also
+/// while playing. Fire-and-forget; nothing happens without a preview engine.
+#[tauri::command]
+#[specta::specta]
+pub fn set_preview_quality(state: State<'_, AppState>, quality: PreviewQuality) {
+    if let Some(preview) = &state.preview {
+        preview.set_quality(quality.into());
+    }
+}
+
+/// The preview's zoom and pan (render-graph.md §8): `fit` shows the whole canvas letterboxed;
+/// `percent` shows canvas pixels at that percentage of screen pixels (clamped to
+/// `PREVIEW_ZOOM_MIN_PERCENT..=PREVIEW_ZOOM_MAX_PERCENT`), with `panX`/`panY` (canvas fractions
+/// from the centre, clamped to -0.5..=0.5) at the centre of the preview area, black outside the
+/// canvas. Takes effect on the next frame. Fire-and-forget; nothing happens without a preview
+/// engine. Full screen needs no command: the native preview follows `setPreviewRect`.
+#[tauri::command]
+#[specta::specta]
+pub fn set_preview_view(state: State<'_, AppState>, view: PreviewView) {
+    if let Some(preview) = &state.preview {
+        preview.set_view(view.into());
+    }
+}
+
+/// Hover skimming (playback.md §4.2): while paused, the preview shows `time` (clamped to the
+/// range of what plays; media time while a media item plays) instead of the playhead, without
+/// sound; `null` shows the playhead again (send it when the pointer leaves the timeline). Moves
+/// no playhead, makes no seek generation and sends no `playbackTick` (ticks keep reporting the
+/// playhead). Ignored while playing; play, a target change and a new project clear it; seek and
+/// step do not. Fails with `invalidEdit` for a time outside ±2^53 flicks; does nothing without a
+/// preview engine. Never blocks.
+#[tauri::command]
+#[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
+pub fn set_skim(state: State<'_, AppState>, time: Option<Time>) -> Result<(), IpcError> {
+    state.set_skim(time)
+}
+
+/// What the preview plays (playback.md §8, source preview): `media` plays one media item on its
+/// own (picture fitted, its default audio stream, its own length and frame rate; an image is
+/// shown still for 5 s; offline media shows the offline placeholder) and every transport command
+/// (`togglePlayback`, `seek`, `stepFrames`, `shuttle`, `setLoop`) works in its media time;
+/// `timeline` plays the timeline again at the playhead it had before. A change pauses, clears
+/// the skim and makes a new seek generation, which is returned (ignore older ticks); the tick
+/// carries the new `target`. The same target again changes nothing and returns the current
+/// generation. Fails with `invalidEdit` for media that is not in the project and with
+/// `unavailable` without a preview engine. A new or opened project plays the timeline. Never
+/// blocks.
+#[tauri::command]
+#[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
+pub fn set_playback_target(
+    state: State<'_, AppState>,
+    target: PlaybackTarget,
+) -> Result<u32, IpcError> {
+    state.set_playback_target(target)
 }
 
 /// Moves the playhead to `time` and redraws the preview: `scrub` while the playhead is dragged

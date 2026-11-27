@@ -82,14 +82,16 @@ pub struct OpenFileRequested {
 }
 
 /// The transport (playback.md §8): at most 60 Hz while playing, and once after every change
-/// (play, pause, shuttle, seek, step, loop toggle, end of playback, project replaced), so the
-/// last state always arrives. Ignore a tick whose `seek` is older than the generation the last
-/// `seek` or `stepFrames` returned. `getPlayback` returns the same payload.
+/// (play, pause, shuttle, seek, step, loop toggle, target change, end of playback, project
+/// replaced), so the last state always arrives; a skim change sends none. Ignore a tick whose
+/// `seek` is older than the generation the last `seek` or `stepFrames` returned.
+/// `getPlayback` returns the same payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Event)]
 #[serde(rename_all = "camelCase")]
 pub struct PlaybackTick {
     /// Timeline time of the frame on screen (its start) while playing; the playhead while
-    /// paused. Between ticks the UI may extrapolate `time + elapsed x rate` for drawing.
+    /// paused. Media time while `target` is a media item. Never the skim time (`setSkim`).
+    /// Between ticks the UI may extrapolate `time + elapsed x rate` for drawing.
     pub time: Time,
     pub state: TransportStateView,
     /// -8..=8 (1, 2, 4, 8 forward, negative reverse), 0 while paused.
@@ -99,6 +101,7 @@ pub struct PlaybackTick {
     pub seek: u32,
     /// Frames dropped since the last play start (skipped or shown late).
     pub dropped_frames: u32,
+    /// What plays (`setPlaybackTarget`).
     pub target: PlaybackTarget,
 }
 
@@ -127,7 +130,7 @@ impl From<TransportStatus> for PlaybackTick {
             looping: status.looping,
             seek: status.seek_gen,
             dropped_frames: status.dropped_frames,
-            target: PlaybackTarget::Timeline,
+            target: status.target.into(),
         }
     }
 }

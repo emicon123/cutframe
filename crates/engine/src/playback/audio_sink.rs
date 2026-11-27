@@ -10,11 +10,11 @@
 use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
 use std::time::{Duration, Instant};
 
-use app_core::{FLICKS_PER_SECOND, Project, Time};
-use arc_swap::ArcSwap;
+use app_core::{FLICKS_PER_SECOND, Time};
 
 use super::Playback;
 use super::clock::ClockSource;
+use super::source::ProjectSource;
 use super::transport::{AudioCommand, Rate};
 use crate::audio::{AudioEngine, AudioEvent};
 use crate::transport::{SeekMode, TransportShared};
@@ -85,10 +85,11 @@ impl std::fmt::Debug for EngineAudio {
 }
 
 impl EngineAudio {
-    /// Starts the audio engine (its feeder thread) for `transport` and `snapshot`.
+    /// Starts the audio engine (its feeder thread) for `transport` and what `snapshot` plays
+    /// (the preview's `PlaySource`).
     pub fn new(
         transport: Arc<TransportShared>,
-        snapshot: Arc<ArcSwap<Project>>,
+        snapshot: Arc<dyn ProjectSource>,
     ) -> std::io::Result<Self> {
         let playback: Arc<OnceLock<Weak<Playback>>> = Arc::new(OnceLock::new());
         let attached = Arc::clone(&playback);
@@ -168,7 +169,7 @@ pub fn flicks_of(duration: Duration) -> Time {
 /// (forward) or at 0 (reverse) otherwise.
 pub struct NoAudio {
     transport: Arc<TransportShared>,
-    snapshot: Arc<ArcSwap<Project>>,
+    snapshot: Arc<dyn ProjectSource>,
     run: Mutex<Option<Run>>,
 }
 
@@ -207,7 +208,7 @@ impl Run {
 }
 
 impl NoAudio {
-    pub fn new(transport: Arc<TransportShared>, snapshot: Arc<ArcSwap<Project>>) -> Self {
+    pub fn new(transport: Arc<TransportShared>, snapshot: Arc<dyn ProjectSource>) -> Self {
         Self {
             transport,
             snapshot,
@@ -229,7 +230,7 @@ impl NoAudio {
         if run.since.is_none() {
             run.since = Some(now);
         }
-        let duration = self.snapshot.load().duration();
+        let duration = self.snapshot.project().duration();
         let mut time = run.time_at(now);
         if run.rate.is_forward() && time >= duration {
             if self.transport.looping() && duration > Time::ZERO {
@@ -298,6 +299,9 @@ impl AudioSink for NoAudio {
 
 #[cfg(test)]
 mod tests {
+    use app_core::Project;
+    use arc_swap::ArcSwap;
+
     use super::*;
 
     fn project(seconds: i64) -> Arc<ArcSwap<Project>> {

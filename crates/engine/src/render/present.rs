@@ -2,7 +2,8 @@
 //! `Rgba16Float` canvas into an 8-bit target with a black letterbox. The preview presents into
 //! its `Bgra8Unorm` surface with it, and the offline output pass converts the canvas 1:1 into
 //! `Rgba8Unorm` R'G'B' with it (`OfflineRenderer`). Engine overlays (task 0360) are drawn after
-//! it, in the preview only.
+//! it, in the preview only. The preview's zoom and pan (`super::view`) only change the rectangle
+//! the canvas is drawn into.
 
 use bytemuck::{Pod, Zeroable};
 
@@ -134,6 +135,20 @@ impl PresentPass {
         target_size: (u32, u32),
     ) {
         let rect = letterbox(canvas_size, target_size);
+        self.encode_rect(device, queue, encoder, canvas, target, rect);
+    }
+
+    /// Records the scale of `canvas` into the rectangle `rect` (x, y, width, height in `target`
+    /// pixels, see `super::view::present_rect`), black around it.
+    pub fn encode_rect(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        canvas: &wgpu::TextureView,
+        target: &wgpu::TextureView,
+        rect: [f32; 4],
+    ) {
         queue.write_buffer(&self.uniforms, 0, bytemuck::bytes_of(&Uniforms { rect }));
         if self.bound.as_ref().is_none_or(|(view, _)| view != canvas) {
             let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {

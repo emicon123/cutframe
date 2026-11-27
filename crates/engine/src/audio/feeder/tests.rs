@@ -3,6 +3,7 @@
 //! wake-ups. No device, no thread, no file.
 
 use app_core::{FLICKS_PER_SECOND, Project, Time};
+use arc_swap::ArcSwap;
 
 use super::*;
 use crate::audio::mix::tests::{Constant, audio_asset, audio_clip};

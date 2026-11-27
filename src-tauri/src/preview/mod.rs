@@ -15,7 +15,7 @@ use app_core::Project;
 use arc_swap::ArcSwap;
 use engine::playback::{Playback, PlaybackTicks};
 use engine::preview::{GpuChanged, MediaUnavailable, PreviewHandle, PreviewSetup};
-use engine::render::{GpuError, GpuInfo, OffscreenFrame};
+use engine::render::{GpuError, GpuInfo, OffscreenFrame, PreviewQuality, PreviewView};
 use engine::transport::PlayState;
 use tauri::{AppHandle, Manager, WebviewWindow};
 use tauri_specta::Event;
@@ -180,6 +180,17 @@ impl Preview {
         #[cfg(not(windows))]
         let _ = app;
         self.engine.set_visible(shown);
+    }
+
+    /// The preview's resolution scale (`set_preview_quality`); the next frame uses it.
+    pub fn set_quality(&self, quality: PreviewQuality) {
+        self.engine.set_quality(quality);
+    }
+
+    /// The preview's zoom and pan (`set_preview_view`), clamped by the engine; the next frame
+    /// uses it.
+    pub fn set_view(&self, view: PreviewView) {
+        self.engine.set_view(view);
     }
 
     /// One offscreen frame, clamped to [`MAX_FRAME_SIZE`].

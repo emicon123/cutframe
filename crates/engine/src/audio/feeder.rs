@@ -42,7 +42,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use app_core::{Project, Time};
-use arc_swap::{ArcSwap, ArcSwapOption};
+use arc_swap::ArcSwapOption;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 
@@ -56,6 +56,7 @@ use super::{sample_offset, samples_before};
 use crate::playback::clock::{
     AudioClock, ClockCell, ClockSource, WallClock, init_monotonic, monotonic_nanos,
 };
+use crate::playback::source::ProjectSource;
 use crate::transport::{SeekMode, TransportShared};
 
 /// How long the feeder sleeps between fills while playing.
@@ -153,7 +154,7 @@ impl AudioEngine {
     /// block); `events` is called on the feeder thread.
     pub fn new(
         transport: Arc<TransportShared>,
-        snapshot: Arc<ArcSwap<Project>>,
+        snapshot: Arc<dyn ProjectSource>,
         events: impl Fn(AudioEvent) + Send + Sync + 'static,
     ) -> std::io::Result<Self> {
         Self::with_options(transport, snapshot, events, AudioOptions::default())
@@ -161,7 +162,7 @@ impl AudioEngine {
 
     pub fn with_options(
         transport: Arc<TransportShared>,
-        snapshot: Arc<ArcSwap<Project>>,
+        snapshot: Arc<dyn ProjectSource>,
         events: impl Fn(AudioEvent) + Send + Sync + 'static,
         options: AudioOptions,
     ) -> std::io::Result<Self> {
@@ -561,7 +562,7 @@ struct Output {
 struct Feeder {
     rx: Receiver<Msg>,
     transport: Arc<TransportShared>,
-    snapshot: Arc<ArcSwap<Project>>,
+    snapshot: Arc<dyn ProjectSource>,
     cell: Arc<ClockCell>,
     shared: Arc<AudioShared>,
     info: Arc<ArcSwapOption<OutputInfo>>,
@@ -812,7 +813,7 @@ impl Feeder {
             if self.transport.started() {
                 self.shared.record_fill(fill as u32);
             }
-            let project = self.snapshot.load();
+            let project = self.snapshot.project();
             let looping = self.transport.looping();
             while fill < TARGET_FILL_BLOCKS {
                 let Some(block) =
@@ -841,9 +842,9 @@ impl Feeder {
                     .prefetch(&project, maker.position(), LOOKAHEAD, sample_rate);
             }
         }
-        let frame = self.snapshot.load().settings.frame_rate.frame_duration();
+        let frame = self.snapshot.project().settings.frame_rate.frame_duration();
         if let Some((time, seek_gen, session)) = self.grains.take(Instant::now(), frame) {
-            let project = self.snapshot.load();
+            let project = self.snapshot.project();
             let blocks = make_grain(
                 &project,
                 time,

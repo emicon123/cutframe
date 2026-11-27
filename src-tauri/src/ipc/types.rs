@@ -880,12 +880,89 @@ pub enum TransportStateView {
     Playing,
 }
 
-/// What the preview plays. Only the timeline so far; a media item (source preview) comes with
-/// task 0340.
+/// What the preview plays (`setPlaybackTarget`, playback.md §8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum PlaybackTarget {
+    /// The timeline (the default).
     Timeline,
+    /// One media item on its own (source preview): its picture fitted, its default audio
+    /// stream, its own length and frame rate. Transport times are media times.
+    Media { media: MediaId },
+}
+
+impl From<PlaybackTarget> for engine::playback::PlaybackTarget {
+    fn from(target: PlaybackTarget) -> Self {
+        match target {
+            PlaybackTarget::Timeline => Self::Timeline,
+            PlaybackTarget::Media { media } => Self::Media(media),
+        }
+    }
+}
+
+impl From<engine::playback::PlaybackTarget> for PlaybackTarget {
+    fn from(target: engine::playback::PlaybackTarget) -> Self {
+        match target {
+            engine::playback::PlaybackTarget::Timeline => Self::Timeline,
+            engine::playback::PlaybackTarget::Media(media) => Self::Media { media },
+        }
+    }
+}
+
+/// The preview's resolution (`setPreviewQuality`, render-graph.md §8): the composite at full,
+/// half or quarter of the preview size. A UI preference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum PreviewQuality {
+    Full,
+    Half,
+    Quarter,
+}
+
+impl From<PreviewQuality> for engine::render::PreviewQuality {
+    fn from(quality: PreviewQuality) -> Self {
+        match quality {
+            PreviewQuality::Full => Self::Full,
+            PreviewQuality::Half => Self::Half,
+            PreviewQuality::Quarter => Self::Quarter,
+        }
+    }
+}
+
+/// The preview's zoom (`setPreviewView`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum PreviewZoom {
+    /// The whole canvas fitted into the preview area (the default).
+    Fit,
+    /// Canvas pixels at `percent` % of screen (physical) pixels: 100 is one canvas pixel per
+    /// screen pixel. Clamped to `PREVIEW_ZOOM_MIN_PERCENT..=PREVIEW_ZOOM_MAX_PERCENT`.
+    Percent { percent: u16 },
+}
+
+/// Zoom and pan of the preview (`setPreviewView`, render-graph.md §8).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewView {
+    pub zoom: PreviewZoom,
+    /// The canvas point shown at the centre of the preview area, relative to the canvas centre,
+    /// in canvas widths: 0 centred, 0.5 the right edge, -0.5 the left edge. Clamped to
+    /// -0.5..=0.5; ignored at `fit`. `null` (a float's generated type allows it) counts as 0.
+    pub pan_x: Option<f32>,
+    /// The same in canvas heights: 0.5 the bottom edge.
+    pub pan_y: Option<f32>,
+}
+
+impl From<PreviewView> for engine::render::PreviewView {
+    fn from(view: PreviewView) -> Self {
+        Self {
+            zoom: match view.zoom {
+                PreviewZoom::Fit => engine::render::PreviewZoom::Fit,
+                PreviewZoom::Percent { percent } => engine::render::PreviewZoom::Percent(percent),
+            },
+            pan: (view.pan_x.unwrap_or(0.0), view.pan_y.unwrap_or(0.0)),
+        }
+    }
 }
 
 /// The GPU capability report (status bar, Preferences → Performance).
@@ -1055,6 +1132,48 @@ mod tests {
     use engine::render::{DeviceKind, FallbackReason, GpuInfo};
 
     use super::*;
+
+    #[test]
+    fn preview_controls_have_stable_json_shapes() {
+        let view: PreviewView = serde_json::from_value(serde_json::json!({
+            "zoom": { "kind": "percent", "percent": 200 },
+            "panX": 0.25,
+            "panY": null,
+        }))
+        .unwrap();
+        assert_eq!(
+            engine::render::PreviewView::from(view),
+            engine::render::PreviewView {
+                zoom: engine::render::PreviewZoom::Percent(200),
+                pan: (0.25, 0.0),
+            }
+        );
+        let fit: PreviewView = serde_json::from_value(serde_json::json!({
+            "zoom": { "kind": "fit" }, "panX": 0, "panY": 0,
+        }))
+        .unwrap();
+        assert_eq!(fit.zoom, PreviewZoom::Fit);
+        assert_eq!(
+            serde_json::to_value(PreviewQuality::Quarter).unwrap(),
+            "quarter"
+        );
+
+        let media = MediaId::new();
+        let target = PlaybackTarget::Media { media };
+        let json = serde_json::to_value(target).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({ "kind": "media", "media": media.to_string() })
+        );
+        assert_eq!(
+            PlaybackTarget::from(engine::playback::PlaybackTarget::from(target)),
+            target
+        );
+        assert_eq!(
+            serde_json::to_value(PlaybackTarget::Timeline).unwrap(),
+            serde_json::json!({ "kind": "timeline" })
+        );
+    }
 
     #[test]
     fn gpu_report_serializes_stable_keys() {

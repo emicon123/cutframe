@@ -178,11 +178,17 @@ impl Effects {
 #[derive(Debug)]
 pub struct Transport {
     shared: Arc<TransportShared>,
+    /// The timeline playhead while a media target plays (playback.md §8): kept, and restored
+    /// when the timeline is the target again.
+    timeline_playhead: Time,
 }
 
 impl Transport {
     pub fn new(shared: Arc<TransportShared>) -> Self {
-        Self { shared }
+        Self {
+            shared,
+            timeline_playhead: Time::ZERO,
+        }
     }
 
     pub fn shared(&self) -> &Arc<TransportShared> {
@@ -360,8 +366,61 @@ impl Transport {
         Effects::changed(vec![AudioCommand::SetLooping(on)])
     }
 
+    /// The preview's target changes (playback.md §8, task 0340): pauses on the frame on screen
+    /// of `before` (the range of the old target), keeps the playhead when `leaving_timeline`,
+    /// then lets `switch` change the target and return the new range, and moves to the kept
+    /// timeline playhead when `entering_timeline`, else to 0 (a new generation, the skim
+    /// cleared).
+    pub fn retarget(
+        &mut self,
+        before: Timeline,
+        leaving_timeline: bool,
+        entering_timeline: bool,
+        switch: impl FnOnce() -> Timeline,
+    ) -> Effects {
+        let mut effects = self.pause(before);
+        if leaving_timeline {
+            self.timeline_playhead = self.shared.playhead();
+        }
+        let after = switch();
+        let to = if entering_timeline {
+            self.timeline_playhead
+        } else {
+            Time::ZERO
+        };
+        let to = clamp_to_timeline(to, after.duration);
+        self.shared.set_skim(None);
+        let seek_gen = self.shared.seek(to);
+        self.shared.set_shown(to);
+        effects.changed = true;
+        effects.seek = Some((seek_gen, SeekMode::Exact));
+        effects.audio.push(AudioCommand::Seek {
+            to,
+            seek_gen,
+            mode: SeekMode::Exact,
+        });
+        effects
+    }
+
+    /// Skim (playback.md §4.2, task 0340): the time the paused preview shows instead of the
+    /// playhead, clamped to `0..=duration`; `None` shows the playhead again. Ignored while
+    /// playing (playing clears it). Changes no generation and no tick: returns whether the
+    /// picture's input changed.
+    pub fn set_skim(&self, time: Option<Time>, timeline: Timeline) -> bool {
+        if !self.state().is_paused() {
+            return false;
+        }
+        let time = time.map(|t| clamp_to_timeline(t, timeline.duration));
+        if self.shared.skim() == time {
+            return false;
+        }
+        self.shared.set_skim(time);
+        true
+    }
+
     /// A new, opened or restored project: pause, playhead 0, a new generation.
-    pub fn reset(&self) -> Effects {
+    pub fn reset(&mut self) -> Effects {
+        self.timeline_playhead = Time::ZERO;
         let mut effects = if self.state().is_paused() {
             Effects::changed(Vec::new())
         } else {
@@ -721,7 +780,7 @@ mod tests {
     #[test]
     fn loop_and_project_replacement() {
         let tl = timeline(10);
-        let t = transport();
+        let mut t = transport();
         let effects = t.set_loop(true);
         assert!(t.shared.looping());
         assert_eq!(effects.audio, [AudioCommand::SetLooping(true)]);
@@ -749,5 +808,73 @@ mod tests {
         t.shared.set_skim(Some(Time::from_seconds(1)));
         t.toggle(tl);
         assert_eq!(t.shared.skim(), None);
+    }
+
+    #[test]
+    fn skim_is_honoured_only_while_paused_and_play_clears_it() {
+        let tl = timeline(10);
+        let t = transport();
+        t.shared.seek(Time::from_seconds(2));
+        let generation = t.shared.seek_generation();
+        assert!(t.set_skim(Some(Time::from_seconds(4)), tl));
+        assert_eq!(t.shared.skim(), Some(Time::from_seconds(4)));
+        assert!(!t.set_skim(Some(Time::from_seconds(4)), tl), "unchanged");
+        // Clamped to the timeline; no generation, the playhead stays.
+        assert!(t.set_skim(Some(Time::from_seconds(60)), tl));
+        assert_eq!(t.shared.skim(), Some(Time::from_seconds(10)));
+        assert_eq!(t.shared.playhead(), Time::from_seconds(2));
+        assert_eq!(t.shared.seek_generation(), generation);
+
+        // Play clears it; while playing a skim is ignored.
+        t.toggle(tl);
+        assert_eq!(t.shared.skim(), None);
+        assert!(!t.set_skim(Some(Time::from_seconds(1)), tl));
+        assert_eq!(t.shared.skim(), None);
+        t.pause(tl);
+        assert!(t.set_skim(Some(Time::from_seconds(1)), tl));
+        assert!(t.set_skim(None, tl));
+        assert_eq!(t.shared.skim(), None);
+    }
+
+    #[test]
+    fn a_media_target_keeps_the_timeline_playhead_and_returns_to_it() {
+        let tl = timeline(10);
+        let media = timeline(3);
+        let mut t = transport();
+        t.shared.seek(Time::from_seconds(6));
+        t.toggle(tl);
+        show(&t, Time::from_seconds(7));
+        t.set_skim(Some(Time(1)), tl);
+        let before = t.shared.seek_generation();
+
+        // To the media: pauses (on the frame on screen), starts at media time 0.
+        let effects = t.retarget(tl, true, false, || media);
+        assert_eq!(t.state(), TransportState::Paused);
+        assert_eq!(effects.audio[0], AudioCommand::Pause);
+        assert_eq!(t.shared.playhead(), Time::ZERO);
+        assert_eq!(t.shared.skim(), None);
+        assert_eq!(t.shared.seek_generation(), before + 1);
+        assert_eq!(effects.seek, Some((before + 1, SeekMode::Exact)));
+
+        // Transport commands act on media time.
+        t.step(10, media);
+        assert_eq!(t.shared.playhead(), Time(10 * FRAME));
+        t.seek(Time::from_seconds(9), SeekMode::Exact, media);
+        assert_eq!(t.shared.playhead(), Time::from_seconds(3));
+
+        // Another media item: the timeline playhead is still the one kept.
+        t.retarget(media, false, false, || media);
+        assert_eq!(t.shared.playhead(), Time::ZERO);
+
+        // Back to the timeline at the kept playhead (the frame shown when it paused).
+        let effects = t.retarget(media, false, true, || tl);
+        assert_eq!(t.shared.playhead(), Time::from_seconds(7));
+        assert_eq!(t.shared.shown(), Time::from_seconds(7));
+        assert!(effects.changed);
+
+        // An edit made the timeline shorter meanwhile: clamped.
+        t.retarget(tl, true, false, || media);
+        t.retarget(media, false, true, || timeline(5));
+        assert_eq!(t.shared.playhead(), Time::from_seconds(5));
     }
 }

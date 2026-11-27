@@ -89,6 +89,10 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             commands::open_logs_folder,
             commands::set_preview_rect,
             commands::set_preview_visible,
+            commands::set_preview_quality,
+            commands::set_preview_view,
+            commands::set_skim,
+            commands::set_playback_target,
             commands::seek,
             commands::toggle_playback,
             commands::pause_playback,
@@ -158,6 +162,9 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             app_core::media::WAVEFORM_BUCKETS_PER_SECOND,
         )
         .constant("POSTER_LONG_SIDE", app_core::media::POSTER_LONG_SIDE)
+        // The range of `PreviewZoom::percent` (render-graph.md §8).
+        .constant("PREVIEW_ZOOM_MIN_PERCENT", engine::render::MIN_ZOOM_PERCENT)
+        .constant("PREVIEW_ZOOM_MAX_PERCENT", engine::render::MAX_ZOOM_PERCENT)
         // The phase argument of gesture-capable commands (ADR-0006 §4). Exported on its own so the
         // UI's gesture helper can use it before the first such command lands.
         .typ::<app_core::EditPhase>()

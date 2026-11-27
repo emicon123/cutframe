@@ -154,6 +154,27 @@ feeder or export thread; the callback is unchanged.
   for resampling and reverse, 1.3 ms for `atempo`, whose window scales with the rate).
 - **Upgrade path:** `signalsmith-stretch` (MIT) can replace the graph inside `TimeStage`.
 
+## 8. Skim and source preview (0340)
+
+- **What plays** is a `PlaySource` (`crates/engine/src/playback/source.rs`): the shell's timeline
+  snapshot, or for `PlaybackTarget::Media` a **source project** (`source_project`) built from that
+  media: one clip of the whole media on one track, canvas = the media's display size (audio-only:
+  the timeline canvas, black), the media's own frame rate when the flick grid allows it (else the
+  nearest common rate within 1 %, else the timeline's), an image held for 5 s, and audio props
+  when the media has sound. The render thread, `Playback` (range, clamps, frame grid), the feeder
+  (`mix_block`'s voices: that one clip, which reads the default audio stream) and `NoAudio` all
+  read it through `ProjectSource::project`, so source preview needs no second render or audio
+  path. It is rebuilt lazily (compare-and-swap) when the timeline snapshot changes; media removed
+  from the project keeps its clip without the asset (offline placeholder, silent).
+- **Target change** (`Playback::set_target`, `Transport::retarget`): pauses on the frame on screen,
+  keeps the timeline playhead when leaving the timeline, switches, then seeks exact (new
+  generation, skim cleared) to media time 0 or back to the kept timeline playhead (clamped). A
+  project replacement (`Playback::reset`) returns to the timeline. Ticks carry `target`.
+- **Skim** (`Playback::set_skim`, `TransportShared::skim`): only while paused; clamped to the range
+  of what plays; the paused draw uses it instead of the playhead; no audio command, no generation,
+  no tick (`TransportWake::Skim` only redraws). Play (`Transport::start`), a target change and a
+  reset clear it; seek and step do not.
+
 ## Links
 
 - [playback design](../design/playback.md), [export design](../design/export.md) (mixer reuse)

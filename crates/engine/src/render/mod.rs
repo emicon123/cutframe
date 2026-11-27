@@ -16,6 +16,7 @@ pub mod plan;
 pub(crate) mod present;
 #[cfg(test)]
 mod timing;
+pub mod view;
 
 pub use compositor::{
     CANVAS_FORMAT, CacheBudget, Compositor, CompositorConfig, MissingLayers, RenderOutcome,
@@ -33,4 +34,8 @@ pub(crate) use offscreen::Readback;
 pub use offscreen::{OUTPUT_FORMAT, OffscreenFrame};
 pub use plan::{
     Affine2, BackgroundPlan, LayerContent, LayerPlan, RenderPlan, build_plan, render_size,
+};
+pub use view::{
+    MAX_ZOOM_PERCENT, MIN_ZOOM_PERCENT, PreviewQuality, PreviewView, PreviewZoom, present_rect,
+    preview_render_size,
 };
