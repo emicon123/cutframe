@@ -6,11 +6,17 @@
 //! times `volume.at(local) x fade(local)`, the gain evaluated at the ends of each linear piece
 //! and ramped per sample; clip boundaries are sample-accurate. The voices are summed, then
 //! clamped to -1..=1. `mix_block` itself never allocates (the per-voice scratch is on the stack).
+//!
+//! Each voice carries its clip's [`AudioPace`] (clip-speed-audio.md §5.3): a chunk still asks
+//! for `clip.source_time(t)` of its first frame, and the provider plays `n` frames from there at
+//! the pace (about `n x speed` source frames, downwards when reversed). Voices faster than 4x are
+//! skipped, not even read. Scrub grains ([`mix_scrub`]) play every voice at 1x forward.
 
 use app_core::media::MediaAsset;
 use app_core::model::{ClipId, ClipSource};
 use app_core::{AudioProps, Clip, Project, Time};
 
+use super::stretch::AudioPace;
 use super::{sample_offset, samples_before};
 
 /// `mix_block` asks a provider for at most this many frames per read (export uses blocks of
@@ -22,9 +28,12 @@ pub const MIX_CHUNK_FRAMES: usize = 1024;
 pub struct Voice<'a> {
     pub clip: ClipId,
     pub media: &'a MediaAsset,
-    /// Media time of the first frame to read.
+    /// Media time of the first frame to read (with [`AudioPace::reverse`], the first frame
+    /// plays the sample that contains it and the next ones go downwards).
     pub source_time: Time,
     pub sample_rate: u32,
+    /// How the voice plays its source (always normalized, [`AudioPace::normalized`]).
+    pub pace: AudioPace,
 }
 
 /// Where the mixer gets PCM from: [`super::AudioSources`] (FFmpeg readers), or a fake in tests.
@@ -34,7 +43,7 @@ pub trait PcmProvider {
     fn begin_block(&mut self) {}
 
     /// Fills `out` (stereo interleaved `f32`, `out.len() / 2` frames) with the voice's PCM at
-    /// `voice.sample_rate` from `voice.source_time`. Returns false if the voice is silent
+    /// `voice.sample_rate` from `voice.source_time`, at `voice.pace`. Returns false if the voice is silent
     /// (offline media, a decode error); `out` is ignored then.
     fn read(&mut self, voice: &Voice<'_>, out: &mut [f32]) -> bool;
 }
@@ -49,6 +58,32 @@ pub fn mix_block(
     sample_rate: u32,
     sources: &mut dyn PcmProvider,
     out: &mut [f32],
+) {
+    mix(project, start, frames, sample_rate, sources, out, true);
+}
+
+/// [`mix_block`] for a scrub grain (playback.md §6.5): every voice plays at 1x forward from its
+/// clip's source time, without a time stage (design §5.3: good enough to find a word). Voices
+/// faster than 4x stay silent.
+pub fn mix_scrub(
+    project: &Project,
+    start: Time,
+    frames: usize,
+    sample_rate: u32,
+    sources: &mut dyn PcmProvider,
+    out: &mut [f32],
+) {
+    mix(project, start, frames, sample_rate, sources, out, false);
+}
+
+fn mix(
+    project: &Project,
+    start: Time,
+    frames: usize,
+    sample_rate: u32,
+    sources: &mut dyn PcmProvider,
+    out: &mut [f32],
+    paced: bool,
 ) {
     let out = &mut out[..2 * frames];
     out.fill(0.0);
@@ -67,14 +102,17 @@ pub fn mix_block(
             if asset.info.audio.is_empty() {
                 continue;
             }
+            let pace = AudioPace::of(clip);
+            if !pace.sounds() {
+                continue;
+            }
+            let pace = if paced { pace } else { AudioPace::NORMAL };
             let k0 = clamp_frames(samples_before(clip.start - start, sample_rate), frames);
             let k1 = clamp_frames(samples_before(clip.end() - start, sample_rate), frames);
             let mut a = k0;
             while a < k1 {
                 let n = (k1 - a).min(MIX_CHUNK_FRAMES);
                 let t = start + sample_offset(a as i64, sample_rate);
-                // TODO(0370 step 5): pace per voice (speed, reverse, pitch, silent above 4x).
-                // Until then a sped-up clip reads 1x audio from its mapped source time.
                 let Some(source_time) = clip.source_time(t) else {
                     break;
                 };
@@ -84,6 +122,7 @@ pub fn mix_block(
                     media: asset,
                     source_time,
                     sample_rate,
+                    pace,
                 };
                 if sources.read(&voice, pcm) {
                     let gain = Gain {
@@ -184,6 +223,8 @@ pub(crate) mod tests {
     #[derive(Debug, Default)]
     pub(crate) struct Constant {
         pub reads: Vec<(ClipId, Time, usize)>,
+        /// The pace of each read.
+        pub paces: Vec<AudioPace>,
         pub silent: Vec<MediaId>,
     }
 
@@ -191,6 +232,7 @@ pub(crate) mod tests {
         fn read(&mut self, voice: &Voice<'_>, out: &mut [f32]) -> bool {
             self.reads
                 .push((voice.clip, voice.source_time, out.len() / 2));
+            self.paces.push(voice.pace);
             if self.silent.contains(&voice.media.id) {
                 return false;
             }
@@ -393,5 +435,100 @@ pub(crate) mod tests {
         let frames: Vec<usize> = sources.reads.iter().map(|r| r.2).collect();
         assert_eq!(frames, [1_024, 1_024, 952]);
         assert_eq!(sources.reads[1].1, sample_offset(1_024, SR));
+    }
+
+    fn paced(clip: &mut Clip, percent: u16, reverse: bool) {
+        let ClipSource::Media {
+            speed, reverse: r, ..
+        } = &mut clip.source
+        else {
+            unreachable!()
+        };
+        *speed = app_core::Speed::new(percent).unwrap();
+        *r = reverse;
+    }
+
+    #[test]
+    fn a_2x_voice_asks_for_source_times_twice_as_fast() {
+        let asset = audio_asset(10);
+        let mut clip = audio_clip(asset.id, Time::ZERO, Time::from_seconds(1), Time::ZERO);
+        paced(&mut clip, 200, false);
+        let project = project_with(vec![clip], asset);
+        let mut sources = Constant::default();
+        mix(&project, Time::ZERO, 3_000, &mut sources);
+        let times: Vec<Time> = sources.reads.iter().map(|r| r.1).collect();
+        assert_eq!(
+            times,
+            [
+                Time::ZERO,
+                sample_offset(2 * 1_024, SR),
+                sample_offset(4 * 1_024, SR)
+            ]
+        );
+        let pace = sources.paces[0];
+        assert_eq!(pace.speed.percent(), 200);
+        assert!(!pace.reverse && pace.preserve_pitch);
+    }
+
+    #[test]
+    fn a_reversed_voice_asks_downwards_from_its_source_end() {
+        let asset = audio_asset(10);
+        let mut clip = audio_clip(
+            asset.id,
+            Time::ZERO,
+            Time::from_seconds(1),
+            Time::from_seconds(2),
+        );
+        paced(&mut clip, 100, true);
+        clip.audio.as_mut().unwrap().preserve_pitch = false;
+        let project = project_with(vec![clip], asset);
+        let mut sources = Constant::default();
+        mix(&project, Time::ZERO, 2_048, &mut sources);
+        let end = Time::from_seconds(3);
+        assert_eq!(sources.reads[0].1, end - Time(1));
+        assert_eq!(sources.reads[1].1, end - Time(1) - sample_offset(1_024, SR));
+        // 1x: preserve_pitch is normalized away.
+        assert_eq!(
+            sources.paces[0],
+            AudioPace {
+                reverse: true,
+                ..AudioPace::NORMAL
+            }
+        );
+    }
+
+    #[test]
+    fn voices_faster_than_4x_are_not_read() {
+        let asset = audio_asset(10);
+        let mut fast = audio_clip(asset.id, Time::ZERO, Time::from_seconds(1), Time::ZERO);
+        paced(&mut fast, 401, false);
+        let mut four = fast.clone();
+        four.id = ClipId::new();
+        four.start = Time::from_seconds(1);
+        paced(&mut four, 400, false);
+        let project = project_with(vec![fast, four.clone()], asset);
+        let mut sources = Constant::default();
+        let out = mix(&project, Time::ZERO, 64, &mut sources);
+        assert!(out.iter().all(|&s| s == 0.0));
+        assert!(sources.reads.is_empty());
+        mix(&project, Time::from_seconds(1), 64, &mut sources);
+        assert_eq!(sources.reads[0].0, four.id, "4x still sounds");
+    }
+
+    #[test]
+    fn scrub_grains_read_every_voice_at_1x_forward() {
+        let asset = audio_asset(10);
+        let mut clip = audio_clip(asset.id, Time::ZERO, Time::from_seconds(1), Time::ZERO);
+        paced(&mut clip, 200, true);
+        let project = project_with(vec![clip.clone()], asset);
+        let mut sources = Constant::default();
+        let mut out = vec![0.0; 2 * 3_000];
+        mix_scrub(&project, Time::ZERO, 3_000, SR, &mut sources, &mut out);
+        assert!(sources.paces.iter().all(|p| *p == AudioPace::NORMAL));
+        // Each chunk still starts at the clip's mapped source time.
+        assert_eq!(
+            sources.reads[1].1,
+            clip.source_time(sample_offset(1_024, SR)).unwrap()
+        );
     }
 }

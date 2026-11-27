@@ -13,7 +13,11 @@
 //!
 //! Scenarios (`CUTFRAME_PLAYBACK`): `main` (the main clip, plus the overlay clip on a track above
 //! it when given; project rate `CUTFRAME_PLAYBACK_FPS`, default 30), `jumpcuts` (2 s clips of
-//! the main clip at scattered source times). `CUTFRAME_PLAYBACK_SECONDS` limits the run.
+//! the main clip at scattered source times). `CUTFRAME_PLAYBACK_SECONDS` limits the run (in
+//! source seconds of the main clip). In `main`, `CUTFRAME_PLAYBACK_SPEED` (percent, default 100)
+//! and `CUTFRAME_PLAYBACK_REVERSE=1` set the main clip's speed and direction
+//! (`clip-speed-audio.md` §8: 2x and 0.5x, reverse 1080p and 4K through the GOP-reverse reader).
+//! The run prints the process's working set before and its peak after.
 
 #![cfg(windows)]
 
@@ -90,12 +94,23 @@ fn project() -> Project {
             }
         }
         _ => {
-            project.tracks[main_index].clips.push(media_clip(
-                main.id,
-                Time::ZERO,
-                limit,
-                Time::ZERO,
-            ));
+            let speed = env("CUTFRAME_PLAYBACK_SPEED").map_or(app_core::Speed::NORMAL, |v| {
+                app_core::Speed::new(v.parse().expect("speed percent")).expect("10..=10000")
+            });
+            let reverse = env("CUTFRAME_PLAYBACK_REVERSE").is_some_and(|v| v == "1");
+            let mut clip = media_clip(main.id, Time::ZERO, speed.timeline_floor(limit), Time::ZERO);
+            clip.source = ClipSource::Media {
+                media: main.id,
+                source_in: Time::ZERO,
+                speed,
+                reverse,
+            };
+            eprintln!(
+                "main clip: {} s at {}%, reverse {reverse}",
+                clip.duration.as_seconds_f64(),
+                speed.percent()
+            );
+            project.tracks[main_index].clips.push(clip);
             if let Some(path) = env("CUTFRAME_PLAYBACK_OVERLAY") {
                 let overlay = asset_at(Path::new(&path));
                 let duration = overlay.info.duration.expect("overlay duration").min(limit);
@@ -130,6 +145,7 @@ fn playback_drops_no_frames() {
         gpu.info().adapter,
         gpu.info().device_type
     );
+    let working_set_before = working_set("WorkingSet64");
     let project = Arc::new(project());
     let snapshot = Arc::new(ArcSwap::from(Arc::clone(&project)));
     let timeline = Timeline::of(&project);
@@ -150,7 +166,7 @@ fn playback_drops_no_frames() {
     );
     let mut pool = ReaderPool::new(Some(Arc::clone(&gpu)), ReaderOptions::default(), |_| {});
     pool.set_project(&project);
-    pool.set_playing(true);
+    pool.set_rate(1);
     let mut compositor = Compositor::new(&gpu);
     let size = render_size(
         (project.settings.width, project.settings.height),
@@ -272,7 +288,7 @@ fn playback_drops_no_frames() {
             scheduler::lookahead(&project, pick.time, Rate::FORWARD, false, &mut needs);
             let priming = Instant::now();
             for need in &needs {
-                pool.prime(need.media, need.sample_time);
+                pool.prime(need.media, need.sample_time, need.pace);
             }
             primed = priming.elapsed();
         }
@@ -315,6 +331,14 @@ fn playback_drops_no_frames() {
     for media in &project.media {
         eprintln!("{}: {:?}", media.path.absolute, pool.decode_path(media.id));
     }
+    let peak = working_set("PeakWorkingSet64");
+    eprintln!(
+        "working set: {} MB before, peak {} MB (growth {} MB); reverse readers {}",
+        working_set_before / 1_000_000,
+        peak / 1_000_000,
+        peak.saturating_sub(working_set_before) / 1_000_000,
+        pool.reverse_readers()
+    );
     if !late_frames.is_empty() {
         eprintln!(
             "late frames: {:?}",
@@ -326,6 +350,18 @@ fn playback_drops_no_frames() {
         f64::from(dropped) <= budget / 100.0 * frames as f64,
         "dropped {dropped} of {frames}"
     );
+}
+
+/// A memory counter of this process (`WorkingSet64`, `PeakWorkingSet64`) in bytes, read with
+/// PowerShell outside the timed loop; 0 when it cannot be read.
+fn working_set(counter: &str) -> u64 {
+    let script = format!("(Get-Process -Id {}).{counter}", std::process::id());
+    std::process::Command::new("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .output()
+        .ok()
+        .and_then(|out| String::from_utf8_lossy(&out.stdout).trim().parse().ok())
+        .unwrap_or(0)
 }
 
 /// Main-thread time per transport command (playback.md §11: <= 0.1 ms).

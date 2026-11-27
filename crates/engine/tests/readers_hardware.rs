@@ -18,7 +18,7 @@ use app_core::media::MediaPath;
 use app_core::{FLICKS_PER_SECOND, MediaAsset, MediaId, Project, Time};
 use engine::media::readers::{DecodePath, ReaderOptions, ReaderPool};
 use engine::media::{FrameData, fingerprint, probe};
-use engine::render::{FetchPolicy, FrameLookup, FrameProvider, FrameRef, GpuContext};
+use engine::render::{FetchPolicy, FrameLookup, FrameProvider, FrameRef, GpuContext, Pace};
 
 fn asset_at(path: &Path) -> MediaAsset {
     let probed = probe(path).unwrap_or_else(|err| panic!("{}: {err}", path.display()));
@@ -41,7 +41,7 @@ fn pool(gpu: Option<Arc<GpuContext>>, asset: &MediaAsset) -> ReaderPool {
 
 fn exact(pool: &mut ReaderPool, media: MediaId, t: Time) -> FrameRef {
     pool.begin_frame();
-    match pool.video(media, t, FetchPolicy::Exact) {
+    match pool.video(media, t, Pace::NORMAL, FetchPolicy::Exact) {
         FrameLookup::Exact(frame) => frame,
         other => panic!("expected an exact frame at {t:?}, got {other:?}"),
     }
@@ -108,7 +108,7 @@ fn hardware_frames_are_zero_copy_and_match_software_identities() {
                 sample_and_release(&gpu, frame);
             }
             // Playback: the queue fills and every frame comes back in order.
-            hw.set_playing(true);
+            hw.set_rate(1);
             let step = second / 60;
             let mut last = None;
             for n in 0..120 {
@@ -117,6 +117,31 @@ fn hardware_frames_are_zero_copy_and_match_software_identities() {
                 last = frame.pts();
                 sample_and_release(&gpu, frame);
             }
+            // GOP-reverse mode (clip-speed-audio.md §5.2): hardware frames are downloaded into
+            // the window's CPU ring and match the forward frames, across GOP boundaries.
+            let reverse_pace = Pace::Reverse {
+                speed: app_core::Speed::NORMAL,
+            };
+            let mut back = pool(Some(Arc::clone(&gpu)), &asset);
+            back.set_rate(1);
+            let started = std::time::Instant::now();
+            for n in (0..90).rev() {
+                let t = Time::from_flicks(2 * second + n * step);
+                back.begin_frame();
+                let frame = match back.video(asset.id, t, reverse_pace, FetchPolicy::Exact) {
+                    FrameLookup::Exact(frame) => frame,
+                    other => panic!("reverse at {t:?}: {other:?}"),
+                };
+                assert!(frame.cpu().is_some(), "downloaded at {t:?}");
+                assert_eq!(back.decode_path(asset.id), Some(DecodePath::Download));
+                let reference = exact(&mut sw, asset.id, t);
+                assert_eq!(frame.id(), reference.id(), "reverse frame at {t:?}");
+            }
+            eprintln!(
+                "reverse 1.5 s down from 3.5 s: {:?}, {} seeks",
+                started.elapsed(),
+                back.seek_count(asset.id)
+            );
         }
     }
 

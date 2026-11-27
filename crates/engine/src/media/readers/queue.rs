@@ -26,6 +26,13 @@ pub(crate) const FAR_BEHIND: Time = Time(app_core::FLICKS_PER_SECOND / 2);
 /// How far past the sample time a catch-up seek lands.
 pub(crate) const CATCH_UP_LEAD: Time = Time(app_core::FLICKS_PER_SECOND / 4);
 
+/// How far a seek backs off when its first frame came after the seek target, before that frame
+/// counts as the start of the stream. Container indexes (MP4 with B-frames) seek by decode
+/// timestamps, which lie a few frames before the presentation times, so "the keyframe at or
+/// before `t`" can be the keyframe just after `t`; a second seek further back that lands on the
+/// same frame proves nothing lies before it.
+pub(crate) const SEEK_BACKOFF: Time = Time(app_core::FLICKS_PER_SECOND / 2);
+
 /// Which frames the decoder skips (`AVCodecContext::skip_frame`, playback.md §7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Discard {
@@ -74,6 +81,10 @@ pub(crate) struct FrameQueue {
     /// The first frame after a seek when it came after the seek target: nothing in the stream
     /// lies before it, so it is the frame for any earlier time.
     stream_start: Option<Time>,
+    /// The seek the reader runs again further back (see [`SEEK_BACKOFF`]).
+    retry_to: Option<Time>,
+    /// The first frame of the last seek, when it came after the seek target.
+    landed: Option<Time>,
     /// The last decoded frame since the last seek.
     last_pts: Option<Time>,
     /// The decoder has drained: nothing follows the last frame.
@@ -94,6 +105,8 @@ impl FrameQueue {
             seek_pending: false,
             seeking: None,
             stream_start: None,
+            retry_to: None,
+            landed: None,
             last_pts: None,
             eos: false,
             approaching: None,
@@ -159,6 +172,8 @@ impl FrameQueue {
         }
         self.clear();
         self.seek_pending = true;
+        self.retry_to = None;
+        self.landed = None;
         true
     }
 
@@ -166,6 +181,8 @@ impl FrameQueue {
     pub fn force_seek(&mut self) {
         self.clear();
         self.seek_pending = self.target.is_some();
+        self.retry_to = None;
+        self.landed = None;
     }
 
     /// The pending seek, taken by the reader thread when it starts it.
@@ -175,9 +192,10 @@ impl FrameQueue {
         }
         self.seek_pending = false;
         self.clear();
-        self.seeking = self.target;
+        let to = self.retry_to.take().or(self.target);
+        self.seeking = to;
         self.approaching = self.target;
-        self.target
+        to
     }
 
     /// The reader read the stream again from its start (a seek that found no frame).
@@ -212,10 +230,21 @@ impl FrameQueue {
             return false;
         }
         let pts = frame.pts;
-        if let Some(seek) = self.seeking.take()
-            && pts > seek
-        {
-            self.stream_start = Some(pts);
+        if let Some(seek) = self.seeking.take() {
+            let from_start = seek == Time::from_flicks(i64::MIN);
+            let late = pts > self.target.unwrap_or(seek).max(seek);
+            if from_start || late {
+                if !from_start && self.landed != Some(pts) {
+                    // Maybe the index found the keyframe after the target: look further back.
+                    self.landed = Some(pts);
+                    self.retry_to = Some(Time::from_flicks(
+                        seek.flicks().saturating_sub(SEEK_BACKOFF.flicks()),
+                    ));
+                    self.seek_pending = true;
+                    return false;
+                }
+                self.stream_start = Some(pts);
+            }
         }
         self.last_pts = Some(pts);
         if self.approaching.is_some_and(|a| pts >= a) {
@@ -304,6 +333,109 @@ impl FrameQueue {
     }
 }
 
+/// A reader's queue: forward decode-ahead, or the windows of GOP-reverse mode
+/// (`clip-speed-audio.md` §5.2). A reader is in one mode for its whole life; the pool binds
+/// readers per media and direction.
+#[derive(Debug)]
+pub(crate) enum Queue {
+    Forward(FrameQueue),
+    Reverse(super::window::WindowQueue),
+}
+
+impl Queue {
+    pub fn target(&self) -> Option<Time> {
+        match self {
+            Self::Forward(q) => q.target(),
+            Self::Reverse(q) => q.target(),
+        }
+    }
+
+    pub fn frame(&self, index: usize) -> &Arc<DecodedVideoFrame> {
+        match self {
+            Self::Forward(q) => q.frame(index),
+            Self::Reverse(q) => q.frame(index),
+        }
+    }
+
+    pub fn distance(&self, t: Time) -> Option<Time> {
+        match self {
+            Self::Forward(q) => q.distance(t),
+            Self::Reverse(q) => q.distance(t),
+        }
+    }
+
+    pub fn retarget(&mut self, t: Time) -> bool {
+        match self {
+            Self::Forward(q) => q.retarget(t),
+            Self::Reverse(q) => q.retarget(t),
+        }
+    }
+
+    pub fn force_seek(&mut self) {
+        match self {
+            Self::Forward(q) => q.force_seek(),
+            Self::Reverse(q) => q.force_seek(),
+        }
+    }
+
+    pub fn take_seek(&mut self, mode: Mode) -> Option<Time> {
+        match self {
+            Self::Forward(q) => q.take_seek(),
+            Self::Reverse(q) => q.take_seek(mode),
+        }
+    }
+
+    pub fn restart(&mut self) {
+        match self {
+            Self::Forward(q) => q.restart(),
+            Self::Reverse(q) => q.restart(),
+        }
+    }
+
+    pub fn push(&mut self, frame: Arc<DecodedVideoFrame>) -> bool {
+        match self {
+            Self::Forward(q) => q.push(frame),
+            Self::Reverse(q) => q.push(frame),
+        }
+    }
+
+    pub fn set_eos(&mut self) -> bool {
+        match self {
+            Self::Forward(q) => q.set_eos(),
+            Self::Reverse(q) => q.set_eos(),
+        }
+    }
+
+    /// Forward only: reverse readers never catch up.
+    pub fn behind(&self, t: Time) -> Option<Time> {
+        match self {
+            Self::Forward(q) => q.behind(t),
+            Self::Reverse(_) => None,
+        }
+    }
+
+    pub fn jump_ahead(&mut self, t: Time) -> bool {
+        match self {
+            Self::Forward(q) => q.jump_ahead(t),
+            Self::Reverse(q) => q.retarget(t),
+        }
+    }
+
+    pub fn has_room(&self, mode: Mode) -> bool {
+        match self {
+            Self::Forward(q) => q.has_room(mode),
+            Self::Reverse(q) => q.has_room(),
+        }
+    }
+
+    pub fn select(&self, t: Time) -> Select {
+        match self {
+            Self::Forward(q) => q.select(t),
+            Self::Reverse(q) => q.select(t),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,9 +520,38 @@ mod tests {
         assert_eq!(q.pts(), vec![F]);
     }
 
+    /// [`decoded`] for a stream whose first frame comes after `target`: the queue seeks once more
+    /// further back and lands on the same frame.
+    fn decoded_late(target: i64, pts: &[i64]) -> FrameQueue {
+        let mut q = decoded(target, &[]);
+        assert!(
+            !q.push(frame(pts[0], 4)),
+            "after the target: one more look back"
+        );
+        assert_eq!(q.take_seek(), Some(t(target) - SEEK_BACKOFF));
+        for &p in pts {
+            assert!(q.push(frame(p, 4)));
+        }
+        q
+    }
+
+    #[test]
+    fn a_seek_that_lands_after_the_target_looks_further_back() {
+        // The index found the keyframe at 12 F for 11.5 F (MP4 with B-frames).
+        let mut q = decoded(23 * F / 2, &[]);
+        assert!(!q.push(frame(12 * F, 4)));
+        let back = q.take_seek().expect("a second seek");
+        assert_eq!(back, t(23 * F / 2) - SEEK_BACKOFF);
+        for n in 0..=12 {
+            assert!(q.push(frame(n * F, 4)));
+        }
+        assert_eq!(q.select(t(23 * F / 2)), Select::Exact(0));
+        assert_eq!(q.pts(), vec![11 * F, 12 * F]);
+    }
+
     #[test]
     fn a_stream_that_starts_after_the_target_shows_its_first_frame() {
-        let mut q = decoded(0, &[2 * F, 3 * F]);
+        let mut q = decoded_late(0, &[2 * F, 3 * F]);
         assert_eq!(q.select(t(0)), Select::Exact(0));
         assert_eq!(q.select(t(F)), Select::Exact(0));
         // Earlier still: nothing exists before the first frame, no seek.

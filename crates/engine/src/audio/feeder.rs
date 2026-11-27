@@ -47,7 +47,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 
 use super::callback::{CallbackLoad, OutputCallback, OutputSample};
-use super::mix::{PcmProvider, mix_block};
+use super::mix::{PcmProvider, mix_block, mix_scrub};
 use super::reader::AudioSources;
 use super::ring::{
     AudioBlock, AudioShared, BLOCK_FRAMES, BlockProducer, RING_BLOCKS, TARGET_FILL_BLOCKS, ring,
@@ -503,7 +503,7 @@ pub(crate) fn make_grain(
     let frames = (sample_rate * GRAIN_MS / 1000) as usize;
     let fade = ((sample_rate * GRAIN_FADE_MS / 1000) as usize).min(frames / 2);
     let mut pcm = vec![0.0f32; 2 * frames];
-    mix_block(project, time, frames, sample_rate, sources, &mut pcm);
+    mix_scrub(project, time, frames, sample_rate, sources, &mut pcm);
     for i in 0..fade {
         let gain = i as f32 / fade as f32;
         for j in [

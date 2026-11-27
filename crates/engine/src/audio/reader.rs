@@ -4,6 +4,10 @@
 //! clip's source time by decoding forward continues (a split point plays without a seek), and
 //! [`AudioSources::prefetch`] pre-seeks an idle reader for a jump cut within the lookahead.
 //!
+//! Voices with a pace other than 1x forward (clip-speed-audio.md §5.3) own their reader, a
+//! [`TimeStage`] (speed other than 1x) and, when reversed, windows read downwards; see
+//! [`AudioSources`].
+//!
 //! Both are plain owned values: construct and use them on any one thread (the feeder, the export
 //! thread). They allocate and do I/O, so never on the real-time callback.
 
@@ -23,6 +27,7 @@ use rsmpeg::ffi;
 use rsmpeg::swresample::SwrContext;
 
 use super::mix::{PcmProvider, Voice};
+use super::stretch::{AudioPace, TimeStage};
 use super::{sample_offset, samples_before};
 use crate::media::decode::open_decoder_with_threads;
 use crate::media::input::{Input, map_error};
@@ -48,8 +53,21 @@ const IDLE_CLOSE: Duration = Duration::from_secs(5);
 /// A media that failed to open is tried again after this long (a USB drive plugged back in).
 const RETRY_AFTER: Duration = Duration::from_secs(5);
 
-/// At most this many open readers per [`AudioSources`].
+/// At most this many open readers per [`AudioSources`] (paced voices' readers included).
 const MAX_READERS: usize = 16;
+
+/// Reversed voices read the source in windows of this length, downwards (design §5.3): one
+/// seek per second of source.
+const REVERSE_WINDOW: Time = Time(FLICKS_PER_SECOND);
+
+/// A paced read continues the previous read of its voice when it asks within this much of where
+/// that one ended; otherwise the voice re-anchors (seek, fresh stage): a jump, a seek, a pace
+/// change.
+const CONTINUE_TOLERANCE: Time = Time(FLICKS_PER_SECOND / 500);
+
+/// A stage whose backlog leaves its bounds by more than this (10 ms) has drifted and re-anchors
+/// at the requested time.
+const DRIFT_LIMIT: Time = Time(FLICKS_PER_SECOND / 100);
 
 /// Converts decoded frames to interleaved stereo `f32` at the output rate.
 struct Resampler {
@@ -485,6 +503,208 @@ impl AudioReader {
     }
 }
 
+/// A source handed out downwards: windows of [`REVERSE_WINDOW`] decoded forward (one seek
+/// each), reversed in place. Sample indices are at the reader's rate; sample `i` is media time
+/// `sample_offset(i)`.
+#[derive(Debug, Default)]
+struct ReverseWindows {
+    /// Exclusive index above the next window.
+    top: i64,
+    /// The current window, already reversed; `buf[2 x pos..2 x len]` is not handed out yet.
+    buf: Vec<f32>,
+    len: usize,
+    pos: usize,
+}
+
+impl ReverseWindows {
+    /// The next frame handed out is sample `top - 1`.
+    fn start(&mut self, top: i64) {
+        self.top = top;
+        self.len = 0;
+        self.pos = 0;
+    }
+
+    /// Decodes the next window down if the current one is used up.
+    fn load(&mut self, reader: &mut AudioReader) -> Result<(), MediaError> {
+        if self.pos < self.len || self.top <= 0 {
+            return Ok(());
+        }
+        let rate = reader.sample_rate();
+        let window = samples_before(REVERSE_WINDOW, rate).max(1);
+        let hi = self.top;
+        let lo = hi - window;
+        let n = (hi - lo) as usize;
+        self.buf.resize(2 * n, 0.0);
+        // Before media time 0 the reader gives silence.
+        reader.seek(sample_offset(lo, rate))?;
+        reader.read(&mut self.buf[..2 * n])?;
+        self.buf[..2 * n].as_chunks_mut::<2>().0.reverse();
+        self.len = n;
+        self.pos = 0;
+        self.top = lo;
+        Ok(())
+    }
+
+    /// Fills `out` (stereo interleaved) with the next frames downwards; silence below sample 0.
+    fn read(&mut self, reader: &mut AudioReader, out: &mut [f32]) -> Result<(), MediaError> {
+        let frames = out.len() / 2;
+        let mut done = 0;
+        while done < frames {
+            self.load(reader)?;
+            if self.pos == self.len {
+                out[2 * done..].fill(0.0);
+                return Ok(());
+            }
+            let k = (self.len - self.pos).min(frames - done);
+            out[2 * done..2 * (done + k)]
+                .copy_from_slice(&self.buf[2 * self.pos..2 * (self.pos + k)]);
+            self.pos += k;
+            done += k;
+        }
+        Ok(())
+    }
+}
+
+/// A voice whose pace is not 1x forward: it owns its reader (taken from the pool, given back
+/// when the voice plays at 1x again), its [`TimeStage`] when the speed is not 1x and its
+/// reverse windows.
+#[derive(Debug)]
+struct PacedVoice {
+    media: MediaId,
+    path: String,
+    stream: u32,
+    reader: AudioReader,
+    pace: AudioPace,
+    stage: Option<TimeStage>,
+    reverse: ReverseWindows,
+    /// Source time the next read of the voice continues from.
+    next: Time,
+    used_block: u64,
+    last_used: Instant,
+}
+
+impl PacedVoice {
+    fn new(media: MediaId, path: &str, stream: u32, reader: AudioReader) -> Self {
+        Self {
+            media,
+            path: path.to_owned(),
+            stream,
+            reader,
+            pace: AudioPace::NORMAL,
+            stage: None,
+            reverse: ReverseWindows::default(),
+            next: Time(i64::MIN),
+            used_block: 0,
+            last_used: Instant::now(),
+        }
+    }
+
+    fn serves(&self, media: MediaId, path: &str, stream: u32, sample_rate: u32) -> bool {
+        self.media == media
+            && self.path == path
+            && self.stream == stream
+            && self.reader.sample_rate() == sample_rate
+    }
+
+    /// Whether a read of `pace` at source time `x` continues this voice within `tolerance`.
+    fn continues(&self, pace: AudioPace, x: Time, tolerance: Time) -> bool {
+        self.pace == pace
+            && self.next != Time(i64::MIN)
+            && (self.next - x).flicks().abs() <= tolerance.flicks()
+    }
+
+    /// Re-anchors at source time `x` with `pace`: resets (or builds) the stage and positions
+    /// the reader its preroll before `x` in the reading direction.
+    fn restart(&mut self, pace: AudioPace, x: Time) -> Result<(), MediaError> {
+        let rate = self.reader.sample_rate();
+        self.pace = pace;
+        if pace.stretches() {
+            match &mut self.stage {
+                Some(stage) if stage.plays(pace.speed, pace.preserve_pitch, rate) => {
+                    stage.reset()?;
+                }
+                _ => self.stage = Some(TimeStage::new(pace.speed, pace.preserve_pitch, rate)?),
+            }
+        } else {
+            self.stage = None;
+        }
+        let preroll = self.stage.as_ref().map_or(0, |s| s.preroll_frames() as i64);
+        if pace.reverse {
+            // The first frame plays the sample that contains `x`.
+            let top = samples_before(x + Time(1), rate);
+            self.reverse.start(top + preroll);
+        } else {
+            self.reader.seek(x - sample_offset(preroll, rate))?;
+        }
+        self.next = x;
+        Ok(())
+    }
+
+    /// Decodes ahead so the first `frames` frames are ready (a prefetched voice).
+    fn prime(&mut self, frames: usize) -> Result<(), MediaError> {
+        let Self {
+            reader,
+            reverse,
+            stage,
+            pace,
+            ..
+        } = self;
+        match stage {
+            Some(stage) => stage.fill(frames, &mut |chunk| {
+                if pace.reverse {
+                    reverse.read(reader, chunk)
+                } else {
+                    reader.read(chunk)
+                }
+            }),
+            None if pace.reverse => reverse.load(reader),
+            None => reader.prime(frames),
+        }
+    }
+
+    /// Fills `out` with the voice's next frames, from source time `x` (the continuation of the
+    /// previous read), and moves `next` past them.
+    fn read(&mut self, x: Time, out: &mut [f32]) -> Result<(), MediaError> {
+        let Self {
+            reader,
+            reverse,
+            stage,
+            pace,
+            ..
+        } = self;
+        let mut feed = |chunk: &mut [f32]| {
+            if pace.reverse {
+                reverse.read(reader, chunk)
+            } else {
+                reader.read(chunk)
+            }
+        };
+        match stage {
+            Some(stage) => stage.take(out, &mut feed)?,
+            None => feed(out)?,
+        }
+        let rate = self.reader.sample_rate();
+        let span = self
+            .pace
+            .source_span(sample_offset((out.len() / 2) as i64, rate));
+        self.next = if self.pace.reverse {
+            x - span
+        } else {
+            x + span
+        };
+        if let Some(stage) = &self.stage {
+            let slack = samples_before(DRIFT_LIMIT, rate) as usize;
+            let backlog = stage.backlog_frames();
+            if backlog < -(slack as i64) || backlog > stage.backlog_limit(slack) {
+                tracing::debug!(backlog, "audio time stage drifted; re-anchoring the voice");
+                // The next read re-anchors at the time it asks for.
+                self.next = Time(i64::MIN);
+            }
+        }
+        Ok(())
+    }
+}
+
 /// One open reader of [`AudioSources`].
 #[derive(Debug)]
 struct Slot {
@@ -512,9 +732,18 @@ impl Slot {
 /// The [`PcmProvider`] over FFmpeg [`AudioReader`]s (playback.md §6.4, §7): at most 16 readers,
 /// closed after 5 s unused. A media that cannot be opened is silent and logged once; a decode
 /// error silences the voice until its clip ends.
+///
+/// Voices at 1x forward share the pool of readers by position (a split point continues, a jump
+/// cut is pre-seeked). A voice with another pace (clip-speed-audio.md §5.3) is a [`PacedVoice`]
+/// keyed by its clip: it owns a reader, a [`TimeStage`] and reverse windows. A read that
+/// continues the voice's previous one (within 2 ms) feeds the stage on; anything else (a seek,
+/// a jump, a pace change, a drifted stage) re-anchors it. At a split point the next clip takes
+/// over the previous clip's voice, and [`AudioSources::prefetch`] builds and primes the voices
+/// of jump cuts ahead, so no graph is built in the block that starts playing them.
 #[derive(Debug, Default)]
 pub struct AudioSources {
     slots: Vec<Slot>,
+    voices: HashMap<ClipId, PacedVoice>,
     block: u64,
     failed_open: HashMap<MediaId, Instant>,
     logged: HashSet<MediaId>,
@@ -529,24 +758,33 @@ impl AudioSources {
         Self::default()
     }
 
-    /// Open readers.
+    /// Open readers (the paced voices' included).
     pub fn reader_count(&self) -> usize {
-        self.slots.len()
+        self.slots.len() + self.voices.len()
+    }
+
+    /// Voices with a pace other than 1x forward (tests).
+    pub fn paced_voice_count(&self) -> usize {
+        self.voices.len()
     }
 
     /// Seeks of every open reader so far (tests).
     pub fn seeks(&self) -> u64 {
-        self.slots.iter().map(|s| s.reader.seeks()).sum()
+        let slots: u64 = self.slots.iter().map(|s| s.reader.seeks()).sum();
+        slots + self.voices.values().map(|v| v.reader.seeks()).sum::<u64>()
     }
 
     /// Closes every reader (stream closed, project replaced).
     pub fn close_all(&mut self) {
         self.slots.clear();
+        self.voices.clear();
         self.dead.clear();
     }
 
-    /// Pre-seeks readers for the voices that start within `(from, from + window]` and that no
-    /// reader will reach by decoding forward (jump cuts), so no seek happens when they start.
+    /// Prepares the voices that start within `(from, from + window]` and that no reader will
+    /// reach by decoding forward (jump cuts), so no seek happens when they start: 1x forward
+    /// voices get a pre-seeked reader; paced voices a positioned reader, a built stage and their
+    /// first frames decoded.
     pub fn prefetch(&mut self, project: &Project, from: Time, window: Time, sample_rate: u32) {
         let until = from + window;
         let active: HashSet<ClipId> = project
@@ -561,19 +799,30 @@ impl AudioSources {
                 if clip.start <= from || clip.start > until || clip.audio.is_none() {
                     continue;
                 }
-                // TODO(0370 step 5): speed and reverse (a reversed clip starts at its source end).
                 let ClipSource::Media {
                     media, source_in, ..
                 } = clip.source
                 else {
                     continue;
                 };
+                let pace = AudioPace::of(clip);
+                if !pace.sounds() {
+                    continue;
+                }
                 let Some(asset) = project.media_asset(media) else {
                     continue;
                 };
                 let Some(stream) = asset.info.audio.first().map(|a| a.stream_index) else {
                     continue;
                 };
+                if self.failed_open.contains_key(&media) {
+                    continue;
+                }
+                let previous = i.checked_sub(1).map(|p| &track.clips[p]);
+                if pace != AudioPace::NORMAL {
+                    self.prefetch_paced(clip, previous, pace, asset, stream, sample_rate, &active);
+                    continue;
+                }
                 let path = asset.path.absolute.as_str();
                 let serves = |s: &Slot| s.serves(media, path, stream, sample_rate);
                 let tolerance = sample_offset(1, sample_rate);
@@ -584,14 +833,14 @@ impl AudioSources {
                     continue; // already primed
                 }
                 // A split point: the reader of the previous clip continues into this one.
-                let previous = i.checked_sub(1).map(|p| &track.clips[p]);
                 let continues = previous.is_some_and(|p| {
                     p.end() == clip.start
                         && p.source.media() == Some(media)
+                        && AudioPace::of(p) == AudioPace::NORMAL
                         && p.source_end() == Some(source_in)
                         && self.slots.iter().any(|s| serves(s) && s.clip == Some(p.id))
                 });
-                if continues || self.failed_open.contains_key(&media) {
+                if continues {
                     continue;
                 }
                 let idle = self.slots.iter().position(|s| {
@@ -620,57 +869,197 @@ impl AudioSources {
         }
     }
 
+    /// [`Self::prefetch`] for a paced voice: unless the clip has its voice already or continues
+    /// the previous clip's (a split point), builds it at the clip's first source time.
+    #[allow(clippy::too_many_arguments)]
+    fn prefetch_paced(
+        &mut self,
+        clip: &app_core::Clip,
+        previous: Option<&app_core::Clip>,
+        pace: AudioPace,
+        asset: &app_core::MediaAsset,
+        stream: u32,
+        sample_rate: u32,
+        active: &HashSet<ClipId>,
+    ) {
+        let media = asset.id;
+        let path = asset.path.absolute.as_str();
+        if self
+            .voices
+            .get(&clip.id)
+            .is_some_and(|v| v.serves(media, path, stream, sample_rate) && v.pace == pace)
+        {
+            return; // already primed
+        }
+        let continues = previous.is_some_and(|p| {
+            let contiguous = if pace.reverse {
+                clip.source_end() == Some(p.source_in())
+            } else {
+                p.source_end() == Some(clip.source_in())
+            };
+            p.end() == clip.start
+                && p.source.media() == Some(media)
+                && AudioPace::of(p) == pace
+                && contiguous
+                && self
+                    .voices
+                    .get(&p.id)
+                    .is_some_and(|v| v.serves(media, path, stream, sample_rate))
+        });
+        if continues {
+            return;
+        }
+        let Some(x) = clip.source_time(clip.start) else {
+            return;
+        };
+        let Some(reader) = self.take_reader(asset, stream, sample_rate, Some(active), None) else {
+            return;
+        };
+        let mut voice = PacedVoice::new(media, path, stream, reader);
+        if let Err(err) = voice
+            .restart(pace, x)
+            .and_then(|()| voice.prime(BLOCK_PRIME_FRAMES))
+        {
+            self.log_once(media, &err);
+            return;
+        }
+        if let Some(old) = self.voices.insert(clip.id, voice) {
+            self.give_back(old);
+        }
+    }
+
     fn log_once(&mut self, media: MediaId, err: &MediaError) {
         if self.logged.insert(media) {
             tracing::warn!(%media, %err, "audio unavailable; the voice is silent");
         }
     }
 
-    /// Opens a reader for `asset` (closing the least recently used idle one at the limit).
-    fn open_slot(
+    /// Makes room for one more reader: at the limit, closes the least recently used reader
+    /// (pooled or a paced voice's) that no voice read in this block. False if all are busy.
+    fn make_room(&mut self) -> bool {
+        if self.reader_count() < MAX_READERS {
+            return true;
+        }
+        let block = self.block;
+        let slot = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.used_block != block)
+            .min_by_key(|(_, s)| s.last_used)
+            .map(|(i, s)| (i, s.last_used));
+        let voice = self
+            .voices
+            .iter()
+            .filter(|(_, v)| v.used_block != block)
+            .min_by_key(|(_, v)| v.last_used)
+            .map(|(id, v)| (*id, v.last_used));
+        match (slot, voice) {
+            (Some((i, a)), Some((_, b))) if a <= b => {
+                self.slots.swap_remove(i);
+            }
+            (_, Some((id, _))) => {
+                self.voices.remove(&id);
+            }
+            (Some((i, _)), None) => {
+                self.slots.swap_remove(i);
+            }
+            (None, None) => return false,
+        }
+        true
+    }
+
+    /// Opens a reader for `asset` (making room at the limit), or `None` (logged once).
+    fn open_reader(
         &mut self,
         asset: &app_core::MediaAsset,
         stream: u32,
         sample_rate: u32,
-    ) -> Option<usize> {
+    ) -> Option<AudioReader> {
         if let Some(at) = self.failed_open.get(&asset.id) {
             if at.elapsed() < RETRY_AFTER {
                 return None;
             }
             self.failed_open.remove(&asset.id);
         }
-        if self.slots.len() >= MAX_READERS {
-            let block = self.block;
-            let lru = self
-                .slots
-                .iter()
-                .enumerate()
-                .filter(|(_, s)| s.used_block != block)
-                .min_by_key(|(_, s)| s.last_used)
-                .map(|(i, _)| i)?;
-            self.slots.swap_remove(lru);
+        if !self.make_room() {
+            return None;
         }
         let path = Path::new(&asset.path.absolute);
         match AudioReader::open(path, stream, asset.info.origin, sample_rate) {
-            Ok(reader) => {
-                self.slots.push(Slot {
-                    media: asset.id,
-                    path: asset.path.absolute.clone(),
-                    stream,
-                    reader,
-                    clip: None,
-                    primed: false,
-                    used_block: 0,
-                    last_used: Instant::now(),
-                });
-                Some(self.slots.len() - 1)
-            }
+            Ok(reader) => Some(reader),
             Err(err) => {
                 self.failed_open.insert(asset.id, Instant::now());
                 self.log_once(asset.id, &err);
                 None
             }
         }
+    }
+
+    /// Opens a pooled reader for `asset`.
+    fn open_slot(
+        &mut self,
+        asset: &app_core::MediaAsset,
+        stream: u32,
+        sample_rate: u32,
+    ) -> Option<usize> {
+        let reader = self.open_reader(asset, stream, sample_rate)?;
+        self.slots.push(Slot {
+            media: asset.id,
+            path: asset.path.absolute.clone(),
+            stream,
+            reader,
+            clip: None,
+            primed: false,
+            used_block: 0,
+            last_used: Instant::now(),
+        });
+        Some(self.slots.len() - 1)
+    }
+
+    /// A reader for a new paced voice: an idle pooled one of the same media (taken out of the
+    /// pool), or a new one. Idle means not read in this block, not primed for another clip than
+    /// `owner` and, while prefetching, not serving a clip in `active`.
+    fn take_reader(
+        &mut self,
+        asset: &app_core::MediaAsset,
+        stream: u32,
+        sample_rate: u32,
+        active: Option<&HashSet<ClipId>>,
+        owner: Option<ClipId>,
+    ) -> Option<AudioReader> {
+        let block = self.block;
+        let path = asset.path.absolute.as_str();
+        let idle = self
+            .slots
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| {
+                s.serves(asset.id, path, stream, sample_rate)
+                    && s.used_block != block
+                    && (!s.primed || (owner.is_some() && s.clip == owner))
+                    && active.is_none_or(|a| s.clip.is_none_or(|c| !a.contains(&c)))
+            })
+            .min_by_key(|(_, s)| s.last_used)
+            .map(|(i, _)| i);
+        match idle {
+            Some(i) => Some(self.slots.swap_remove(i).reader),
+            None => self.open_reader(asset, stream, sample_rate),
+        }
+    }
+
+    /// Returns a paced voice's reader to the pool.
+    fn give_back(&mut self, voice: PacedVoice) {
+        self.slots.push(Slot {
+            media: voice.media,
+            path: voice.path,
+            stream: voice.stream,
+            reader: voice.reader,
+            clip: None,
+            primed: false,
+            used_block: voice.used_block,
+            last_used: voice.last_used,
+        });
     }
 
     /// The reader for `voice`, positioned at its source time: one that is already there (the
@@ -724,6 +1113,74 @@ impl AudioSources {
         Ok(slot)
     }
 
+    /// The paced voice of `voice.clip`, continued or re-anchored at its source time: its own
+    /// voice if the read continues it, the voice of the clip before a split point, its own voice
+    /// re-anchored, or a new one. `None` if no reader can be opened.
+    fn paced_for(
+        &mut self,
+        voice: &Voice<'_>,
+        stream: u32,
+    ) -> Result<Option<&mut PacedVoice>, MediaError> {
+        let media = voice.media.id;
+        let path = voice.media.path.absolute.as_str();
+        let rate = voice.sample_rate;
+        let (pace, x) = (voice.pace, voice.source_time);
+        // A voice of other media (the clip's media was replaced) starts over.
+        if self
+            .voices
+            .get(&voice.clip)
+            .is_some_and(|v| !v.serves(media, path, stream, rate))
+            && let Some(old) = self.voices.remove(&voice.clip)
+        {
+            self.give_back(old);
+        }
+        if !self.voices.contains_key(&voice.clip) {
+            // A split point: the voice of the previous clip ended exactly where this one starts.
+            let exact = sample_offset(1, rate);
+            let previous = self
+                .voices
+                .iter()
+                .find(|(_, v)| v.serves(media, path, stream, rate) && v.continues(pace, x, exact))
+                .map(|(id, _)| *id);
+            let taken = match previous.and_then(|id| self.voices.remove(&id)) {
+                Some(v) => v,
+                None => {
+                    let Some(reader) =
+                        self.take_reader(voice.media, stream, rate, None, Some(voice.clip))
+                    else {
+                        return Ok(None);
+                    };
+                    PacedVoice::new(media, path, stream, reader)
+                }
+            };
+            self.voices.insert(voice.clip, taken);
+        }
+        let v = self.voices.get_mut(&voice.clip).expect("inserted above");
+        if !v.continues(pace, x, CONTINUE_TOLERANCE) {
+            v.restart(pace, x)?;
+        }
+        Ok(Some(v))
+    }
+
+    fn read_paced(&mut self, voice: &Voice<'_>, stream: u32, out: &mut [f32]) -> bool {
+        let block = self.block;
+        let result = match self.paced_for(voice, stream) {
+            Ok(Some(v)) => {
+                v.used_block = block;
+                v.last_used = Instant::now();
+                v.read(voice.source_time, out).map(|()| true)
+            }
+            Ok(None) => Ok(false),
+            Err(err) => Err(err),
+        };
+        result.unwrap_or_else(|err| {
+            self.voices.remove(&voice.clip);
+            self.log_once(voice.media.id, &err);
+            self.dead.insert(voice.clip, self.block);
+            false
+        })
+    }
+
     fn sweep(&mut self) {
         let now = Instant::now();
         if self
@@ -734,11 +1191,15 @@ impl AudioSources {
         }
         self.last_sweep = Some(now);
         self.slots.retain(|s| now - s.last_used < IDLE_CLOSE);
+        self.voices.retain(|_, v| now - v.last_used < IDLE_CLOSE);
         // A dead clip is forgotten once its voice stopped asking.
         let block = self.block;
         self.dead.retain(|_, asked| block - *asked < 8);
     }
 }
+
+/// Output frames a prefetched paced voice decodes ahead.
+const BLOCK_PRIME_FRAMES: usize = 1024;
 
 impl PcmProvider for AudioSources {
     fn begin_block(&mut self) {
@@ -754,6 +1215,14 @@ impl PcmProvider for AudioSources {
         let Some(stream) = voice.media.info.audio.first().map(|a| a.stream_index) else {
             return false;
         };
+        if voice.pace != AudioPace::NORMAL {
+            return self.read_paced(voice, stream, out);
+        }
+        // Back at 1x forward (a pace gesture, a scrub grain): the voice's reader returns to
+        // the pool.
+        if let Some(old) = self.voices.remove(&voice.clip) {
+            self.give_back(old);
+        }
         let slot = match self.reader_for(voice, stream) {
             Ok(Some(slot)) => slot,
             Ok(None) => return false,

@@ -10,8 +10,8 @@ use app_core::{FLICKS_PER_SECOND, MediaAsset, MediaId, Project, Time};
 use engine::media::decode::{frame_index_at, video_frame_times};
 use engine::media::readers::{DecodePath, ReaderEvent, ReaderOptions, ReaderPool};
 use engine::media::{CpuFrame, PlaneLayout, SampleDepth, fingerprint, probe};
-use engine::render::PlaceholderKind;
 use engine::render::{AdapterMode, FetchPolicy, FrameLookup, FrameProvider, FrameRef, GpuContext};
+use engine::render::{Pace, PlaceholderKind};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -46,7 +46,7 @@ fn pool(gpu: Option<Arc<GpuContext>>, media: Vec<MediaAsset>) -> (ReaderPool, Ev
 
 fn exact_video(pool: &mut ReaderPool, media: MediaId, t: Time) -> FrameRef {
     pool.begin_frame();
-    match pool.video(media, t, FetchPolicy::Exact) {
+    match pool.video(media, t, Pace::NORMAL, FetchPolicy::Exact) {
         FrameLookup::Exact(frame) => frame,
         other => panic!("expected an exact frame at {t:?}, got {other:?}"),
     }
@@ -157,7 +157,7 @@ fn a_missing_file_is_offline_and_reported_once() {
     for _ in 0..3 {
         pool.begin_frame();
         assert!(matches!(
-            pool.video(asset.id, Time::ZERO, FetchPolicy::Exact),
+            pool.video(asset.id, Time::ZERO, Pace::NORMAL, FetchPolicy::Exact),
             FrameLookup::Failed(PlaceholderKind::Offline)
         ));
     }
@@ -175,7 +175,12 @@ fn a_missing_file_is_offline_and_reported_once() {
         ));
     }
     assert!(matches!(
-        pool.video(MediaId::new(), Time::ZERO, FetchPolicy::BestAvailable),
+        pool.video(
+            MediaId::new(),
+            Time::ZERO,
+            Pace::NORMAL,
+            FetchPolicy::BestAvailable
+        ),
         FrameLookup::Failed(PlaceholderKind::Offline)
     ));
     let unavailable: Vec<_> = events
@@ -198,7 +203,7 @@ fn best_available_never_blocks_and_reaches_the_exact_frame() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let frame = loop {
         pool.begin_frame();
-        match pool.video(asset.id, t, FetchPolicy::BestAvailable) {
+        match pool.video(asset.id, t, Pace::NORMAL, FetchPolicy::BestAvailable) {
             FrameLookup::Exact(frame) => break frame,
             FrameLookup::Stale(frame) => assert!(frame.pts().unwrap() <= t),
             FrameLookup::Missing => {}

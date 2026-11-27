@@ -26,7 +26,8 @@
 //! the rest) and always presents. It ends preroll (first frame ready and ring filled, or
 //! [`PREROLL_TIMEOUT`]), detects the end of the timeline, counts dropped frames, primes readers
 //! for clips that start within the lookahead ([`scheduler::lookahead`], `ReaderPool::prime`),
-//! sets keyframe-only decode above 2x, and emits `playback-tick`s through the tick callback (at
+//! hands the readers the transport rate (`ReaderPool::set_rate`: keyframes only above 2x, or
+//! above an effective 4x with clip speed; reversed clips on GOP-reverse readers), and emits `playback-tick`s through the tick callback (at
 //! most 60 Hz while playing, once after every change). With the preview hidden it wakes every
 //! [`HIDDEN_PLAYBACK_WAKE`] for ticks and end detection and presents nothing.
 //!
@@ -1211,8 +1212,7 @@ impl RenderLoop {
         self.refresh.pause();
         self.present_stats.reset();
         if let Some(scene) = &mut self.scene {
-            scene.readers.set_playing(false);
-            scene.readers.set_keyframes_only(false);
+            scene.readers.set_rate(0);
         }
     }
 
@@ -1236,11 +1236,7 @@ impl RenderLoop {
         let looping = transport.looping();
         let drawing = self.is_drawing();
         if drawing {
-            let scene = self.scene();
-            scene.readers.set_playing(rate.is_forward());
-            scene
-                .readers
-                .set_keyframes_only(rate.get().unsigned_abs() > 2);
+            self.scene().readers.set_rate(rate.get());
         }
 
         let state = transport.state();
@@ -1342,7 +1338,7 @@ impl RenderLoop {
             scheduler::lookahead(&project, time, rate, looping, &mut self.needs);
             if let Some(scene) = &mut self.scene {
                 for need in &self.needs {
-                    scene.readers.prime(need.media, need.sample_time);
+                    scene.readers.prime(need.media, need.sample_time, need.pace);
                 }
             }
         }

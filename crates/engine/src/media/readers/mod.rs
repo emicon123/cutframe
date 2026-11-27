@@ -7,6 +7,12 @@
 //! device, zero-copy when the device samples NV12/P010). Readers that the frames of the last
 //! 5 s did not use are closed. Images are decoded once on a worker thread.
 //!
+//! Each reader runs forward (decode ahead from a seek point) or, for reversed clips, in
+//! GOP-reverse mode (`clip-speed-audio.md` §5.2, `window.rs`): the pool binds readers per media
+//! and direction, at most [`MAX_REVERSE_READERS`] of them in reverse mode. How a lookup steers
+//! its reader follows the layer's [`Pace`] and the transport rate set with
+//! [`ReaderPool::set_rate`].
+//!
 //! Readers never take the document lock: the owner hands the pool project snapshots
 //! ([`ReaderPool::set_project`]), from which it only reads media paths and streams.
 //!
@@ -17,6 +23,7 @@
 mod decode_path;
 mod image;
 mod queue;
+mod window;
 mod worker;
 
 use std::collections::hash_map::DefaultHasher;
@@ -37,10 +44,11 @@ use self::decode_path::{
 };
 use self::image::{ImageCache, ImageJob};
 use self::queue::{CPU_QUEUE_BYTES, Mode};
+use self::window::REVERSE_WINDOW_BYTES;
 use self::worker::{Reader, ReaderConfig, ReaderSource, Steering};
 use super::error::{MediaError, MediaErrorKind};
 use crate::render::GpuContext;
-use crate::render::frames::{FetchPolicy, FrameLookup, FrameProvider, PlaceholderKind};
+use crate::render::frames::{FetchPolicy, FrameLookup, FrameProvider, Pace, PlaceholderKind};
 
 #[cfg(windows)]
 use super::d3d12::{HwDevice, MIN_HW_EXTENT, READER_QUEUE_DEPTH};
@@ -48,6 +56,18 @@ use super::d3d12::{HwDevice, MIN_HW_EXTENT, READER_QUEUE_DEPTH};
 const READER_QUEUE_DEPTH: usize = 6;
 #[cfg(not(windows))]
 const MIN_HW_EXTENT: i32 = 256;
+
+/// Readers in GOP-reverse mode at most (counted against [`ReaderOptions::max_readers`]): each
+/// holds up to two windows of CPU frames.
+pub const MAX_REVERSE_READERS: usize = 2;
+
+/// Above this effective rate (transport rate x clip speed, in percent of normal) a playing
+/// reader decodes keyframes only and sample and hold shows the latest (`clip-speed-audio.md`
+/// §5.1). Up to it every frame is decoded, with catch-up when behind.
+pub const KEYFRAMES_ONLY_ABOVE: u32 = 400;
+
+/// Above this transport rate (shuttle) playing readers decode keyframes only (playback.md §7).
+const SHUTTLE_KEYFRAMES_ABOVE: u8 = 2;
 
 /// Readers that no frame used for this long are closed (playback.md §7).
 const IDLE_CLOSE: Duration = Duration::from_secs(5);
@@ -246,13 +266,15 @@ pub struct ReaderPool {
     canvas_long_side: u32,
     readers: Vec<Reader>,
     images: ImageCache,
-    mode: Mode,
-    /// Shuttle above 2x: readers decode keyframes only (playback.md §7).
-    keyframes_only: bool,
+    /// The transport rate: 0 paused, else the playing rate (playback.md §7).
+    rate: i8,
     frame: u64,
     /// Slows every reader down (catch-up tests).
     #[cfg(test)]
     decode_delay: Duration,
+    /// Bytes of one reverse window (tests use a tiny cap).
+    #[cfg(test)]
+    window_bytes: usize,
 }
 
 impl std::fmt::Debug for ReaderPool {
@@ -261,7 +283,7 @@ impl std::fmt::Debug for ReaderPool {
             .field("options", &self.options)
             .field("readers", &self.readers.len())
             .field("hw_readers", &self.hw_slots.used())
-            .field("mode", &self.mode)
+            .field("rate", &self.rate)
             .finish_non_exhaustive()
     }
 }
@@ -310,11 +332,12 @@ impl ReaderPool {
             bindings: HashMap::new(),
             canvas_long_side: 0,
             readers: Vec::new(),
-            mode: Mode::Paused,
-            keyframes_only: false,
+            rate: 0,
             frame: 0,
             #[cfg(test)]
             decode_delay: Duration::ZERO,
+            #[cfg(test)]
+            window_bytes: REVERSE_WINDOW_BYTES,
         }
     }
 
@@ -336,26 +359,51 @@ impl ReaderPool {
         });
     }
 
-    /// Playing: readers decode ahead until their queues are full. Paused (the default): the
-    /// exact frame plus 2 ahead, then they stop.
-    pub fn set_playing(&mut self, playing: bool) {
-        self.mode = if playing { Mode::Playing } else { Mode::Paused };
+    /// The transport: 0 paused (the default), else the playing rate (+-1, +-2, +-4, +-8).
+    /// Export renders as if playing at 1x. Steers every later lookup (see `steering`).
+    pub fn set_rate(&mut self, rate: i8) {
+        self.rate = rate;
     }
 
-    /// Shuttle above 2x: playing readers decode keyframes only and sample and hold shows the
-    /// latest one (playback.md §7). Back to every frame costs a seek to the next keyframe.
-    pub fn set_keyframes_only(&mut self, on: bool) {
-        self.keyframes_only = on;
-    }
-
-    /// How lookups steer their readers now: catch-up while playing every frame.
-    fn steering(&self, policy: FetchPolicy) -> Steering {
-        let playing = self.mode == Mode::Playing;
-        Steering {
-            mode: self.mode,
-            keyframes_only: playing && self.keyframes_only,
-            catch_up: playing && !self.keyframes_only && policy == FetchPolicy::BestAvailable,
-        }
+    /// Which reader direction serves a layer of `pace` (true: GOP-reverse), and how its lookups
+    /// steer it (playback.md §7, `clip-speed-audio.md` §5.1):
+    /// - A source moving forward while playing decodes ahead (`Mode::Playing`): every frame up to
+    ///   an effective rate (transport rate x clip speed) of [`KEYFRAMES_ONLY_ABOVE`] (with
+    ///   catch-up), keyframes only above it or above the shuttle's 2x. Back to every frame costs
+    ///   a seek to the next keyframe.
+    /// - A reversed clip with the transport paused or playing forward goes to a GOP-reverse
+    ///   reader, which prepares the next earlier window while playing.
+    /// - Reverse transport (J) over a forward clip stays the timed scrub: a forward reader, one
+    ///   request per frame (`Mode::Paused`); over a reversed clip the source moves forward.
+    /// - `Still` (a freeze frame) and paused: the exact frame and a little ahead.
+    /// - `FetchPolicy::Exact` never skips frames.
+    fn steering(&self, policy: FetchPolicy, pace: Pace) -> (bool, Steering) {
+        let (speed, clip_reversed) = match pace {
+            Pace::Forward { speed } => (speed, false),
+            Pace::Reverse { speed } => (speed, true),
+            Pace::Still => {
+                let still = Steering {
+                    mode: Mode::Paused,
+                    keyframes_only: false,
+                    catch_up: false,
+                };
+                return (false, still);
+            }
+        };
+        let reverse = clip_reversed && self.rate >= 0;
+        let playing = self.rate > 0 || (self.rate < 0 && clip_reversed);
+        let exact = policy == FetchPolicy::Exact;
+        let effective = u32::from(self.rate.unsigned_abs()) * u32::from(speed.percent());
+        let keyframes_only = playing
+            && !exact
+            && (self.rate.unsigned_abs() > SHUTTLE_KEYFRAMES_ABOVE
+                || effective > KEYFRAMES_ONLY_ABOVE);
+        let steering = Steering {
+            mode: if playing { Mode::Playing } else { Mode::Paused },
+            keyframes_only,
+            catch_up: playing && !exact && !keyframes_only && !reverse,
+        };
+        (reverse, steering)
     }
 
     /// The playback scheduler (playback.md §7): a clip of `media` starts soon and needs
@@ -364,7 +412,7 @@ impl ReaderPool {
     /// a seek when it gets there by decoding forward), else a new reader opens within the
     /// limits, else the least recently used idle reader is reassigned. Readers that serve the
     /// current frame are never taken.
-    pub fn prime(&mut self, media: MediaId, sample_time: Time) {
+    pub fn prime(&mut self, media: MediaId, sample_time: Time, pace: Pace) {
         let Some(binding) = self.bindings.get(&media).cloned() else {
             return;
         };
@@ -373,8 +421,9 @@ impl ReaderPool {
         }
         let source = binding.source;
         let frame = self.frame;
-        let steering = self.steering(FetchPolicy::BestAvailable);
-        let mine = |r: &Reader| r.serves(media, source) && r.failed().is_none();
+        let (reverse, steering) = self.steering(FetchPolicy::BestAvailable, pace);
+        let mine =
+            |r: &Reader| r.serves(media, source) && r.reverse == reverse && r.failed().is_none();
         // Free: not serving this frame and not primed for another clip in this pass.
         let free = |r: &Reader| r.used_in_frame != frame && r.primed_in_frame != frame;
         if let Some(reader) = self
@@ -397,11 +446,15 @@ impl ReaderPool {
         let index = reachable
             .or_else(|| lru(&self.readers, &|r| mine(r) && free(r)))
             .or_else(|| {
+                if reverse && self.reverse_readers() >= MAX_REVERSE_READERS {
+                    let index = lru(&self.readers, &|r| r.reverse && free(r))?;
+                    self.readers.remove(index);
+                }
                 if self.readers.len() >= self.options.max_readers {
                     let index = lru(&self.readers, &free)?;
                     self.readers.remove(index);
                 }
-                let reader = self.spawn(media, &binding)?;
+                let reader = self.spawn(media, &binding, reverse)?;
                 self.readers.push(reader);
                 Some(self.readers.len() - 1)
             });
@@ -449,12 +502,17 @@ impl ReaderPool {
         self.readers.len()
     }
 
+    /// Open readers in GOP-reverse mode.
+    pub fn reverse_readers(&self) -> usize {
+        self.readers.iter().filter(|r| r.reverse).count()
+    }
+
     fn close_idle(&mut self, now: Instant) {
         self.readers
             .retain(|reader| now.duration_since(reader.last_used) < IDLE_CLOSE);
     }
 
-    fn spawn(&self, media: MediaId, binding: &Binding) -> Option<Reader> {
+    fn spawn(&self, media: MediaId, binding: &Binding, reverse: bool) -> Option<Reader> {
         let video = binding.video.as_ref()?;
         let path = initial_path(PathInputs {
             hw_allowed: self.hw_allowed,
@@ -484,6 +542,17 @@ impl ReaderPool {
         };
         #[cfg(not(windows))]
         let path = DecodePath::Software;
+        // A reverse window outlives the decoder's small surface pool: hardware frames are
+        // downloaded into the window's CPU ring.
+        let path = if reverse && path == DecodePath::ZeroCopy {
+            DecodePath::Download
+        } else {
+            path
+        };
+        #[cfg(test)]
+        let window_bytes = self.window_bytes;
+        #[cfg(not(test))]
+        let window_bytes = REVERSE_WINDOW_BYTES;
         let config = ReaderConfig {
             source: ReaderSource {
                 media,
@@ -498,7 +567,12 @@ impl ReaderPool {
             hw,
             software_threads: self.software_threads,
             depth: READER_QUEUE_DEPTH,
-            byte_cap: CPU_QUEUE_BYTES,
+            byte_cap: if reverse {
+                window_bytes
+            } else {
+                CPU_QUEUE_BYTES
+            },
+            reverse,
             memory: Arc::clone(&self.memory),
             notifier: Arc::clone(&self.notifier),
             below_normal_priority: self.options.below_normal_priority,
@@ -517,10 +591,11 @@ impl ReaderPool {
         false
     }
 
-    /// The reader for `media` at `t` (playback.md §7 reader assignment, without lookahead):
-    /// one that gets there without a seek, else an idle reader of the media, else a new one
-    /// under the limit, else the least recently used idle reader, reassigned.
-    fn pick(&mut self, media: MediaId, binding: &Binding, t: Time) -> Option<usize> {
+    /// The reader for `media` at `t` in direction `reverse` (playback.md §7 reader assignment,
+    /// without lookahead): one that gets there without a seek, else an idle reader of the
+    /// media, else a new one under the limits, else the least recently used idle reader,
+    /// reassigned.
+    fn pick(&mut self, media: MediaId, binding: &Binding, t: Time, reverse: bool) -> Option<usize> {
         let source = binding.source;
         let frame = self.frame;
         let now = Instant::now();
@@ -537,7 +612,7 @@ impl ReaderPool {
                 }
             }
         }
-        let mine = |r: &Reader| r.serves(media, source);
+        let mine = |r: &Reader| r.serves(media, source) && r.reverse == reverse;
         let idle = |r: &Reader| r.used_in_frame != frame;
         // Another layer of this frame already asked for exactly this time.
         if let Some(index) = self
@@ -561,6 +636,14 @@ impl ReaderPool {
         if let Some(index) = lru(&self.readers, &|r| mine(r) && idle(r)) {
             return Some(index);
         }
+        if reverse && self.reverse_readers() >= MAX_REVERSE_READERS {
+            let index = lru(&self.readers, &|r| r.reverse && idle(r))
+                .or_else(|| lru(&self.readers, &mine))?;
+            if mine(&self.readers[index]) {
+                return Some(index);
+            }
+            self.readers.remove(index);
+        }
         if self.readers.len() >= self.options.max_readers {
             let index = lru(&self.readers, &idle).or_else(|| lru(&self.readers, &mine))?;
             if mine(&self.readers[index]) {
@@ -568,7 +651,7 @@ impl ReaderPool {
             }
             self.readers.remove(index);
         }
-        let reader = self.spawn(media, binding)?;
+        let reader = self.spawn(media, binding, reverse)?;
         self.readers.push(reader);
         Some(self.readers.len() - 1)
     }
@@ -595,7 +678,13 @@ impl FrameProvider for ReaderPool {
         self.close_idle(Instant::now());
     }
 
-    fn video(&mut self, media: MediaId, sample_time: Time, policy: FetchPolicy) -> FrameLookup {
+    fn video(
+        &mut self,
+        media: MediaId,
+        sample_time: Time,
+        pace: Pace,
+        policy: FetchPolicy,
+    ) -> FrameLookup {
         let Some(binding) = self.bindings.get(&media).cloned() else {
             tracing::debug!(%media, "video lookup of a media that is not in the project");
             return FrameLookup::Failed(PlaceholderKind::Offline);
@@ -603,10 +692,10 @@ impl FrameProvider for ReaderPool {
         if binding.video.is_none() {
             return FrameLookup::Failed(PlaceholderKind::DecodeError);
         }
-        let Some(index) = self.pick(media, &binding, sample_time) else {
+        let (reverse, steering) = self.steering(policy, pace);
+        let Some(index) = self.pick(media, &binding, sample_time, reverse) else {
             return FrameLookup::Missing;
         };
-        let steering = self.steering(policy);
         let frame = self.frame;
         let reader = &mut self.readers[index];
         reader.last_used = Instant::now();

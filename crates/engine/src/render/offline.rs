@@ -13,7 +13,7 @@ use app_core::{MediaAsset, Project, Time};
 
 use super::GpuContext;
 use super::compositor::{Compositor, CompositorConfig, create_canvas};
-use super::frames::{FetchPolicy, FrameLookup, FrameProvider, PlaceholderKind};
+use super::frames::{FetchPolicy, FrameLookup, FrameProvider, Pace, PlaceholderKind};
 use super::offscreen::{OUTPUT_FORMAT, Readback};
 use super::plan::{LayerContent, RenderPlan, build_plan};
 use super::present::PresentPass;
@@ -127,8 +127,9 @@ impl OfflineRenderer {
             // Failures are returned by `render_frame`; nothing waits for `FrameReady`.
             |_| {},
         );
-        // Frames come in order: decode ahead.
-        readers.set_playing(true);
+        // Frames come in order, as if playing at 1x: decode ahead (and prepare the next earlier
+        // window of reversed clips); `Exact` lookups never skip frames.
+        readers.set_rate(1);
         Self {
             compositor: Compositor::with_config(&gpu, CompositorConfig::EXPORT),
             output: PresentPass::new(&gpu.device, OUTPUT_FORMAT),
@@ -310,8 +311,14 @@ impl FrameProvider for Recording<'_> {
         self.inner.begin_frame();
     }
 
-    fn video(&mut self, media: MediaId, sample_time: Time, policy: FetchPolicy) -> FrameLookup {
-        let lookup = self.inner.video(media, sample_time, policy);
+    fn video(
+        &mut self,
+        media: MediaId,
+        sample_time: Time,
+        pace: Pace,
+        policy: FetchPolicy,
+    ) -> FrameLookup {
+        let lookup = self.inner.video(media, sample_time, pace, policy);
         self.record(media, lookup)
     }
 

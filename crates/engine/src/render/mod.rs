@@ -22,7 +22,9 @@ pub use compositor::{
     create_canvas,
 };
 pub use convert::{AlphaMode, ConvertParams, TransferPath};
-pub use frames::{FetchPolicy, FrameId, FrameLookup, FrameProvider, FrameRef, PlaceholderKind};
+pub use frames::{
+    FetchPolicy, FrameId, FrameLookup, FrameProvider, FrameRef, Pace, PlaceholderKind,
+};
 pub use gpu::{AdapterMode, DeviceKind, FallbackReason, GpuContext, GpuError, GpuInfo};
 pub use offline::{
     FailedMedia, OfflineOptions, OfflineRenderer, OutputFormat, RenderError, RenderedFrame,

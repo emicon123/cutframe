@@ -26,8 +26,8 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use app_core::media::MediaPath;
 use app_core::{
-    CanvasBackground, Clip, ClipSource, FrameRate, MediaAsset, MediaId, Project, Rgba8, Time,
-    Track, TrackKind,
+    CanvasBackground, Clip, ClipSource, FrameRate, MediaAsset, MediaId, Project, Rgba8, Speed,
+    Time, Track, TrackKind,
 };
 use engine::media::{fingerprint, probe};
 use engine::render::{
@@ -589,6 +589,166 @@ fn a_cut_point_shows_the_next_clip() {
     assert_eq!(cut, first, "the next clip's first frame");
 }
 
+// ---- Speed, reverse and freeze frames (`clip-speed-audio.md` §9) ----------------------------
+
+/// The canvas of the numbered fixture: 64 x 32, the picture fills it.
+const NUMBERED: (u32, u32) = (64, 32);
+
+/// The source frame a render of `numbered-gop.mp4` shows: bit b is the bar at x = 8b..8b+7.
+fn shown_frame(picture: &Picture) -> u32 {
+    (0..8)
+        .filter(|&bit| luma(picture.pixel(8 * bit + 4, 16)) > 0.5)
+        .map(|bit| 1 << bit)
+        .sum()
+}
+
+/// A media clip of `asset` at `percent` speed, `reverse`d or not.
+fn paced_clip(
+    asset: &MediaAsset,
+    start: Time,
+    duration: Time,
+    source_in: Time,
+    percent: u16,
+    reverse: bool,
+) -> Clip {
+    Clip {
+        source: ClipSource::Media {
+            media: asset.id,
+            source_in,
+            speed: Speed::new(percent).expect("speed"),
+            reverse,
+        },
+        ..media_clip(asset, start, duration, source_in)
+    }
+}
+
+fn numbered_project(main: Vec<Clip>, video: MediaAsset) -> Project {
+    project(NUMBERED, vec![video], main, Vec::new())
+}
+
+#[test]
+fn speed_2x_and_half_speed_show_the_mapped_source_frames() {
+    let _serial = serial();
+    let video = asset("numbered-gop.mp4");
+    // 2x over source 0..2 s: project frame n covers source frames 2n and 2n + 1 and shows the
+    // one at its centre, 2n + 1.
+    let fast = numbered_project(
+        vec![paced_clip(
+            &video,
+            Time::ZERO,
+            ms(1000),
+            Time::ZERO,
+            200,
+            false,
+        )],
+        video.clone(),
+    );
+    let picture = golden("speed_2x", &fast, 10);
+    assert_eq!(shown_frame(&picture), 21);
+    let mut offline = renderer(scene_gpu(), FailedMedia::Error);
+    for n in [0, 5, 12, 29] {
+        let picture = Picture::new(NUMBERED, render_with(&mut offline, &fast, n, NUMBERED));
+        assert_eq!(shown_frame(&picture), 2 * n as u32 + 1, "2x frame {n}");
+    }
+    // 0.5x from source 0.5 s: every source frame for two project frames.
+    let slow = numbered_project(
+        vec![paced_clip(&video, Time::ZERO, ms(2000), ms(500), 50, false)],
+        video,
+    );
+    let picture = golden("speed_half", &slow, 7);
+    assert_eq!(shown_frame(&picture), 18);
+    let mut offline = renderer(scene_gpu(), FailedMedia::Error);
+    let shown: Vec<u32> = (0..12)
+        .map(|n| {
+            shown_frame(&Picture::new(
+                NUMBERED,
+                render_with(&mut offline, &slow, n, NUMBERED),
+            ))
+        })
+        .collect();
+    assert_eq!(shown, [15, 15, 16, 16, 17, 17, 18, 18, 19, 19, 20, 20]);
+}
+
+/// Export renders a reversed clip exactly: every frame equals the forward render of the source
+/// frame it maps to, across every GOP boundary (keyframes at 0, 12, 21, 30, 39, 48, 57).
+#[test]
+fn a_reversed_clip_plays_the_source_backwards_exactly() {
+    let _serial = serial();
+    let video = asset("numbered-gop.mp4");
+    let reversed = numbered_project(
+        vec![paced_clip(
+            &video,
+            Time::ZERO,
+            ms(2000),
+            Time::ZERO,
+            100,
+            true,
+        )],
+        video.clone(),
+    );
+    let forward = numbered_project(
+        vec![media_clip(&video, Time::ZERO, ms(2000), Time::ZERO)],
+        video,
+    );
+    let first = golden("reverse_f00", &reversed, 0);
+    assert_eq!(shown_frame(&first), 59, "the end of the range first");
+    let across = golden("reverse_f03", &reversed, 3);
+    assert_eq!(shown_frame(&across), 56, "below the keyframe at 57");
+    let mut backwards = renderer(scene_gpu(), FailedMedia::Error);
+    let mut ahead = renderer(scene_gpu(), FailedMedia::Error);
+    for n in 0..60 {
+        let back = render_with(&mut backwards, &reversed, n, NUMBERED);
+        let fwd = render_with(&mut ahead, &forward, 59 - n, NUMBERED);
+        assert!(
+            back == fwd,
+            "reversed frame {n} differs from forward frame {}",
+            59 - n
+        );
+        assert_eq!(shown_frame(&Picture::new(NUMBERED, back)), 59 - n as u32);
+    }
+}
+
+/// A freeze frame inserted at the playhead shows the frame the clip showed there, held.
+#[test]
+fn a_freeze_frame_holds_the_frame_under_the_playhead() {
+    let _serial = serial();
+    let video = asset("numbered-gop.mp4");
+    let frame = FrameRate::FPS_30.frame_duration();
+    let original = media_clip(&video, Time::ZERO, ms(2000), Time::ZERO);
+    // The playhead at project frame 20 (InsertFreezeFrame samples like the render plan).
+    let at = Time(20 * frame.flicks());
+    let source_time = original
+        .frame_sample_time(at, frame)
+        .expect("inside the clip");
+    let before = Picture::new(
+        NUMBERED,
+        render(&numbered_project(vec![original], video.clone()), 20),
+    );
+    let left = media_clip(&video, Time::ZERO, at, Time::ZERO);
+    let freeze = Clip {
+        source: ClipSource::Freeze {
+            media: video.id,
+            source_time,
+        },
+        ..Clip::color("Freeze", at, ms(1000), Rgba8::BLACK)
+    };
+    let right = media_clip(&video, at + ms(1000), ms(1000), at);
+    let project = numbered_project(vec![left, freeze, right], video);
+    let held = golden("freeze_frame", &project, 20);
+    assert_eq!(held, before, "the frame the clip showed");
+    assert_eq!(shown_frame(&held), 20);
+    let mut offline = renderer(scene_gpu(), FailedMedia::Error);
+    for n in [19, 20, 35, 49, 50] {
+        let picture = Picture::new(NUMBERED, render_with(&mut offline, &project, n, NUMBERED));
+        let expected = match n {
+            ..20 => n,
+            20..50 => 20,
+            _ => n - 30,
+        };
+        assert_eq!(shown_frame(&picture), expected as u32, "frame {n}");
+    }
+}
+
 /// A copy of `asset` whose file is `path`.
 fn moved(asset: &MediaAsset, path: &Path) -> MediaAsset {
     MediaAsset {
@@ -772,7 +932,7 @@ fn hardware_decode_matches_software_and_every_scene_renders_without_it() {
     *HARDWARE_GPU
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::clone(&gpu));
-    let scenes: [(&str, fn()); 11] = [
+    let scenes: [(&str, fn()); 14] = [
         ("colour", colour_background_and_colour_clips),
         ("sdr frames", sdr_h264_frames_by_pts),
         ("sdr half", sdr_h264_at_half_render_size),
@@ -790,6 +950,15 @@ fn hardware_decode_matches_software_and_every_scene_renders_without_it() {
             "placeholders",
             offline_and_undecodable_media_show_placeholders,
         ),
+        (
+            "speed",
+            speed_2x_and_half_speed_show_the_mapped_source_frames,
+        ),
+        (
+            "reverse",
+            a_reversed_clip_plays_the_source_backwards_exactly,
+        ),
+        ("freeze", a_freeze_frame_holds_the_frame_under_the_playhead),
     ];
     let mut failed = Vec::new();
     for (name, scene) in scenes {

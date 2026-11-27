@@ -21,6 +21,7 @@ HEIF tile-grid container, and the broken files.
 | File | Made from | Checks |
 |---|---|---|
 | `h264-aac.mp4` | 1 s 64x64 30 fps H.264 (`libopenh264`) + stereo 48 kHz AAC, faststart | duration, codec names, channels, SDR has no HDR info |
+| `numbered-gop.mp4` | 2 s 64x32 30 fps MPEG-4 Part 2 (`mpeg4`, 2 B-frames, keyframes at frames 0, 12, 21, 30, 39, 48, 57); frame n shows n in binary as eight 8-pixel bars (`geq`) | which source frame a render shows: clip speed, reverse across GOP boundaries, freeze frames (`tests/golden.rs`, reverse reader tests) |
 | `hevc-portrait-cw90-vfr.mov` | 2 s HEVC (`libkvazaar`), frames 10–19 dropped (VFR), display matrix −90° (`-display_rotation`) | `rotation = cw90`, frame times from timestamps, sample-and-hold at 20 times |
 | `mpeg2-anamorphic.mpg` | 144x108 MPEG-2, SAR 4:3 | `display_size` 192x108 |
 | `vp9-opus-no-duration.webm` | VP9 + Opus written to a pipe (no duration in the container) | duration from the last packet |
@@ -30,6 +31,8 @@ HEIF tile-grid container, and the broken files.
 | `av1-10bit-pq.mp4` | 10-bit AV1 tagged BT.2020 / PQ + `mdcv` (1000 nits) and `clli` (MaxCLL 400, MaxFALL 120) boxes | `bitDepth = 10`, `hdr.transfer = pq`, nits |
 | `stereo-44k.mp3`, `mono-48k.wav`, `stereo-96k.flac`, `opus.ogg`, `aac.m4a` | 0.5 s sine | `kind = audio`, sample rate, channels |
 | `sine-1k-48k.flac` | 1 s full-scale 1 kHz stereo sine, 48 kHz, 16-bit FLAC (`aevalsrc`) | audio reader decodes exactly, sample-accurate seeks, split points without a seek, pre-seeked jump cuts, volume 0.5 peaks at 0.5 (`tests/audio_mix.rs`); the ignored device test |
+| `ramp-48k.flac` | 2 s stereo ramp from -0.8 to 0.8, 48 kHz, 16-bit FLAC (`aevalsrc`) | reversed voices play the samples backwards exactly, across a 1 s window; a reversed 2x voice descends (`tests/audio_pace.rs`) |
+| `bursts-48k.flac` | 6 s stereo silence with a 40 ms Hann-shaped 1 kHz burst centred on every multiple of 0.5 s from 0.5 s, 48 kHz FLAC | the time stage puts content where the clip mapping says (sync at 0.5x..4x, reverse, seeks, split points, jump cuts, 48 vs 96 kHz parity) |
 | `sine-1k-44k-mono.flac` | 1 s half-scale 1 kHz mono sine, 44.1 kHz, FLAC | resampling to 48 kHz in phase, mono on both channels at full level |
 | `vfr-audio-offset.ts` | MPEG-TS (starts at 1.4 s): 1 s 32x32 MPEG-4 video with frames 10-19 dropped (VFR) + mono 48 kHz MP2 sine starting about 0.25 s later (`-itsoffset`) | `origin`, silence before late audio, sample-accurate seeks with decoder preroll |
 | `exif-orientation-6.jpg` | 64x48 JPEG + APP1 Exif with Orientation = 6 | `rotation = cw90`, display 48x64 |

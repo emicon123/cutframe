@@ -19,17 +19,19 @@ pub mod feeder;
 pub mod mix;
 pub mod reader;
 pub mod ring;
+pub mod stretch;
 
 use app_core::{FLICKS_PER_SECOND, Time};
 
 pub use callback::{CallbackLoad, OutputCallback, OutputSample};
 pub use feeder::{AudioEngine, AudioEvent, OutputInfo};
-pub use mix::{PcmProvider, Voice, mix_block};
+pub use mix::{PcmProvider, Voice, mix_block, mix_scrub};
 pub use reader::{AudioReader, AudioSources};
 pub use ring::{
     AudioBlock, AudioShared, BLOCK_FRAMES, BlockConsumer, BlockProducer, RING_BLOCKS,
     TARGET_FILL_BLOCKS, ring,
 };
+pub use stretch::{AudioPace, TimeStage};
 
 /// The timeline offset of sample `samples` at `sample_rate`: `samples x FLICKS_PER_SECOND /
 /// sample_rate`. Exact (an integer number of flicks per sample) for 8, 11.025, 16, 22.05, 32,

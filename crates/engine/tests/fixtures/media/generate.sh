@@ -21,6 +21,13 @@ ff -f lavfi -i "$SRC_V:duration=1" -f lavfi -i "sine=frequency=440:sample_rate=4
   -c:v libopenh264 -b:v 100k -pix_fmt yuv420p -c:a aac -b:a 32k -ac 2 "${EXACT[@]}" \
   -movflags +faststart h264-aac.mp4
 
+# Numbered frames: 2 s 64x32 30 fps MPEG-4 Part 2 with B-frames and a keyframe about every 10
+# frames; frame n shows n in binary as 8 bars of 8 pixels (bit b at x = 8b..8b+7: white when set),
+# so a rendered picture says which source frame it shows (speed, reverse and freeze tests).
+ff -f lavfi -i "color=c=black:s=64x32:r=30:d=2,format=yuv420p,geq=lum='if(bitand(N\,pow(2\,floor(X/8)))\,235\,16)':cb=128:cr=128" \
+  -c:v mpeg4 -g 10 -bf 2 -sc_threshold 1000000000 -q:v 2 "${EXACT[@]}" -movflags +faststart \
+  numbered-gop.mp4
+
 # Portrait phone clip: HEVC, display matrix "rotate 90 degrees clockwise", VFR (frames 10-19 of
 # 60 at 30 fps dropped, so one frame lasts 11/30 s). Encoded, then remuxed with the rotation.
 ff -f lavfi -i "$SRC_V:duration=2" -vf "select='not(between(n\,10\,19))'" -fps_mode passthrough \
@@ -78,6 +85,13 @@ ff -f lavfi -i "aevalsrc=sin(2*PI*1000*t)|sin(2*PI*1000*t):s=48000:d=1" -c:a fla
   "${EXACT[@]}" sine-1k-48k.flac
 ff -f lavfi -i "aevalsrc=0.5*sin(2*PI*1000*t):s=44100:d=1" -c:a flac -sample_fmt s16 \
   "${EXACT[@]}" sine-1k-44k-mono.flac
+# Audio pace fixtures (clip-speed-audio.md §9, tests/audio_pace.rs): a 2 s stereo ramp from -0.8
+# to 0.8 (reverse plays it descending) and 6 s of silence with a 40 ms Hann-shaped 1 kHz burst
+# centred on every multiple of 0.5 s from 0.5 s (where the time stage puts the content).
+ff -f lavfi -i "aevalsrc=-0.8+0.8*t|-0.8+0.8*t:s=48000:d=2" -c:a flac -sample_fmt s16 \
+  "${EXACT[@]}" ramp-48k.flac
+B="if(gt(t\,0.1)*lt(abs(mod(t+0.25\,0.5)-0.25)\,0.02)\,(0.5+0.5*cos(PI*(mod(t+0.25\,0.5)-0.25)/0.02))*sin(2*PI*1000*t)\,0)"
+ff -f lavfi -i "aevalsrc='$B|$B':s=48000:d=6" -c:a flac -sample_fmt s16 "${EXACT[@]}" bursts-48k.flac
 ff -f lavfi -i "testsrc2=size=32x32:rate=30:duration=1" \
   -itsoffset 0.25 -f lavfi -i "aevalsrc=0.5*sin(2*PI*1000*t):s=48000:d=0.75" -map 0:v -map 1:a \
   -vf "select='not(between(n\,10\,19))'" -fps_mode passthrough -c:v mpeg4 -q:v 20 \

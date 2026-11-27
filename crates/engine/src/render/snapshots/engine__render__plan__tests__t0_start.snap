@@ -35,6 +35,11 @@ RenderPlan {
                 sample_time: Time(
                     893760000,
                 ),
+                pace: Forward {
+                    speed: Speed(
+                        100,
+                    ),
+                },
                 convert: ConvertParams {
                     matrix: Some(
                         Bt709,

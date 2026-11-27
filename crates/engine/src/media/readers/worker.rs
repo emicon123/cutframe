@@ -19,7 +19,8 @@ use app_core::media::MediaId;
 use rsmpeg::avutil::AVFrame;
 
 use super::decode_path::{DecodePath, PathMemory};
-use super::queue::{CATCH_UP_LEAD, Discard, FAR_BEHIND, FrameQueue, Mode, Select};
+use super::queue::{CATCH_UP_LEAD, Discard, FAR_BEHIND, FrameQueue, Mode, Queue, Select};
+use super::window::WindowQueue;
 use super::{EXACT_TIMEOUT, Notifier, placeholder_for};
 use crate::media::decode::open_decoder_with_threads;
 use crate::media::error::{MediaError, MediaErrorKind};
@@ -71,7 +72,11 @@ pub(crate) struct ReaderConfig {
     pub hw: Option<HwContext>,
     pub software_threads: i32,
     pub depth: usize,
+    /// CPU bytes of the forward queue, or of each window in reverse mode.
     pub byte_cap: usize,
+    /// GOP-reverse mode (`clip-speed-audio.md` §5.2): windows decoded forward and handed out
+    /// downwards. Hardware frames are downloaded (`path` is never `ZeroCopy`).
+    pub reverse: bool,
     pub memory: Arc<PathMemory>,
     pub notifier: Arc<Notifier>,
     pub below_normal_priority: bool,
@@ -89,7 +94,7 @@ enum Status {
 
 #[derive(Debug)]
 struct State {
-    queue: FrameQueue,
+    queue: Queue,
     mode: Mode,
     status: Status,
     path: DecodePath,
@@ -152,7 +157,8 @@ impl Shared {
             if state.shutdown {
                 return Work::Exit;
             }
-            if let Some(t) = state.queue.take_seek() {
+            let mode = state.mode;
+            if let Some(t) = state.queue.take_seek(mode) {
                 self.abandon.store(false, Ordering::SeqCst);
                 state.seeks += 1;
                 return Work::Seek(t);
@@ -255,16 +261,19 @@ pub(crate) struct Reader {
     pub primed: Option<Time>,
     /// The pool's frame counter when it was primed.
     pub primed_in_frame: u64,
+    /// A GOP-reverse reader (serves reversed clips only).
+    pub reverse: bool,
 }
 
-/// How a lookup steers its reader (playback.md §7).
+/// How a lookup steers its reader (playback.md §7, `clip-speed-audio.md` §5.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Steering {
+    /// Playing: decode ahead (forward) or prepare the next earlier window (reverse).
     pub mode: Mode,
-    /// Shuttle above 2x: decode keyframes only.
+    /// Shuttle above 2x or an effective rate above 4x: decode keyframes only.
     pub keyframes_only: bool,
-    /// Playback at 1x or 2x: discard non-reference frames when behind, jump ahead when far
-    /// behind.
+    /// Forward playback decoding every frame: discard non-reference frames when behind, jump
+    /// ahead when far behind.
     pub catch_up: bool,
 }
 
@@ -272,7 +281,11 @@ impl Reader {
     pub fn spawn(config: ReaderConfig) -> std::io::Result<Self> {
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
-                queue: FrameQueue::new(config.depth, config.byte_cap),
+                queue: if config.reverse {
+                    Queue::Reverse(WindowQueue::new(config.byte_cap))
+                } else {
+                    Queue::Forward(FrameQueue::new(config.depth, config.byte_cap))
+                },
                 mode: Mode::Paused,
                 status: Status::Starting,
                 path: config.path,
@@ -290,6 +303,7 @@ impl Reader {
             notifier: Arc::clone(&config.notifier),
         });
         let source = config.source.clone();
+        let reverse = config.reverse;
         let thread_shared = Arc::clone(&shared);
         let thread = std::thread::Builder::new()
             .name("video-reader".into())
@@ -303,6 +317,7 @@ impl Reader {
             used_in_frame: 0,
             primed: None,
             primed_in_frame: 0,
+            reverse,
         })
     }
 
@@ -487,6 +502,15 @@ impl Reader {
     #[cfg(test)]
     pub fn published(&self) -> Vec<Time> {
         self.shared.lock().published.clone()
+    }
+
+    /// CPU bytes held by the windows of a reverse reader (tests of the memory bound).
+    #[cfg(test)]
+    pub fn window_bytes(&self) -> usize {
+        match &self.shared.lock().queue {
+            Queue::Reverse(q) => q.bytes(),
+            Queue::Forward(_) => 0,
+        }
     }
 }
 
@@ -773,7 +797,13 @@ fn run(shared: &Shared, mut config: ReaderConfig) {
             Work::Seek(t) => {
                 last_pts = None;
                 restarted = false;
-                match decoder.reader.seek(t) {
+                // A reverse window must start at a keyframe strictly before its end.
+                let sought = if config.reverse {
+                    decoder.reader.seek_floor(t)
+                } else {
+                    decoder.reader.seek(t)
+                };
+                match sought {
                     Ok(()) => continue,
                     Err(err) => decoder.classify(err),
                 }

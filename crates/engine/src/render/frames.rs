@@ -4,8 +4,8 @@
 
 use std::sync::Arc;
 
-use app_core::Time;
 use app_core::media::MediaId;
+use app_core::{Clip, ClipSource, Speed, Time};
 
 #[cfg(windows)]
 use crate::media::GpuFrame;
@@ -29,6 +29,38 @@ pub enum FetchPolicy {
     /// Export, golden tests, `--smoke-test`: block until the exact frame is decoded or the source
     /// fails. Deterministic.
     Exact,
+}
+
+/// How a video layer's source moves from one project frame to the next
+/// (`clip-speed-audio.md` §5.1). It steers the reader that serves the layer: the effective rate
+/// (transport rate x `speed`) decides between every frame and keyframes only, `Reverse` is
+/// served by a reader in GOP-reverse mode, and `Still` decodes the exact frame and nothing ahead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Pace {
+    /// Forward at `speed` times the transport rate.
+    Forward { speed: Speed },
+    /// Backwards at `speed` times the transport rate (a reversed clip).
+    Reverse { speed: Speed },
+    /// The same source time on every frame (a freeze frame).
+    Still,
+}
+
+impl Pace {
+    /// Forward at normal speed.
+    pub const NORMAL: Pace = Pace::Forward {
+        speed: Speed::NORMAL,
+    };
+
+    /// The pace of `clip`'s video: `Still` for a freeze frame, else the speed and direction of
+    /// its media source.
+    pub fn of(clip: &Clip) -> Pace {
+        match clip.source {
+            ClipSource::Freeze { .. } => Pace::Still,
+            ClipSource::Media { speed, reverse, .. } if reverse => Pace::Reverse { speed },
+            ClipSource::Media { speed, .. } => Pace::Forward { speed },
+            ClipSource::Color { .. } | ClipSource::Text { .. } => Pace::NORMAL,
+        }
+    }
 }
 
 /// Identity of one source frame: equal ids mean equal pixels. The compositor keys its source
@@ -141,8 +173,16 @@ pub trait FrameProvider {
     fn begin_frame(&mut self) {}
 
     /// The frame for a video layer: the last decoded frame with `pts <= sample_time` (sample and
-    /// hold, media-import.md §5). `policy` decides what happens when it is not decoded yet.
-    fn video(&mut self, media: MediaId, sample_time: Time, policy: FetchPolicy) -> FrameLookup;
+    /// hold, media-import.md §5). `pace` says how the layer's source moves (it steers decoding,
+    /// never which frame is the answer); `policy` decides what happens when the frame is not
+    /// decoded yet.
+    fn video(
+        &mut self,
+        media: MediaId,
+        sample_time: Time,
+        pace: Pace,
+        policy: FetchPolicy,
+    ) -> FrameLookup;
 
     /// The decoded picture of an image layer (decoded once, CPU, packed RGBA with straight
     /// alpha, in stored orientation).

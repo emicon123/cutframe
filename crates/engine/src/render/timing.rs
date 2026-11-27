@@ -20,7 +20,7 @@ use app_core::{ClipId, MediaAsset, Project, Rgba8, Time};
 use super::GpuContext;
 use super::compositor::{Compositor, CompositorConfig, create_canvas, gpu_source};
 use super::convert::{AlphaMode, CONVERT_FORMAT, ConvertParams, ConvertPass, TransferPath};
-use super::frames::{FetchPolicy, FrameId, FrameLookup, FrameProvider, FrameRef};
+use super::frames::{FetchPolicy, FrameId, FrameLookup, FrameProvider, FrameRef, Pace};
 use super::gpu::{OPTIONAL_FEATURES, create_instance};
 use super::offline::{FailedMedia, OfflineOptions, OfflineRenderer, OutputFormat};
 use super::offscreen::{OUTPUT_FORMAT, Readback};
@@ -197,7 +197,9 @@ fn convert_of_a_4k_p010_frame_to_720p() {
     project.media = vec![asset.clone()];
     readers.set_project(&project);
     readers.begin_frame();
-    let FrameLookup::Exact(frame) = readers.video(asset.id, Time::ZERO, FetchPolicy::Exact) else {
+    let FrameLookup::Exact(frame) =
+        readers.video(asset.id, Time::ZERO, Pace::NORMAL, FetchPolicy::Exact)
+    else {
         panic!("no frame");
     };
     let FrameData::Gpu(surface) = frame.data() else {
@@ -313,7 +315,7 @@ impl FrameProvider for Synthetic {
         }
     }
 
-    fn video(&mut self, media: MediaId, _: Time, _: FetchPolicy) -> FrameLookup {
+    fn video(&mut self, media: MediaId, _: Time, _: Pace, _: FetchPolicy) -> FrameLookup {
         let (_, frame) = self
             .frames
             .iter()
@@ -351,6 +353,7 @@ fn plan_of(provider: &Synthetic, canvas: (u32, u32), render: (u32, u32), n: i64)
                 content: LayerContent::Video {
                     media: *media,
                     sample_time: Time::ZERO,
+                    pace: Pace::NORMAL,
                     convert: Synthetic::params(frame.visible),
                 },
                 transform: Affine2::rect(

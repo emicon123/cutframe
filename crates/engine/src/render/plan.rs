@@ -17,7 +17,7 @@ use app_core::{
 };
 
 use super::convert::ConvertParams;
-use super::frames::PlaceholderKind;
+use super::frames::{Pace, PlaceholderKind};
 
 /// Everything needed to draw one frame.
 #[derive(Debug, Clone, PartialEq)]
@@ -64,11 +64,15 @@ pub struct LayerPlan {
 /// What a layer draws.
 #[derive(Debug, Clone, PartialEq)]
 pub enum LayerContent {
-    /// A video frame: the last decoded frame with `pts <= sample_time` (sample and hold).
+    /// A video frame: the last decoded frame with `pts <= sample_time` (sample and hold). Also
+    /// a freeze frame, at its fixed source time with [`Pace::Still`].
     Video {
         media: MediaId,
-        /// Media time at the centre of the project frame (§4.1 "Time and sampling").
+        /// Media time at the centre of the project frame (§4.1 "Time and sampling"), with the
+        /// clip's speed and direction: [`Clip::frame_sample_time`].
         sample_time: Time,
+        /// How the source moves from frame to frame; steers the reader.
+        pace: Pace,
         convert: ConvertParams,
     },
     /// A still image.
@@ -111,8 +115,9 @@ impl Affine2 {
 /// - Layers, bottom to top: the main track, then the overlay tracks from the bottom of the
 ///   overlay section to the top (timeline-editing.md §3.3, §7). Hidden tracks, audio tracks and
 ///   text tracks (0510) draw nothing.
-/// - Video layers sample the source at the centre of the project frame:
-///   `sample_time = source_time(t_n) + frame_duration / 2`. Images have no time.
+/// - Video layers sample the source at the centre of the project frame, mapped through the
+///   clip's speed and direction ([`Clip::frame_sample_time`], `clip-speed-audio.md` §3.2);
+///   freeze frames at their source time. Images have no time.
 /// - A media id that is not in `project.media` gives an `Offline` placeholder over the canvas.
 ///   Media without a video stream (audio-only media, which `Project::validate` keeps off video
 ///   tracks) draws nothing.
@@ -120,7 +125,7 @@ pub fn build_plan(project: &Project, t: Time, render_size: (u32, u32)) -> Render
     let rate = project.settings.frame_rate;
     let frame = t.to_frames(rate);
     let time = Time::from_frames(frame, rate);
-    let half_frame = Time(rate.frame_duration().flicks() / 2);
+    let frame_duration = rate.frame_duration();
     let canvas = (project.settings.width, project.settings.height);
     // The main track and everything above it; without a main track (a broken project) all tracks.
     let drawn = project
@@ -131,7 +136,7 @@ pub fn build_plan(project: &Project, t: Time, render_size: (u32, u32)) -> Render
         .rev()
         .filter(|track| track.kind == TrackKind::Video && !track.hidden)
         .filter_map(|track| active_clip(track, time))
-        .filter_map(|clip| layer(project, clip, time, half_frame, canvas))
+        .filter_map(|clip| layer(project, clip, time, frame_duration, canvas))
         .collect();
     RenderPlan {
         frame,
@@ -176,22 +181,22 @@ fn layer(
     project: &Project,
     clip: &Clip,
     t: Time,
-    half_frame: Time,
+    frame_duration: Time,
     canvas: (u32, u32),
 ) -> Option<LayerPlan> {
     let (content, source_size) = match &clip.source {
         ClipSource::Color { color } => (LayerContent::Color(*color), None),
         // TODO(0510): text layers.
         ClipSource::Text { .. } => return None,
-        // TODO(0370 step 3): `frame_sample_time` for every video layer and a still pace. Until
-        // then a freeze frame is a video layer held at its source time.
-        ClipSource::Freeze { media, source_time } => match project.media_asset(*media) {
+        // A freeze frame is a video layer held at its source time (`frame_sample_time`).
+        ClipSource::Freeze { media, .. } => match project.media_asset(*media) {
             None => (LayerContent::Placeholder(PlaceholderKind::Offline), None),
             Some(asset) => {
                 let info = asset.info.video.as_ref()?;
                 let content = LayerContent::Video {
                     media: *media,
-                    sample_time: *source_time,
+                    sample_time: clip.frame_sample_time(t, frame_duration)?,
+                    pace: Pace::Still,
                     convert: ConvertParams::for_video(info),
                 };
                 (content, Some(info.display_size()))
@@ -204,7 +209,8 @@ fn layer(
                 let content = match asset.kind {
                     MediaKind::Video => LayerContent::Video {
                         media: *media,
-                        sample_time: clip.source_time(t)? + half_frame,
+                        sample_time: clip.frame_sample_time(t, frame_duration)?,
+                        pace: Pace::of(clip),
                         convert: ConvertParams::for_video(info),
                     },
                     MediaKind::Image => LayerContent::Image {
@@ -477,6 +483,104 @@ mod tests {
             counts.chunks(2).all(|pair| pair == [2, 3]),
             "2:3 pulldown: {counts:?}"
         );
+    }
+
+    /// Source frames (of a 30 fps source) shown by the first `frames` project frames (30 fps)
+    /// of a clip with `source`, and the pace of each layer.
+    fn shown_with(source: ClipSource, duration: Time, frames: i64) -> (Vec<i64>, Vec<Pace>) {
+        let video = with_id(samples::video(1), 50);
+        let source = match source {
+            ClipSource::Media {
+                source_in,
+                speed,
+                reverse,
+                ..
+            } => ClipSource::Media {
+                media: video.id,
+                source_in,
+                speed,
+                reverse,
+            },
+            ClipSource::Freeze { source_time, .. } => ClipSource::Freeze {
+                media: video.id,
+                source_time,
+            },
+            other => other,
+        };
+        let clip = Clip {
+            source,
+            ..color_clip(100, Time::ZERO, duration, Rgba8::BLACK)
+        };
+        let mut project = project(
+            Vec::new(),
+            track(10, TrackKind::Video, vec![clip]),
+            Vec::new(),
+        );
+        project.media = vec![video];
+        let source_frame = FrameRate::FPS_30.frame_duration().flicks();
+        (0..frames)
+            .map(|n| {
+                let plan = build_plan(&project, Time::from_frames(n, FrameRate::FPS_30), FULL_HD);
+                match plan.layers[0].content {
+                    LayerContent::Video {
+                        sample_time, pace, ..
+                    } => (sample_time.flicks().div_euclid(source_frame), pace),
+                    ref other => panic!("not a video layer: {other:?}"),
+                }
+            })
+            .unzip()
+    }
+
+    fn media_source(source_in: Time, percent: u16, reverse: bool) -> ClipSource {
+        ClipSource::Media {
+            media: MediaId(Uuid::from_u128(50)),
+            source_in,
+            speed: app_core::Speed::new(percent).unwrap(),
+            reverse,
+        }
+    }
+
+    #[test]
+    fn speed_maps_the_frame_centre_through_the_clip() {
+        // 2x: project frame n covers source frames 2n and 2n + 1; its centre is the start of
+        // 2n + 1, which sample and hold shows.
+        let (shown, paces) = shown_with(media_source(Time::ZERO, 200, false), long(1), 30);
+        assert_eq!(shown, (0..30).map(|n| 2 * n + 1).collect::<Vec<_>>());
+        let speed = app_core::Speed::new(200).unwrap();
+        assert!(paces.iter().all(|&p| p == Pace::Forward { speed }));
+        // 0.5x: every source frame twice.
+        let (shown, _) = shown_with(media_source(long(1), 50, false), long(2), 60);
+        assert_eq!(shown, (0..60).map(|n| 30 + n / 2).collect::<Vec<_>>());
+        // 1x is the old formula: source_time + half a frame.
+        let (shown, paces) = shown_with(media_source(long(1), 100, false), long(1), 30);
+        assert_eq!(shown, (30..60).collect::<Vec<_>>());
+        assert!(paces.iter().all(|&p| p == Pace::NORMAL));
+    }
+
+    #[test]
+    fn a_reversed_clip_shows_the_end_of_its_range_first() {
+        // Source 1..3 s reversed: frame 89 first, frame 30 last.
+        let (shown, paces) = shown_with(media_source(long(1), 100, true), long(2), 60);
+        assert_eq!(shown, (30..90).rev().collect::<Vec<_>>());
+        assert!(paces.iter().all(|&p| p
+            == Pace::Reverse {
+                speed: app_core::Speed::NORMAL
+            }));
+        // At 2x: every other frame, downwards from the top of the range (1..5 s).
+        let (shown, _) = shown_with(media_source(long(1), 200, true), long(2), 60);
+        assert_eq!(shown, (0..60).map(|n| 148 - 2 * n).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_freeze_frame_is_a_still_video_layer_at_its_source_time() {
+        let source_time = Time(42 * FrameRate::FPS_30.frame_duration().flicks() + 7);
+        let freeze = ClipSource::Freeze {
+            media: MediaId(Uuid::from_u128(50)),
+            source_time,
+        };
+        let (shown, paces) = shown_with(freeze, long(1), 30);
+        assert!(shown.iter().all(|&k| k == 42), "{shown:?}");
+        assert!(paces.iter().all(|&p| p == Pace::Still));
     }
 
     #[test]

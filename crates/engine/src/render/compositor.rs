@@ -712,8 +712,9 @@ impl Compositor {
                 LayerContent::Video {
                     media,
                     sample_time,
+                    pace,
                     convert,
-                } => (frames.video(*media, *sample_time, policy), *convert),
+                } => (frames.video(*media, *sample_time, *pace, policy), *convert),
                 LayerContent::Image { media, convert } => (frames.image(*media, policy), *convert),
                 LayerContent::Color(color) => {
                     self.resolved.push(Resolved::Solid(premultiplied(

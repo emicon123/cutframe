@@ -176,6 +176,29 @@ impl<'c> VideoReader<'c> {
             app_core::Rational::new(i64::from(self.time_base.num), i64::from(self.time_base.den))
                 .map_err(|_| MediaError::new(MediaErrorKind::Damaged, "invalid time base"))?,
         );
+        self.seek_ticks(ts)
+    }
+
+    /// Moves to the keyframe whose timestamp is at or before media time `t`, rounding `t` down
+    /// to the stream's time base (not to the nearest tick like [`seek`](Self::seek)): a reverse
+    /// window that must start strictly before a frame never lands on that frame.
+    pub(crate) fn seek_floor(&mut self, t: Time) -> Result<(), MediaError> {
+        let (num, den) = (
+            i128::from(self.time_base.num),
+            i128::from(self.time_base.den),
+        );
+        if num <= 0 || den <= 0 {
+            return Err(MediaError::new(
+                MediaErrorKind::Damaged,
+                "invalid time base",
+            ));
+        }
+        let flicks = i128::from((t + self.origin).flicks());
+        let ts = (flicks * den).div_euclid(num * i128::from(app_core::FLICKS_PER_SECOND));
+        self.seek_ticks(i64::try_from(ts).unwrap_or(if ts < 0 { i64::MIN } else { i64::MAX }))
+    }
+
+    fn seek_ticks(&mut self, ts: i64) -> Result<(), MediaError> {
         // SAFETY: an opened input context and a valid stream index.
         let ret = unsafe {
             ffi::avformat_seek_file(
