@@ -16,6 +16,8 @@ describe("contextMenuItems", () => {
       "duplicate",
       "link-toggle",
       "detach-audio",
+      "freeze-frame",
+      "reverse",
     ])
       expect(items).toContain(id);
     expect(items).toContain("replace-media");

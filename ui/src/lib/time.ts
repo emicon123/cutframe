@@ -8,6 +8,11 @@ export function frameDuration(rate: FrameRate): number {
   return (FLICKS_PER_SECOND * rate.den) / rate.num;
 }
 
+/** Seconds typed by the user → flicks, rounded to the nearest flick (time is never stored as seconds). */
+export function secondsToFlicks(seconds: number): number {
+  return Math.round(seconds * FLICKS_PER_SECOND);
+}
+
 /** Display only. Never store the result. */
 export function flicksToSeconds(flicks: number): number {
   return flicks / FLICKS_PER_SECOND;

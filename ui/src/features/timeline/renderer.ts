@@ -9,9 +9,16 @@ import type {
   TrackView,
 } from "@/bindings";
 
-import { drawClipWaveform, drawFilmstrip, type PeakLevels, type TileSource } from "./clipVisuals";
+import {
+  clipSourceMap,
+  drawClipWaveform,
+  drawFilmstrip,
+  type PeakLevels,
+  type TileSource,
+} from "./clipVisuals";
 import type { DropPreview } from "./drop";
 import { normalizeRect, type Rect } from "./hitTest";
+import { clipBadges } from "./retime";
 import { trackDimmed } from "./tracks";
 import {
   RULER_HEIGHT,
@@ -46,6 +53,8 @@ export type TimelineTheme = {
   waveBand: string;
   /** Shade behind the clip labels at the top of a filmstrip. */
   labelShade: string;
+  /** Pill behind the speed, reverse and freeze badges (text in `clipText`). */
+  badge: string;
 };
 
 /** Reads the colour tokens from CSS custom properties defined in `index.css`. */
@@ -71,6 +80,7 @@ export function readTheme(element: Element): TimelineTheme {
     wave: v("--clip-wave"),
     waveBand: v("--clip-wave-band"),
     labelShade: v("--clip-label-shade"),
+    badge: v("--clip-badge"),
   };
 }
 
@@ -118,6 +128,10 @@ const BODY_HEIGHT = TRACK_HEIGHT - 6;
 const WAVE_STRIP_HEIGHT = 16;
 /** Height of the label shade over a filmstrip. */
 const LABEL_SHADE_HEIGHT = 40;
+/** Badge pills after the clip length: height, inner padding and gap. */
+const BADGE_HEIGHT = 15;
+const BADGE_PADDING = 5;
+const BADGE_GAP = 4;
 
 export function drawTimeline(ctx: CanvasRenderingContext2D, scene: Scene) {
   const { width, height, tracks, viewport, theme } = scene;
@@ -198,7 +212,9 @@ function drawClips(ctx: CanvasRenderingContext2D, track: TrackView, top: number,
     const x = timeToX(clip.start, viewport);
     const w = clip.duration / viewport.flicksPerPixel;
     if (x > width || x + w < 0) continue;
-    const offline = clip.source.kind === "media" && scene.offline.has(clip.source.media);
+    const { source } = clip;
+    const fromMedia = source.kind === "media" || source.kind === "freeze";
+    const offline = fromMedia && scene.offline.has(source.media);
     ctx.globalAlpha = alpha;
     ctx.fillStyle = offline ? theme.offline : clipFill(clip, track.kind, theme);
     ctx.beginPath();
@@ -207,8 +223,7 @@ function drawClips(ctx: CanvasRenderingContext2D, track: TrackView, top: number,
     ctx.save();
     ctx.clip();
     if (offline) drawHatch(ctx, x, top, w, theme.invalid);
-    else if (clip.source.kind === "media")
-      drawClipMedia(ctx, clip, clip.source, track.kind, x, w, top, scene);
+    else if (fromMedia) drawClipMedia(ctx, clip, source.media, track.kind, x, w, top, scene);
     // F1.36: the name, and the length under it (with the offline note for a missing file).
     ctx.fillStyle = theme.clipText;
     ctx.font = "500 12px 'Inter Variable', sans-serif";
@@ -220,11 +235,14 @@ function drawClips(ctx: CanvasRenderingContext2D, track: TrackView, top: number,
     ctx.globalAlpha = 0.75 * alpha;
     ctx.fillText(duration, left, top + 27);
     ctx.globalAlpha = alpha;
+    let after = left + ctx.measureText(duration).width + 8;
     if (offline) {
       ctx.fillStyle = theme.invalid;
       ctx.font = "600 11px 'Inter Variable', sans-serif";
-      ctx.fillText(scene.offlineLabel, left + ctx.measureText(duration).width + 8, top + 27);
+      ctx.fillText(scene.offlineLabel, after, top + 27);
+      after += ctx.measureText(scene.offlineLabel).width + 8;
     }
+    drawBadges(ctx, clipBadges(clip.source), after, top + 25, Math.min(x + w, width) - 6, theme);
     if (clip.link && w >= LINK_MARK_MIN_WIDTH)
       drawLinkMark(ctx, Math.min(x + w, width) - 10, top + 13, theme.clipText);
     ctx.restore();
@@ -240,23 +258,25 @@ function drawClips(ctx: CanvasRenderingContext2D, track: TrackView, top: number,
 }
 
 /**
- * The filmstrip (video clips) and waveform (audio clips, and video clips that still play their
- * own sound) of a media clip, for its source range `sourceIn .. sourceIn + duration`. The clip's
- * rounded rectangle is the clip path already. Products not loaded yet are skipped and drawn when
- * they arrive.
+ * The filmstrip (video and freeze-frame clips) and waveform (audio clips, and video clips that
+ * still play their own sound) of a media clip, over its used source range (`clipSourceMap`: the
+ * speed stretches it, reverse mirrors it, a freeze frame repeats one frame). The clip's rounded
+ * rectangle is the clip path already. Products not loaded yet are skipped and drawn when they
+ * arrive.
  */
 function drawClipMedia(
   ctx: CanvasRenderingContext2D,
   clip: ClipView,
-  source: { media: MediaId; sourceIn: number },
+  media: MediaId,
   kind: TrackKind,
   x: number,
   w: number,
   top: number,
   scene: Scene,
 ) {
-  const item = scene.media.get(source.media);
-  if (!item) return;
+  const item = scene.media.get(media);
+  const map = clipSourceMap(clip);
+  if (!item || !map) return;
   const { viewport, width, theme, products } = scene;
   const filmstrip = kind === "video" && item.kind === "video" ? item.filmstrip : null;
   const sound = item.audio !== null && (kind === "audio" || (kind === "video" && clip.audio != null));
@@ -266,19 +286,7 @@ function drawClipMedia(
   const strip = filmstrip !== null;
   if (filmstrip) {
     const height = sound ? BODY_HEIGHT - WAVE_STRIP_HEIGHT : BODY_HEIGHT;
-    drawFilmstrip(
-      ctx,
-      filmstrip,
-      products.tiles,
-      item,
-      source.sourceIn,
-      x,
-      w,
-      bodyTop,
-      height,
-      viewport,
-      width,
-    );
+    drawFilmstrip(ctx, filmstrip, products.tiles, item, map, x, w, bodyTop, height, viewport, width);
   }
   const peaks = sound ? products.waveforms.get(item, 0) : null;
   if (sound) {
@@ -290,7 +298,7 @@ function drawClipMedia(
     }
     if (peaks) {
       ctx.fillStyle = theme.wave;
-      drawClipWaveform(ctx, peaks, source.sourceIn, x, w, waveTop + 1, waveHeight - 2, viewport, width);
+      drawClipWaveform(ctx, peaks, map, x, w, waveTop + 1, waveHeight - 2, viewport, width);
     }
   }
   // Keeps the name and length readable over the pictures.
@@ -301,6 +309,36 @@ function drawClipMedia(
     ctx.fillRect(left, 0, visible, LABEL_SHADE_HEIGHT);
     ctx.restore();
   }
+}
+
+/**
+ * The speed, reverse and freeze badges as pills from `x` on the length line, while they fit
+ * before `right` (a narrow clip shows fewer or none).
+ */
+function drawBadges(
+  ctx: CanvasRenderingContext2D,
+  badges: readonly string[],
+  x: number,
+  y: number,
+  right: number,
+  theme: TimelineTheme,
+) {
+  if (badges.length === 0) return;
+  ctx.font = "600 10px 'Inter Variable', sans-serif";
+  ctx.textBaseline = "middle";
+  let left = x;
+  for (const badge of badges) {
+    const w = ctx.measureText(badge).width + 2 * BADGE_PADDING;
+    if (left + w > right) break;
+    ctx.fillStyle = theme.badge;
+    ctx.beginPath();
+    ctx.roundRect(left, y, w, BADGE_HEIGHT, 4);
+    ctx.fill();
+    ctx.fillStyle = theme.clipText;
+    ctx.fillText(badge, left + BADGE_PADDING, y + BADGE_HEIGHT / 2 + 0.5);
+    left += w + BADGE_GAP;
+  }
+  ctx.textBaseline = "top";
 }
 
 /** The label shade gradient, in coordinates relative to the clip body's top; built once per colour. */

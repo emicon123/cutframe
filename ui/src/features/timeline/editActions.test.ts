@@ -10,6 +10,7 @@ import {
   deleteRequest,
   deleteSelection,
   detachSelectedAudio,
+  freezeAtPlayhead,
   moveTrack,
   pasteAtPlayhead,
   playheadAfterTrimLeft,
@@ -17,6 +18,7 @@ import {
   setTrackFlag,
   splitAtPlayhead,
   toggleLinkSelection,
+  toggleReverseSelection,
   trimToPlayhead,
 } from "./editActions";
 
@@ -247,6 +249,79 @@ describe("link, detach and track actions over IPC", () => {
       ["replace", { clip: "v", media: "other" }],
       ["flag", { track: "music", flag: "muted", value: true }],
       ["moveTrack", { track: "music", index: 2 }],
+    ]);
+  });
+});
+
+describe("freeze frame and reverse (F1.81, F1.82)", () => {
+  let calls: unknown[] = [];
+  const video = (id: string, start: number, reverse = false) => ({
+    id,
+    start,
+    duration: 100,
+    source: { kind: "media", media: "v", sourceIn: 0, speed: 100, reverse },
+  });
+  const state = {
+    revision: 1,
+    project: {
+      mainTrack: "main",
+      magnetic: true,
+      tracks: [
+        { id: "over", kind: "video", locked: false, clips: [video("o", 0)] },
+        { id: "main", kind: "video", locked: false, clips: [video("a", 0), video("b", 100, true)] },
+      ],
+      media: [{ id: "v", kind: "video" }],
+    },
+  } as unknown as ProjectState;
+
+  beforeEach(() => {
+    calls = [];
+    useProjectStore.setState({ state });
+    mockCommands({
+      insertFreezeFrame: (args) => {
+        calls.push(["freeze", args]);
+        return "frozen";
+      },
+      setClipReverse: (args) => {
+        calls.push(["reverse", args]);
+        return null;
+      },
+    });
+  });
+
+  afterEach(() => {
+    useProjectStore.setState({ state: null });
+    clearSelection();
+    setPlayhead(0);
+  });
+
+  it("freezes the selected video clip under the playhead and selects the freeze", async () => {
+    setSelection(["o"]);
+    setPlayhead(40);
+    await freezeAtPlayhead();
+    expect(calls).toEqual([["freeze", { clip: "o", at: 40 }]]);
+    expect(selectionStore.getState().clips).toEqual(["frozen"]);
+  });
+
+  it("lets Rust pick the main-track clip without a single selected video clip", async () => {
+    setPlayhead(150);
+    await freezeAtPlayhead();
+    setSelection(["o", "a"]);
+    await freezeAtPlayhead();
+    expect(calls).toEqual([
+      ["freeze", { clip: null, at: 150 }],
+      ["freeze", { clip: null, at: 150 }],
+    ]);
+  });
+
+  it("reverses the selection, or plays it forwards when all of it is reversed", async () => {
+    setSelection(["a", "b"]);
+    await toggleReverseSelection();
+    setSelection(["b"]);
+    await toggleReverseSelection();
+    expect(calls).toEqual([
+      ["reverse", { clips: ["a", "b"], reverse: true }],
+      ["reverse", { clips: ["b"], reverse: false }],
     ]);
   });
 });

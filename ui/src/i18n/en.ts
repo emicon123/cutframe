@@ -166,6 +166,10 @@ export const en = {
     link: "Link clips",
     unlink: "Unlink clips",
     detachAudio: "Detach audio",
+    /** F1.82: a still of the frame under the playhead, inserted into the timeline. */
+    freezeFrame: "Freeze frame",
+    /** F1.81: play the selected clips backwards (a toggle). */
+    reverse: "Reverse",
   },
   view: {
     historyPanel: "History panel",
@@ -221,9 +225,9 @@ export const en = {
       resetPanelLayout: "Reset panel layout",
     },
     editing: {
-      imageDuration: "Default image duration",
+      imageDuration: "Image and freeze-frame duration",
       transitionDuration: "Default transition duration",
-      hint: "Used when an image or a transition is added to the timeline.",
+      hint: "Used when an image, a freeze frame or a transition is added to the timeline.",
     },
     fieldErrors: {
       notNumber: "Enter a number",
@@ -633,6 +637,41 @@ export const en = {
     sampleRate: "Sample rate",
     duration: "Duration",
     tracks: "Tracks",
+    /** Header while clips are selected. */
+    clip: (count: number) => (count === 1 ? "Clip" : `${count} clips`),
+    /** The selected clips share no editable property. */
+    noCommon: "The selected clips have no properties in common.",
+    /** A field whose value differs between the selected clips. */
+    mixed: "Mixed",
+    locked: "A selected clip is on a locked track.",
+    units: { percent: "%", factor: "×", seconds: "s" },
+    audio: {
+      title: "Audio",
+      volume: "Volume",
+      /** The volume as gain, e.g. "+6.0 dB". */
+      decibels: (value: string) => `${value} dB`,
+      silent: "−∞ dB",
+      fadeIn: "Fade in",
+      fadeOut: "Fade out",
+    },
+    speed: {
+      title: "Speed",
+      speed: "Speed",
+      presets: "Speed presets",
+      preset: (factor: string) => `${factor}×`,
+      presetLabel: (factor: string) => `Set speed to ${factor}×`,
+      preservePitch: "Preserve pitch",
+      reverse: "Reverse",
+      /** The clip length the speed results in. */
+      duration: "Duration",
+      mutedAbove: "Sound is muted above 4×.",
+    },
+    /** Images, colour cards and freeze frames. */
+    still: {
+      title: "Duration",
+      field: "Duration",
+      hint: "Rounded to whole frames. The clip keeps its start.",
+    },
   },
   timeline: {
     addVideoTrack: "Add video track",
@@ -664,6 +703,12 @@ export const en = {
     deleteTrack: "Delete track",
     /** Drawn on clips that are linked to others. */
     linked: "Linked",
+    /** Badges on retimed, reversed and freeze-frame clips. */
+    badges: {
+      speed: (factor: string) => `${factor}×`,
+      reverse: "Reverse",
+      freeze: "Freeze",
+    },
     replaceMedia: {
       action: "Replace media…",
       title: (clip: string) => `Replace media of ${clip}`,

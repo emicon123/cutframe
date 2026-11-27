@@ -9,6 +9,8 @@ export type MenuEntry = ActionId | "replace-media" | "-";
 
 const CLIP_MENU: readonly MenuEntry[] = [
   "split",
+  "freeze-frame",
+  "reverse",
   "-",
   "cut",
   "copy",

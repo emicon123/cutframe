@@ -1,12 +1,47 @@
 /**
- * Filmstrips (F1.34) and waveforms (F1.35) on timeline clips: the mapping from a clip's source
- * range (`sourceIn .. sourceIn + duration`, timeline design §3.2) onto the `media://` products,
- * and the canvas drawing. Pure and allocation-free on the draw path; no React in here.
+ * Filmstrips (F1.34) and waveforms (F1.35) on timeline clips: the mapping from a clip's used
+ * source range (`sourceIn .. sourceEnd`, mirrored when reversed; clip-speed-audio design §6) onto
+ * the `media://` products, and the canvas drawing. Pure and allocation-free on the draw path; no
+ * React in here.
  */
-import { FILMSTRIP_FRAME_HEIGHT, type FilmstripLayout } from "@/bindings";
+import { type ClipSource, FILMSTRIP_FRAME_HEIGHT, type FilmstripLayout, type Time } from "@/bindings";
 import { FLICKS_PER_SECOND } from "@/lib/time";
 
 import type { Viewport } from "./geometry";
+
+/**
+ * A linear map from a timeline offset inside a clip (flicks from its start) to the media time
+ * drawn there: `origin + offset × rate`. The clip's width spans its whole used source range, so
+ * `rate` is the speed (negative when reversed, 0 for a freeze frame). Display only: Rust owns the
+ * exact frame mapping (`Clip::source_time`).
+ */
+export type SourceMap = { origin: number; rate: number };
+
+/** Reused by `clipSourceMap` on the draw path. */
+const sourceMapScratch: SourceMap = { origin: 0, rate: 1 };
+
+/**
+ * The source map of a media or freeze clip, written into `out`; `null` for colour and text clips.
+ * Media clips map their width linearly onto `sourceIn .. sourceEnd` (from `sourceEnd` down when
+ * reversed); a freeze clip shows its `sourceTime` everywhere.
+ */
+export function clipSourceMap(
+  clip: { duration: Time; source: ClipSource; sourceEnd?: Time | null },
+  out: SourceMap = sourceMapScratch,
+): SourceMap | null {
+  const { source } = clip;
+  if (source.kind === "freeze") {
+    out.origin = source.sourceTime;
+    out.rate = 0;
+    return out;
+  }
+  if (source.kind !== "media") return null;
+  const end = clip.sourceEnd ?? source.sourceIn + clip.duration;
+  const rate = clip.duration > 0 ? (end - source.sourceIn) / clip.duration : 1;
+  out.origin = source.reverse ? end : source.sourceIn;
+  out.rate = source.reverse ? -rate : rate;
+  return out;
+}
 
 /** The filmstrip frame that shows media time `time`: frame `i` shows `i × interval`. */
 export function filmstripFrame(layout: FilmstripLayout, time: number): number {
@@ -24,15 +59,15 @@ export type TileSource<Key> = { get(item: Key, tile: number): CanvasImageSource 
 
 /**
  * Draws a clip's filmstrip: frame slots side by side from the clip's left edge `x`, each showing
- * the frame at the media time under its middle. Only the slots inside `0..width` are drawn;
- * slots whose tile is not loaded yet are left empty (the clip colour shows through).
+ * the frame at the media time under its middle (through `map`). Only the slots inside `0..width`
+ * are drawn; slots whose tile is not loaded yet are left empty (the clip colour shows through).
  */
 export function drawFilmstrip<Key>(
   ctx: CanvasRenderingContext2D,
   layout: FilmstripLayout,
   tiles: TileSource<Key>,
   item: Key,
-  sourceIn: number,
+  map: SourceMap,
   x: number,
   w: number,
   y: number,
@@ -48,7 +83,7 @@ export function drawFilmstrip<Key>(
     if (k * slot >= w) break;
     // A partial last slot shows the frame just before the clip's end.
     const offset = Math.min((k + 0.5) * slot, Math.max(0, w - 1));
-    const frame = filmstripFrame(layout, sourceIn + offset * viewport.flicksPerPixel);
+    const frame = filmstripFrame(layout, map.origin + offset * viewport.flicksPerPixel * map.rate);
     const image = tiles.get(item, Math.floor(frame / layout.framesPerTile));
     if (!image) continue;
     const column = frame % layout.framesPerTile;
@@ -127,13 +162,14 @@ export function readPeak(peaks: PeakLevels, level: number, from: number, to: num
 }
 
 /**
- * Draws the waveform of a clip's source range as centred min/max bars, one per CSS pixel column
- * inside `0..width`, filling `y..y + h` at full scale, in the current fill style.
+ * Draws the waveform of a clip's source range (through `map`, so a 2× clip shows twice the audio
+ * per pixel and a reversed one shows it mirrored) as centred min/max bars, one per CSS pixel
+ * column inside `0..width`, filling `y..y + h` at full scale, in the current fill style.
  */
 export function drawClipWaveform(
   ctx: CanvasRenderingContext2D,
   peaks: PeakLevels,
-  sourceIn: number,
+  map: SourceMap,
   x: number,
   w: number,
   y: number,
@@ -142,7 +178,9 @@ export function drawClipWaveform(
   width: number,
 ): void {
   const bucketsPerFlick = peaks.bucketsPerSecond / FLICKS_PER_SECOND;
-  const perPixel = viewport.flicksPerPixel * bucketsPerFlick;
+  // Level-0 buckets one column moves through; negative when reversed.
+  const step = viewport.flicksPerPixel * map.rate * bucketsPerFlick;
+  const perPixel = Math.abs(step);
   const level = peakLevel(perPixel, peaks.levels.length);
   const left = Math.max(0, Math.floor(x));
   const right = Math.min(width, Math.ceil(x + w));
@@ -151,7 +189,8 @@ export function drawClipWaveform(
   // One path and one fill for all bars: far cheaper than a fill per bar.
   ctx.beginPath();
   for (let column = left; column < right; column += 1) {
-    const from = (sourceIn + (column - x) * viewport.flicksPerPixel) * bucketsPerFlick;
+    const at = (map.origin + (column - x) * viewport.flicksPerPixel * map.rate) * bucketsPerFlick;
+    const from = Math.min(at, at + step);
     const peak = readPeak(peaks, level, Math.floor(from), Math.floor(from + perPixel));
     const top = mid - peak.max * scale;
     ctx.rect(column, top, 1, Math.max(1, mid - peak.min * scale - top));

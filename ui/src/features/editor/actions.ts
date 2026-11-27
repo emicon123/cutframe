@@ -13,13 +13,16 @@ import {
   deleteSelection,
   detachSelectedAudio,
   duplicateSelection,
+  freezeAtPlayhead,
   pasteAtPlayhead,
   splitAtPlayhead,
   toggleLinkSelection,
   toggleMagnetic,
+  toggleReverseSelection,
   trimToPlayhead,
 } from "@/features/timeline/editActions";
 import { canDetachAudio, linkToggle, type LinkToggle } from "@/features/timeline/linking";
+import { mediaKinds, reverseState } from "@/features/timeline/retime";
 import {
   fitTimeline,
   goToEnd,
@@ -72,6 +75,10 @@ export type ActionContext = {
   linkToggle: LinkToggle;
   /** A selected clip still plays its own sound, so detach audio applies (F1.50). */
   canDetach: boolean;
+  /** A selected clip is a video or audio media clip, so reverse applies (F1.81). */
+  canReverse: boolean;
+  /** Every selected clip that can be reversed plays reversed (the toggle's check mark). */
+  reversed: boolean;
   /** The timeline has content, so it can play (an empty one does not). */
   canPlay: boolean;
   /** The transport plays (any rate), from the latest `playbackTick`. */
@@ -84,7 +91,7 @@ export type ActionContext = {
 export type SelectionFlags = Pick<ActionContext, "clipsSelected" | "gapSelected">;
 
 /** The part that depends on both the selection and the clips it names. */
-export type ClipFlags = Pick<ActionContext, "linkToggle" | "canDetach">;
+export type ClipFlags = Pick<ActionContext, "linkToggle" | "canDetach" | "canReverse" | "reversed">;
 
 /** The playhead-store part of the context. */
 export type PlaybackFlags = Pick<ActionContext, "playing" | "looping">;
@@ -119,6 +126,8 @@ export type ActionId =
   | "duplicate"
   | "link-toggle"
   | "detach-audio"
+  | "freeze-frame"
+  | "reverse"
   | "magnetic"
   | "preferences"
   | "history-panel"
@@ -361,6 +370,24 @@ export const ACTIONS: readonly Action[] = [
     scope: "timeline",
     enabled: (ctx) => editing(ctx) && ctx.canDetach,
     run: () => void detachSelectedAudio(),
+  },
+  {
+    id: "freeze-frame",
+    label: t.edit.freezeFrame,
+    // The selected video clip under the playhead, else the main-track clip there.
+    shortcuts: [{ key: "f", shift: true }],
+    scope: "timeline",
+    enabled: editing,
+    run: () => void freezeAtPlayhead(),
+  },
+  {
+    id: "reverse",
+    label: t.edit.reverse,
+    // No shortcut: the design gives none (clip-speed-audio design §2).
+    scope: "timeline",
+    enabled: (ctx) => editing(ctx) && ctx.canReverse,
+    checked: (ctx) => ctx.reversed,
+    run: () => void toggleReverseSelection(),
   },
   {
     id: "magnetic",
@@ -607,6 +634,9 @@ export const MENUS: readonly Menu[] = [
       "link-toggle",
       "detach-audio",
       SEPARATOR,
+      "freeze-frame",
+      "reverse",
+      SEPARATOR,
       "magnetic",
       SEPARATOR,
       "select-all",
@@ -665,7 +695,7 @@ const NO_UI_FLAGS: UiFlags = {
 
 const NO_SELECTION: SelectionFlags = { clipsSelected: false, gapSelected: false };
 
-const NO_CLIP_FLAGS: ClipFlags = { linkToggle: null, canDetach: false };
+const NO_CLIP_FLAGS: ClipFlags = { linkToggle: null, canDetach: false, canReverse: false, reversed: false };
 
 const NO_PLAYBACK: PlaybackFlags = { playing: false, looping: false };
 
@@ -715,7 +745,14 @@ function selectionFlags(s: SelectionStoreState): SelectionFlags {
 
 export function clipFlags(state: ProjectState | null, selected: readonly ClipId[]): ClipFlags {
   const tracks = state?.project.tracks ?? [];
-  return { linkToggle: linkToggle(tracks, selected), canDetach: canDetachAudio(tracks, selected) };
+  const reverse =
+    state && selected.length > 0 ? reverseState(tracks, mediaKinds(state.project.media), selected) : null;
+  return {
+    linkToggle: linkToggle(tracks, selected),
+    canDetach: canDetachAudio(tracks, selected),
+    canReverse: reverse !== null,
+    reversed: reverse?.reversed ?? false,
+  };
 }
 
 /** The current context, for the keyboard handler (outside React). */

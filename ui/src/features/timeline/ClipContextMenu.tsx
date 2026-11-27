@@ -9,6 +9,7 @@ import { type MouseEvent, type ReactNode, useState } from "react";
 import type { ClipId } from "@/bindings";
 import {
   ContextMenu,
+  ContextMenuCheckboxItem,
   ContextMenuContent,
   ContextMenuItem,
   ContextMenuSeparator,
@@ -106,6 +107,14 @@ function ActionItem({ id }: { id: Exclude<MenuEntry, "-" | "replace-media"> }) {
   const ctx = useActionContext();
   const action = getAction(id);
   const shortcut = shortcutLabel(action);
+  const checked = action.checked?.(ctx);
+  if (checked !== undefined)
+    return (
+      <ContextMenuCheckboxItem checked={checked} disabled={!isEnabled(action, ctx)} onSelect={action.run}>
+        {actionLabel(action, ctx)}
+        {shortcut && <ContextMenuShortcut>{shortcut}</ContextMenuShortcut>}
+      </ContextMenuCheckboxItem>
+    );
   return (
     <ContextMenuItem
       disabled={!isEnabled(action, ctx)}

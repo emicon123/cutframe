@@ -58,6 +58,8 @@ describe("findShortcut", () => {
     expect(findShortcut(key("x", { ctrlKey: true }))?.id).toBe("cut");
     expect(findShortcut(key("c", { ctrlKey: true }))?.id).toBe("copy");
     expect(findShortcut(key("v", { ctrlKey: true }))?.id).toBe("paste");
+    expect(findShortcut(key("F", { shiftKey: true }))?.id).toBe("freeze-frame");
+    expect(findShortcut(key("f"))).toBeUndefined();
     expect(findShortcut(key("d", { ctrlKey: true }))?.id).toBe("duplicate");
     expect(findShortcut(key("q", { ctrlKey: true }))).toBeUndefined();
   });
@@ -174,14 +176,16 @@ describe("handleShortcut", () => {
   });
 
   it("selects every clip with Ctrl+A and deselects with Escape", () => {
+    const colorClip = (id: string) => ({ id, source: { kind: "color", color: "#000000ff" } });
     useProjectStore.setState({
       state: {
         ...state,
         project: {
           tracks: [
-            { id: "t1", locked: false, clips: [{ id: "a" }, { id: "b" }] },
-            { id: "t2", locked: true, clips: [{ id: "c" }] },
+            { id: "t1", locked: false, clips: [colorClip("a"), colorClip("b")] },
+            { id: "t2", locked: true, clips: [colorClip("c")] },
           ],
+          media: [],
         },
       } as unknown as ProjectState,
     });

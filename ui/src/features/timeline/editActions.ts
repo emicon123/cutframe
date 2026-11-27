@@ -12,6 +12,7 @@ import { clearSelection, selectionStore, setSelection } from "@/stores/selection
 import type { GapSelection } from "./gap";
 import type { HitTrack } from "./hitTest";
 import { linkToggle } from "./linking";
+import { freezeTarget, mediaKinds, reverseState } from "./retime";
 
 export type DeleteRequest =
   { kind: "gap"; track: TrackId; at: number } | { kind: "clips"; clips: ClipId[]; ripple: boolean };
@@ -116,6 +117,27 @@ export async function toggleLinkSelection() {
 /** F1.50: moves the sound of the selected video clips to linked audio clips; selects those. */
 export async function detachSelectedAudio() {
   selectCreated(await run(commands.detachAudio(selectedClips())));
+}
+
+/**
+ * F1.82 (Shift+F): inserts a still of the frame under the playhead and selects it. Freezes the
+ * selected video clip when exactly one is selected under the playhead, else Rust picks the
+ * main-track clip there.
+ */
+export async function freezeAtPlayhead() {
+  const project = useProjectStore.getState().state?.project;
+  const at = playhead();
+  const clip = project ? freezeTarget(project.tracks, mediaKinds(project.media), selectedClips(), at) : null;
+  const created = await run(commands.insertFreezeFrame(clip, at));
+  if (created !== undefined) setSelection([created]);
+}
+
+/** F1.81: plays the selected clips (and their linked members) backwards, or forwards again. */
+export async function toggleReverseSelection() {
+  const clips = selectedClips();
+  const project = useProjectStore.getState().state?.project;
+  const state = project ? reverseState(project.tracks, mediaKinds(project.media), clips) : null;
+  if (state) await run(commands.setClipReverse(clips, !state.reversed));
 }
 
 /** F1.51: points `clip` at `media`, keeping its place, length and properties. */

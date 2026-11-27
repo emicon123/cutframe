@@ -1,14 +1,11 @@
 import type { IpcError, Preferences_Serialize, Time, UiLanguage } from "@/bindings";
 import { t } from "@/i18n";
-import { FLICKS_PER_SECOND } from "@/lib/time";
+import { FLICKS_PER_SECOND, secondsToFlicks } from "@/lib/time";
+
+export { secondsToFlicks };
 
 /** The preferences as Rust returns them (every field present). */
 export type Preferences = Preferences_Serialize;
-
-/** Seconds typed by the user → flicks (rule 6: time is never stored as seconds). */
-export function secondsToFlicks(seconds: number): Time {
-  return Math.round(seconds * FLICKS_PER_SECOND);
-}
 
 /** Flicks → the text shown in a seconds field, with at most three decimals ("5", "0.5"). */
 export function flicksToSecondsText(flicks: Time): string {

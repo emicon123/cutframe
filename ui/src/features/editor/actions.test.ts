@@ -35,6 +35,8 @@ const ctx = (overrides: Partial<ActionContext> = {}): ActionContext => ({
   gapSelected: false,
   linkToggle: null,
   canDetach: false,
+  canReverse: false,
+  reversed: false,
   canPlay: true,
   playing: false,
   looping: false,
@@ -178,6 +180,7 @@ describe("shortcutGroups", () => {
       { id: "ripple-delete", label: t.edit.rippleDelete, keys: ["Shift+Del"] },
       { id: "trim-left", label: t.edit.trimLeft, keys: ["Q"] },
       { id: "trim-right", label: t.edit.trimRight, keys: ["W"] },
+      { id: "freeze-frame", label: t.edit.freezeFrame, keys: ["Shift+F"] },
       { id: "select-all", label: t.edit.selectAll, keys: ["Ctrl+A"] },
       { id: "deselect", label: t.edit.deselect, keys: [t.keys.escape] },
       { id: "preferences", label: t.edit.preferences, keys: ["Ctrl+,"] },
@@ -351,6 +354,17 @@ describe("timeline edit actions", () => {
     expect(item(ctx({ clipsSelected: true, canDetach: true }), "detach-audio")?.disabled).toBe(false);
   });
 
+  it("offers freeze frame with Shift+F and reverse as a toggle in the Edit menu (F1.81, F1.82)", () => {
+    const freeze = item(ctx(), "freeze-frame");
+    expect(freeze).toMatchObject({ label: t.edit.freezeFrame, shortcut: "Shift+F", disabled: false });
+    expect(item(ctx({ editorOpen: false }), "freeze-frame")?.disabled).toBe(true);
+    expect(item(ctx({ clipsSelected: true }), "reverse")).toMatchObject({ disabled: true, checked: false });
+    expect(item(ctx({ clipsSelected: true, canReverse: true, reversed: true }), "reverse")).toMatchObject({
+      disabled: false,
+      checked: true,
+    });
+  });
+
   it("lists the new shortcuts in the reference panel under Edit", () => {
     const rows = shortcutGroups().find((g) => g.id === "edit")?.rows ?? [];
     expect(rows.find((r) => r.id === "ripple-delete")?.keys).toEqual(["Shift+Del"]);
@@ -371,8 +385,9 @@ describe("clipFlags", () => {
               duration: 1,
               link: null,
               audio: {},
-              source: { kind: "media", media: "m", sourceIn: 0 },
+              source: { kind: "media", media: "m", sourceIn: 0, speed: 100, reverse: false },
             },
+            { id: "i", duration: 1, link: null, source: { kind: "media", media: "img", sourceIn: 0 } },
           ],
         },
         {
@@ -384,17 +399,32 @@ describe("clipFlags", () => {
               duration: 1,
               link: null,
               audio: {},
-              source: { kind: "media", media: "m", sourceIn: 0 },
+              source: { kind: "media", media: "m", sourceIn: 0, speed: 100, reverse: true },
             },
           ],
         },
+      ],
+      media: [
+        { id: "m", kind: "video" },
+        { id: "img", kind: "image" },
       ],
     },
   } as unknown as ProjectState;
 
   it("derives the link toggle and detach from the selected clips", () => {
-    expect(clipFlags(state, ["a", "b"])).toEqual({ linkToggle: "link", canDetach: true });
-    expect(clipFlags(state, ["b"])).toEqual({ linkToggle: null, canDetach: false });
-    expect(clipFlags(null, ["a"])).toEqual({ linkToggle: null, canDetach: false });
+    expect(clipFlags(state, ["a", "b"])).toMatchObject({ linkToggle: "link", canDetach: true });
+    expect(clipFlags(state, ["b"])).toMatchObject({ linkToggle: null, canDetach: false });
+    expect(clipFlags(null, ["a"])).toEqual({
+      linkToggle: null,
+      canDetach: false,
+      canReverse: false,
+      reversed: false,
+    });
+  });
+
+  it("offers reverse for video and audio clips, checked when all of them play reversed (F1.81)", () => {
+    expect(clipFlags(state, ["a", "b"])).toMatchObject({ canReverse: true, reversed: false });
+    expect(clipFlags(state, ["b", "i"])).toMatchObject({ canReverse: true, reversed: true });
+    expect(clipFlags(state, ["i"])).toMatchObject({ canReverse: false, reversed: false });
   });
 });
