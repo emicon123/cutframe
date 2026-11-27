@@ -13,17 +13,17 @@ Last MVP step: get the edit out of the app.
 
 ## Features
 
-- [ ] `F1.86` Export dialog: file name, destination folder — *missing*
-- [ ] `F1.87` Resolution: 480p, 720p, 1080p, 2K, 4K (keeping project aspect) — *missing* (2K = 1440p; also "project size")
-- [ ] `F1.88` Frame rate: 24, 25, 30, 50, 60 fps — *missing* (plus the project rate when it is ≤ 60)
-- [ ] `F1.89` Bitrate: low / recommended / high / custom — *missing*
-- [ ] `F1.90` H.264 export in MP4 — *missing*
-- [ ] `F1.91` HEVC export in MP4/MOV — *missing* (MP4 only, hardware encoders only; MOV is dropped, see design Decisions)
-- [ ] `F1.92` AAC audio in the export — *missing*
-- [ ] `F1.93` Export uses the same render graph as preview — *missing*
-- [ ] `F1.94` Progress with ETA, cancel, background export while editing — *missing*
-- [ ] `F1.95` Hardware-accelerated encoding with software fallback — *missing*
-- [ ] `F1.99` Clear error when export fails (disk full, encoder missing) — *missing*
+- [ ] `F1.86` Export dialog: file name, destination folder — *partial* (built and tested; manual `pnpm dev` check open)
+- [ ] `F1.87` Resolution: 480p, 720p, 1080p, 2K, 4K (keeping project aspect) — *partial* (built and tested; manual `pnpm dev` check open) (2K = 1440p; also "project size")
+- [ ] `F1.88` Frame rate: 24, 25, 30, 50, 60 fps — *partial* (built and tested; manual `pnpm dev` check open) (plus the project rate when it is ≤ 60)
+- [ ] `F1.89` Bitrate: low / recommended / high / custom — *partial* (built and tested; manual `pnpm dev` check open)
+- [ ] `F1.90` H.264 export in MP4 — *partial* (built and tested; manual `pnpm dev` check open)
+- [ ] `F1.91` HEVC export in MP4/MOV — *partial* (built and tested; manual `pnpm dev` check open) (MP4 only, hardware encoders only; MOV is dropped, see design Decisions)
+- [ ] `F1.92` AAC audio in the export — *partial* (built and tested; manual `pnpm dev` check open)
+- [ ] `F1.93` Export uses the same render graph as preview — *partial* (built and tested; manual `pnpm dev` check open)
+- [ ] `F1.94` Progress with ETA, cancel, background export while editing — *partial* (built and tested; manual `pnpm dev` check open)
+- [ ] `F1.95` Hardware-accelerated encoding with software fallback — *partial* (built and tested; manual `pnpm dev` check open)
+- [ ] `F1.99` Clear error when export fails (disk full, encoder missing) — *partial* (built and tested; manual `pnpm dev` check open)
 
 ## Scope
 
@@ -72,3 +72,23 @@ Follow `docs/design/export.md` §12. In short:
 - each row above is updated in `docs/feature-catalog.md` (status + short evidence note); partial rows say what is missing
 - `pnpm check` passes; after any IPC change `pnpm bindings` is re-run and `ui/src/bindings.ts` committed
 - architecture rules in `CLAUDE.md` hold (model changes are undoable commands, no frames over JSON IPC, integer flicks, LGPL-only FFmpeg, no reference-product names or assets)
+
+## Status (2026-11-27, branch `claude/project-thread-z58xeb`)
+
+- [ ] **1-minute 1080p30 edit exports without a discrete GPU and plays in Windows Media Player
+  and VLC:** exports through Media Foundation software (4.4x) and OpenH264 (3.0x) in the release
+  benchmark; the WARP tests decode the result with FFmpeg. Open: playing a file in WMP and VLC by
+  hand, ideally with `CUTFRAME_GPU=integrated` / `CUTFRAME_ENCODERS=mfSoftware`.
+- [x] **WARP tests of design §11 with OpenH264:** NV12 parity (bit-exact), end-to-end golden
+  export (PSNR-Y 51.9 dB), container checks, A/V sync, cancel, offline media, encoder fallback,
+  disk full (`crates/engine/tests/export_run.rs`, `export_mux.rs`, `export_nv12.rs`).
+- [x] **Budgets of §10 measured and written into the design (§10.1):** 4K30 HLG -> 4K H.264 2.0x
+  on NVENC (1.6x on QSV); playback during a 1080p export 0 / 1800 dropped.
+- [ ] **Every feature end-to-end in `pnpm dev`:** Vitest covers the dialog, presets, summary, ETA,
+  toasts, quit flow and Ctrl+E. Open: an export started, cancelled and finished by hand.
+- [x] **Catalog rows updated:** F1.86-F1.95, F1.99 (partial: manual check open), F1.91 renamed to
+  "HEVC export in MP4", F2.102 done; the licence note now names `engine::export::encoders` and the
+  OpenH264 decision.
+- [x] **`pnpm check` passes; `pnpm bindings` committed.**
+- [x] **Architecture rules:** export uses the shared render graph (rule 3); no frames over IPC;
+  integer flicks in the plan and audio; LGPL FFmpeg plus OS and driver encoders only.

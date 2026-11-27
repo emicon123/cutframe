@@ -24,9 +24,11 @@ audit what already exists and to pick the next work items.
 - **Notes** flag architecture or licence constraints. The most common ones:
   - *LGPL:* FFmpeg is LGPL-only (`CLAUDE.md`). GPL encoders such as `libx264`/`libx265` are not
     allowed; H.264/HEVC encoding must use hardware or OS encoders (NVENC, Quick Sync, AMF, Media
-    Foundation) or a permissively licensed software encoder. The bundled OpenH264 is excluded:
-    Cisco's patent licence covers only Cisco's own binaries downloaded at run time (review F28).
-    Selection lives in `engine::media::encoders` (allowlist plus a hard GPL/nonfree denylist).
+    Foundation) or a permissively licensed software encoder. The bundled OpenH264 (BSD-2, linked
+    into the pinned LGPL FFmpeg build) is the last-resort H.264 fallback for private use only;
+    Cisco's patent licence covers only Cisco's own binaries, so review F28 must be revisited
+    before any public release (`docs/design/export.md` Decisions). Selection lives in
+    `engine::export::encoders` (candidate order, session probe, GPL/nonfree guard test).
   - *Model:* needs an ML model; licence, model size, CPU/GPU cost and offline use need an ADR.
   - *Content:* needs a library of licensed assets (music, stickers, stock footage, templates); that is
     a product/legal decision, not just code.
@@ -238,20 +240,20 @@ inserted between existing ones.
 
 | ID | Feature | Notes | Status |
 |---|---|---|---|
-| F1.86 | Export dialog: file name, destination folder | Export button disabled | missing |
-| F1.87 | Resolution: 480p, 720p, 1080p, 2K, 4K (keeping project aspect) | | missing |
-| F1.88 | Frame rate: 24, 25, 30, 50, 60 fps | | missing |
-| F1.89 | Bitrate: low / recommended / high / custom | | missing |
-| F1.90 | H.264 export in MP4 | LGPL: hardware/OS encoder (Media Foundation's software H.264 encoder ships with Windows), never libx264; OpenH264 excluded (F28) | missing |
-| F1.91 | HEVC export in MP4/MOV | LGPL: hardware/OS encoder only | missing |
-| F1.92 | AAC audio in the export | | missing |
-| F1.93 | Export uses the same render graph as preview | Architecture rule 3 | missing |
-| F1.94 | Progress with ETA, cancel, background export while editing | Long-running job | missing |
-| F1.95 | Hardware-accelerated encoding with software fallback | | missing |
+| F1.86 | Export dialog: file name, destination folder | 0390: export dialog (File → Export…, Ctrl+E) with presets YouTube 1080p / 4K / Shorts, file name (.mp4 added), folder with Browse… (last folder remembered), live summary and issues from `checkExport`, overwrite confirmation; preview hidden while open. Missing: manual check in `pnpm dev` | partial |
+| F1.87 | Resolution: 480p, 720p, 1080p, 2K, 4K (keeping project aspect) | 0390: project size, 480p, 720p, 1080p, 1440p ("2K"), 2160p, keeping the project aspect with even sizes (`export::plan`, unit tests). Missing: manual check in `pnpm dev` | partial |
+| F1.88 | Frame rate: 24, 25, 30, 50, 60 fps | 0390: project rate (≤ 60) plus 24/25/30/50/60; the export retimes the snapshot (60 → 30 fps test). Missing: manual check in `pnpm dev` | partial |
+| F1.89 | Bitrate: low / recommended / high / custom | 0390: YouTube bitrate table × low/recommended/high, custom 0.5–200 Mbps; estimated size in the summary. Missing: manual check in `pnpm dev` | partial |
+| F1.90 | H.264 export in MP4 | 0390: H.264 High in MP4 (+faststart, BT.709 limited tags) via NVENC, QSV, AMF, Media Foundation hardware/software or OpenH264 (last resort); WARP end-to-end golden export (PSNR-Y 51.9 dB), container and A/V checks; 1080p at 3.0× (OpenH264) to 6.5× (NVENC) real time. Missing: manual check in `pnpm dev` | partial |
+| F1.91 | HEVC export in MP4 | 0390: HEVC Main in MP4 with the `hvc1` tag, hardware encoders only (NVENC, QSV, AMF, MF hardware), offered in the dialog only when the probe found one; MOV dropped (export design Decisions). Missing: manual check in `pnpm dev` | partial |
+| F1.92 | AAC audio in the export | 0390: AAC-LC 384 kbps stereo from the shared `mix_block` at the project rate (speed, reverse, pitch, fades included), exact sample counts; A/V offset 0 in the WARP test. Missing: manual check in `pnpm dev` | partial |
+| F1.93 | Export uses the same render graph as preview | 0390: `OfflineRenderer` (Exact) → the same `build_plan` + `Compositor` as the preview, then a BT.709 NV12 pass bit-exact with its CPU reference on WARP. Missing: manual check in `pnpm dev` | partial |
+| F1.94 | Progress with ETA, cancel, background export while editing | 0390: dedicated below-normal export thread on the start snapshot (edits continue); progress card outside the preview with stage, percent, UI-computed ETA and Cancel (partial file removed); throttled while playing (0 / 1800 preview frames dropped during an export); quit asks to cancel a running export. Missing: manual check in `pnpm dev` | partial |
+| F1.95 | Hardware-accelerated encoding with software fallback | 0390: session probe with real test encodes (NVENC, QSV, AMF, MF hardware/software, OpenH264; about 2.5 s), fallback to the next candidate before the first packet, `CUTFRAME_ENCODERS` override; 4K30 HLG → 4K H.264 at 2.0× on NVENC, 1.6× on QSV. Missing: manual check in `pnpm dev` | partial |
 | F1.96 | Export audio only (WAV, MP3, AAC) | | missing |
 | F1.97 | Export the current frame as an image (PNG/JPG) | | missing |
 | F1.98 | Open the folder / play the file when the export finishes | | missing |
-| F1.99 | Clear error when export fails (disk full, encoder missing) | | missing |
+| F1.99 | Clear error when export fails (disk full, encoder missing) | 0390: `ExportErrorKind` (mediaOffline, decodeFailed, noEncoder, encoderFailed, diskFull, writeFailed, gpu, internal) as one toast each with the media name or kept path; blocking issues listed before start; tests for disk full, offline media and encoder failure. Missing: manual check in `pnpm dev` | partial |
 
 ---
 
@@ -417,7 +419,7 @@ inserted between existing ones.
 |---|---|---|---|
 | F2.100 | Export a range (in/out) only | | ? |
 | F2.101 | Save and reuse export presets | | ? |
-| F2.102 | Estimated file size | | ? |
+| F2.102 | Estimated file size | 0390: the export dialog summary shows the estimated size from the plan (video + audio bitrate × duration) and warns when free space is below 1.2 × the estimate. | done |
 | F2.103 | Animated GIF export | Out of scope (private hobby use): GIF is not a YouTube format | n/a |
 | F2.104 | Social presets (vertical 1080×1920, square, etc.) | | ? |
 | F2.105 | Video cover / thumbnail: pick a frame or image, add text, embed in file and use in recent projects | | ? |

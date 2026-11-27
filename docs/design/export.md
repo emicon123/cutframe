@@ -2,8 +2,10 @@
 
 - **Status:** Proposed (task 0380). Implemented by task 0390 (video export) and task 0400 (audio
   only, still frame, after-export actions). After implementation this file is a record, not a
-  spec. **0390 backend (steps 1-7) implemented 2026-11-27**; measured budgets and deviations in
-  §10.1. The export dialog (0390 frontend) follows.
+  spec. **0390 implemented 2026-11-27** (backend steps 1-7 and the export dialog, progress card,
+  error toasts and quit flow); measured budgets and deviations in §10.1. UI simplifications: only
+  the last folder is remembered (not the last preset or custom fields); the custom bitrate range
+  is checked by `checkExport` with `invalidEdit` rather than an issue.
 - **Date:** 2026-11-22
 - **Features:** prepares F1.86–F1.99, and F2.102 (estimated file size, shown in the dialog's
   summary line by 0390). Leaves F2.100 (range), F2.101 (saved presets), F2.104 beyond the Shorts

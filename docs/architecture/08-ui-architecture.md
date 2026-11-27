@@ -43,7 +43,7 @@ flowchart LR
 `StatusBar`.
 
 ```
-┌ TopBar: logo, project name, menus, undo/redo, Export (disabled) ──────────────┐
+┌ TopBar: logo, project name, menus, undo/redo, Export + progress card ─────────┐
 │ ┌ MediaBin ─┐ ┌──────── PreviewArea ────────┐ ┌ Inspector ─┐                 │
 │ │           │ │                             │ │ + History  │                 │
 │ └───────────┘ └─────────────────────────────┘ └────────────┘                 │
@@ -63,7 +63,13 @@ flowchart LR
   shows the adapter and backend, `previewMode`, a warning for a software adapter, a dismissible
   runtime GPU notice and the version. Failed commands are toasts (§9), not a status-bar line.
 - `TopBar` shows the project name, the main menu and undo/redo buttons built from the action
-  registry. Export is a disabled placeholder until the export feature lands.
+  registry. Export (File → Export…, Ctrl+E) opens `ExportDialog` (`features/export/`): presets,
+  name and folder, custom section, a debounced `checkExport` summary with issues, overwrite
+  confirmation; the native preview is hidden while it is open. `useExportStore` (fed by
+  `startExportSync` from `jobProgress`, `exportReport`, `jobFinished` and
+  `exportCapabilitiesChanged`) drives the progress card in the top bar (stage, percent, ETA
+  computed in the UI, Cancel) and one toast per `ExportErrorKind`; `QuitExportDialog` asks before
+  quitting during an export (`requestClose` cancels it and waits up to 2 s).
 
 ## 3. Stores
 
