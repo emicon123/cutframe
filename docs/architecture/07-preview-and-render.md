@@ -24,6 +24,7 @@ UI mirrors it from `playback-tick` (task 0330, `docs/design/playback.md`).
 | `Compositor`, source cache, layer and present passes | `render/compositor.rs`, `present.rs`, `shaders/layer.wgsl`, `present.wgsl` | implemented |
 | Source convert + HDR tone map | `render/convert.rs`, `shaders/convert.wgsl`, `crates/engine/src/color.rs` | implemented |
 | Video readers, hardware decode (D3D12VA zero-copy) | `crates/engine/src/media/readers/`, `media/d3d12.rs` | implemented |
+| Clip speed, reverse (GOP-reverse reader mode), freeze frames | `render/plan.rs`, `render/frames.rs` (`Pace`), `media/readers/window.rs`, `playback/scheduler.rs` | implemented (task 0370, [§9.1](#91-speed-reverse-and-freeze-frames-task-0370)) |
 | `OfflineRenderer` (export entry point) | `render/offline.rs` | implemented (no encoder yet, 0390) |
 | Offscreen read-back | `crates/engine/src/render/offscreen.rs` | implemented |
 | Native child window | `src-tauri/src/preview/windows.rs` | implemented (Windows) |
@@ -115,8 +116,11 @@ of the timeline (clock at `duration` forward, at 0 in reverse) pauses on the las
 (`Playback::end`). Dropped frames are frames skipped at 1x plus frames first composited with a stale or
 missing layer; they reset at play start and go into the tick. After each new frame the scheduler's
 lookahead (1.5 s x rate, wrapping at the loop end) primes readers for clips that start soon
-(`ReaderPool::prime`, A/B readers per media; split points continue the same reader). Above 2x readers
-decode keyframes only; at 1x and 2x a reader more than two source frames behind discards non-reference
+(`ReaderPool::prime`, A/B readers per media; split points continue the same reader, also the halves
+of a reversed clip and a freeze frame at a split point). The pool gets the transport rate
+(`ReaderPool::set_rate`) and steers each reader by its layer's `Pace` ([§9.1](#91-speed-reverse-and-freeze-frames-task-0370)):
+above 2x transport rate or an effective rate (transport rate x clip speed) above 4x readers decode
+keyframes only; below that a reader more than two source frames behind discards non-reference
 frames, more than 500 ms behind it jumps 250 ms ahead. With the preview hidden the loop wakes every
 16 ms for ticks and end detection and presents nothing. Ticks go through the `on_tick` callback (the
 shell emits `playback-tick` and pauses background jobs while playing), at most 60 Hz on average and
@@ -220,15 +224,64 @@ record where 0320 differs. The parts that constrain every other document:
   premultiplied over; colour clips; striped placeholders for offline and decode error), then the
   present pass or the offline output pass.
 - **Time and sampling.** `build_plan` quantises the playhead to the project frame grid and samples a
-  video at the **centre** of that frame (`source_time + frame_duration/2`) with sample-and-hold, so
-  a 29.97 fps clip in a 30 fps project does not repeat frames. Images have no time.
-- **Decode.** One reader thread per (media, stream), at most 8 (4 in hardware): D3D12VA on wgpu's own
-  `ID3D12Device`, frames sampled in place as `NV12`/`P010`; per-stream fallback to hardware decode
-  with download, then software; `CUTFRAME_HWDECODE=off` forces software. A sampled hardware frame is
-  transitioned back to `COMMON` and released only after its submission completed.
+  video at the **centre** of that frame with sample-and-hold, so a 29.97 fps clip in a 30 fps
+  project does not repeat frames. The mapping lives in `app-core`: `Clip::frame_sample_time(t_n,
+  frame)` maps the frame centre through the clip's speed and direction and clamps it into the used
+  source range (at 1x forward it is `source_time + frame_duration/2`). Images have no time; a
+  freeze frame samples its fixed `source_time`.
+- **Decode.** One reader thread per (media, stream, direction), at most 8 (4 in hardware, 2 in
+  GOP-reverse mode): D3D12VA on wgpu's own `ID3D12Device`, frames sampled in place as
+  `NV12`/`P010`; per-stream fallback to hardware decode with download, then software;
+  `CUTFRAME_HWDECODE=off` forces software. A sampled hardware frame is transitioned back to `COMMON`
+  and released only after its submission completed. Reverse readers always download (§9.1).
 - **Threads.** `AppState.snapshot` is an `Arc<ArcSwap<Project>>` shared with the engine, so engine
   threads never take the document lock (ADR-0004). The preview thread owns its compositor and reader
   pool; an `OfflineRenderer` has its own on the same device.
+
+### 9.1 Speed, reverse and freeze frames (task 0370)
+
+`docs/design/clip-speed-audio.md` §5.1–5.2 is the spec. What the render side does:
+
+- **`Pace`** (`render/frames.rs`): `Forward { speed }`, `Reverse { speed }` or `Still`, from the
+  clip (`Pace::of`). `LayerContent::Video` carries it and `FrameProvider::video(media,
+  sample_time, pace, policy)` receives it. It only steers decoding; the answer is always the last
+  frame with `pts <= sample_time`.
+- **Freeze frames** (`ClipSource::Freeze`) are video layers at their `source_time` with
+  `Pace::Still`: the reader decodes the exact frame and a little ahead (paused steering), and every
+  later frame of the freeze is a source-cache hit. `InsertFreezeFrame` takes `source_time` from the
+  same `frame_sample_time`, so the freeze shows exactly the frame the preview showed.
+- **Steering** (`ReaderPool::steering`): a source moving forward while playing decodes ahead, every
+  frame up to an effective rate of 4x (`KEYFRAMES_ONLY_ABOVE`, with catch-up), keyframes only
+  above it or above the shuttle's 2x. A reversed clip with the transport paused or playing forward
+  goes to a **GOP-reverse reader**; J over a forward clip stays the timed scrub on a forward reader,
+  J over a reversed clip runs forward. `FetchPolicy::Exact` (export, golden tests) never skips a
+  frame.
+- **GOP-reverse mode** (`media/readers/window.rs`, `WindowQueue`): for a sample time no window
+  covers, the reader seeks to the keyframe at or before it (`VideoReader::seek_floor`) and decodes
+  forward into a CPU ring of at most 160 MB (`REVERSE_WINDOW_BYTES`, newest frames kept) until a
+  frame lies past it. Lookups then go downwards through the window. While playing, the reader
+  prepares the next earlier window (ending at the current window's first frame) meanwhile, so at
+  most two windows (2 x 160 MB) exist per reverse reader. A window being decoded while playback
+  moves down ends early at the playhead. Hardware frames are downloaded (`DecodePath::Download`),
+  because the decoder's surface pool cannot hold a GOP. A seek that lands on a keyframe past the
+  window (MP4 indexes seek by decode time, a few frames before the presentation time) is retried
+  0.5 s further back; landing on the same frame twice means the stream starts there. The next
+  earlier window's seek starts 250 ms before its end for the same reason. Forward readers retry the
+  same way when a seek's first frame comes after the target.
+- **Pool binding**: readers serve one media in one direction for their whole life; at most 2 reverse
+  readers (`MAX_REVERSE_READERS`), counted against the 8.
+- **Scheduler** (`playback/scheduler.rs`): `Need` carries the pace; reversed clips are primed at
+  their first sample time near the end of their range on a reverse reader, freeze frames at their
+  source time. A clip continues its predecessor (no priming) when, in the direction its reader
+  decodes, its first sample time is at most two project frames of source past the previous clip's
+  last one (one flick back allowed for split rounding at speeds other than 1x).
+- **Measured** (2026-11-27, ignored `tests/playback_hw.rs` with `CUTFRAME_PLAYBACK_SPEED` and
+  `CUTFRAME_PLAYBACK_REVERSE`, release, 1280 x 720 composite, 1 s GOPs): on the Iris Xe, 1080p30
+  H.264 at 2x, 0.5x and 4x (audio clock) and reversed (30 s) drop no frames; 4K30 HEVC at 2x drops
+  0.1 %. Reversed 4K drops 9 % (H.264) to 66 % (HEVC Main 10) on the Iris Xe and 6 % / 65 % on an
+  RTX 3070 Ti: a 25 MB P010 frame leaves room for about 6 frames per window, so each GOP is decoded
+  and downloaded several times (design §5.2; export stays exact). The known fix, if wanted, is to
+  download or keep only the frames a window keeps, or to scale them to the preview size.
 
 ```mermaid
 flowchart TB

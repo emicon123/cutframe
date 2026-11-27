@@ -224,13 +224,13 @@ inserted between existing ones.
 | F1.74 | Crop (free and fixed ratios) with crop handles in the preview | | missing |
 | F1.75 | Fit / fill / stretch to canvas | | missing |
 | F1.76 | Canvas background: colour, blur of the clip itself, image | | missing |
-| F1.77 | Clip volume (percent / dB) | | missing |
-| F1.78 | Audio fade in / fade out | | missing |
-| F1.79 | Constant speed change (e.g. 0.1×–100×) with duration updated | | missing |
-| F1.80 | Preserve pitch when changing speed (toggle) | Time-stretch on the audio path | missing |
-| F1.81 | Reverse clip | Needs reverse decode / cached render | missing |
-| F1.82 | Freeze frame (insert a still of the current frame) | | missing |
-| F1.83 | Default duration for still images; image duration change | | missing |
+| F1.77 | Clip volume (percent / dB) | 0370: `setClipProperty(volume)` with gesture phases; inspector Audio section, 0–400 % slider with a dB readout; `mix_block` applies it per sample (ramped). Missing: manual check in `pnpm dev` | partial |
+| F1.78 | Audio fade in / fade out | 0370: `setClipProperty(fadeIn/fadeOut)`, clamped per clip; inspector Audio section; linear fades in `mix_block` (tests across block boundaries). Missing: manual check in `pnpm dev` | partial |
+| F1.79 | Constant speed change (e.g. 0.1×–100×) with duration updated | 0370: `Speed` percent 10–10000 on media sources, integer source mapping, `setClipSpeed` (gesture, links, magnetic repack, followers), schema v4; inspector Speed section (log slider, presets), timeline speed badge; video every frame up to 4× effective, keyframes above; audio silent above 4×. Iris Xe harness: 1080p30 at 2× / 0.5× / 4× 0 % dropped, A/V 21 ms; 4K30 HEVC at 2× 0.11 %. Missing: manual check in `pnpm dev` | partial |
+| F1.80 | Preserve pitch when changing speed (toggle) | 0370: `AudioProps.preservePitch` (default on); per-voice `TimeStage` on FFmpeg `atempo` (pitch kept) or `asetrate` + `aresample` (not kept) on the feeder or export thread; 1 kHz sine at 2× stays 1000 Hz (2000 Hz without), sync within 5 ms, about 0.1–0.5 % of a core per voice. `atempo` is rough on music outside about 0.75×–1.5×. Missing: manual check in `pnpm dev` | partial |
+| F1.81 | Reverse clip | 0370: `setClipReverse`; GOP-reverse reader mode (160 MB windows, at most 2 reverse readers, hardware frames downloaded); reversed audio in 1 s windows; golden frames and an export test (all reversed frames equal forward frames 59−n). Reverse 1080p30 plays with 0 dropped on the Iris Xe and RTX; 4K reverse preview is best effort (6–66 % late), export exact. Missing: manual check in `pnpm dev` | partial |
+| F1.82 | Freeze frame (insert a still of the current frame) | 0370: `insertFreezeFrame` splits at the playhead frame and inserts a `ClipSource::Freeze` clip (exact frame on screen, rendered through the normal reader); Edit menu, clip context menu, Shift+F; freeze badge; golden frame. Missing: manual check in `pnpm dev` | partial |
+| F1.83 | Default duration for still images; image duration change | 0370: images and freeze frames take the "Image and freeze-frame duration" preference, snapped to the frame grid; inspector Duration section for images, colour and freeze clips (trim of the end edge). Missing: manual check in `pnpm dev` | partial |
 | F1.84 | Reset a property / reset all | | missing |
 | F1.85 | Numeric entry for every slider (type exact values) | | missing |
 

@@ -165,8 +165,9 @@ Shortcut dispatch rules (`shortcuts.ts`):
 - a disabled action only blocks the default, it does not run.
 
 Actions: File (home, new, open, save, save as, import, project settings, exit), Edit (undo, redo,
-cut, copy, paste, duplicate, split, delete, ripple delete, trim left/right, magnetic, select all,
-deselect, history panel, preferences), View (media bin, inspector, history panel, zoom in/out/to fit,
+cut, copy, paste, duplicate, split, delete, ripple delete, trim left/right, link toggle, detach
+audio, freeze frame (Shift+F), reverse (toggle), magnetic, select all, deselect, history panel,
+preferences), View (media bin, inspector, history panel, zoom in/out/to fit,
 go to start/end, previous/next edit point, frame step back/forward by 1 and 10, reset panel layout,
 keyboard shortcuts), Help (keyboard shortcuts). An action may appear in several menus but is
 registered once.
@@ -189,9 +190,10 @@ registered once.
 | `pointer.ts` | the pointer state machine: seek → clip / lane → move / trim → done |
 | `drop.ts` | file and media-panel drops: target track, start, placement |
 | `addActions.ts` | add media / colour at the playhead, append, drop placement |
-| `editActions.ts` | split, delete, ripple delete, trim to playhead, copy/cut/paste/duplicate, magnetic |
-| `renderer.ts` | canvas 2D drawing: ruler, lanes, clips (filmstrip, waveform, label shade), gap, offline hatch, drop ghost, snap line, marquee |
-| `clipVisuals.ts` | source range → filmstrip frame/tile mapping, waveform zoom levels (`buildPeakLevels`), filmstrip and waveform drawing |
+| `editActions.ts` | split, delete, ripple delete, trim to playhead, copy/cut/paste/duplicate, magnetic, freeze frame, reverse |
+| `renderer.ts` | canvas 2D drawing: ruler, lanes, clips (filmstrip, waveform, label shade, speed/reverse/freeze badges), gap, offline hatch, drop ghost, snap line, marquee |
+| `clipVisuals.ts` | source range → filmstrip frame/tile mapping (`clipSourceMap`: `sourceIn .. sourceEnd`, mirrored when reversed, one frame for a freeze), waveform zoom levels (`buildPeakLevels`), filmstrip and waveform drawing |
+| `retime.ts` | which clips can be retimed (video and audio media), badge texts, freeze-frame target, reverse toggle state |
 | `productCache.ts` / `clipMedia.ts` | bounded LRU caches of decoded filmstrip tiles (`ImageBitmap`) and waveform levels, keyed by media id + `previewVersion` + tile; loads off the draw path, `503` backoff |
 | `Timeline.tsx` | track headers, toolbar, canvas, subscriptions, `ResizeObserver` |
 
@@ -226,9 +228,12 @@ stateDiagram-v2
   history entry for the placement.
 - Tracks are drawn top to bottom as the model orders them; a clip's `visual`/`audio` are `null` where
   the model has none, and offline media is hatched.
-- Clip pictures: video clips show filmstrip frames for their source range
-  (`sourceIn .. sourceIn + duration`), audio clips and video clips that still play their sound show
-  the waveform (under the filmstrip on video clips). The draw path only calls `ProductCache.get`
+- Clip pictures: video clips show filmstrip frames for their used source range
+  (`sourceIn .. ClipView.sourceEnd`, stretched over the clip's width, so a 2× clip shows twice the
+  source; mirrored when reversed), freeze-frame clips repeat the frame at their `sourceTime`, audio
+  clips and video clips that still play their sound show the waveform (under the filmstrip on video
+  clips) over the same range. Retimed, reversed and freeze clips get badges ("2×", "Reverse",
+  "Freeze") after their length. The draw path only calls `ProductCache.get`
   (no decoding, no awaiting, no allocation on a hit); a miss queues a load, the most recently drawn
   products load first (at most 4 at once), products scrolled away before loading are dropped from
   the queue, and a finished load requests a redraw. Tiles hold at most 128 MB, waveform levels 48 MB.
@@ -258,6 +263,28 @@ progress and Cancel; a background-preview indicator with no Cancel; an import re
 until read (or 4 s when every file was added); a missing-media notice that opens the relink dialog.
 `browse.ts`, `selection.ts`, `skim.ts`, `waveformDraw.ts`, `dropTarget.ts` are pure and tested.
 
+**Inspector** (`features/inspector/`, clip-speed-audio design §6): with no clip selected it shows
+the project (name, settings, length); otherwise the clip sections in `registry.ts` (`SECTIONS`:
+Audio, Speed, Duration; task 0350 adds Transform as one more entry). `sections.ts` decides which
+show: a link group counts as one selected item, a section shows when every item has a clip it
+applies to (`applies`), and it edits every selected clip it applies to; `single` sections (Duration,
+sent as `trimClip`) need exactly one. Values come from the model (`shared`: the first value and
+whether the others differ, shown as "Mixed"); clips on a locked track disable the controls.
+
+- `fields.tsx`: `SliderField` (Radix slider + number field), `NumberField`, `CheckField`. A slider
+  drag is one ADR-0006 gesture driven by `sliderGesture.ts` (opens on the first value change,
+  `update` per animation frame through `beginGesture`, `commit` with the last value on pointer-up,
+  cancel on Escape, blur, lost capture or unmount); a keyboard step, a typed value (Enter or blur;
+  Escape discards) and a preset are one `commit`.
+- `values.ts`: volume in percent (0–400 %, detent at 100 %) with a dB readout, speed factor ↔
+  `Speed` percent (rounded and clamped to 10..=10000 before sending), the logarithmic speed slider
+  (0..1000, detent at 1×), fades in seconds clamped to the room left by the other fade, durations
+  rounded to whole frames.
+- Audio: `setClipProperty` volume / fadeIn / fadeOut. Speed: `setClipSpeed` (slider, field, presets
+  0.25/0.5/1/2/4), `setClipProperty(preservePitch)` on the clips with sound, `setClipReverse`, the
+  resulting duration and "muted above 4×". Duration (images, colour, freeze): seconds field →
+  `trimClip(end, start + value, commit)`.
+
 **Preview area** (`features/preview/PreviewArea.tsx`): chooses `NativePreviewSlot`, `FramePreview` or
 a message by `previewMode`. The native slot reports its rectangle in physical pixels from a
 `ResizeObserver` (and on window resize, for DPR changes) and requests visibility; it is the **only**
@@ -270,7 +297,7 @@ the unsaved-changes prompt; a second file action while one runs is ignored. `use
 native title at `*<name> - Cutframe` while dirty, `<name> - Cutframe` when clean, and plain `Cutframe`
 on the home screen. `RecoveryDialog` lists orphans and restores or discards them.
 
-**Preferences** (`features/preferences/`): autosave interval, default image/transition duration,
+**Preferences** (`features/preferences/`): autosave interval, image and freeze-frame duration, default transition duration,
 language, cache folder, cache size and Clear cache. The draft is validated by Rust; the applied value
 comes back from `set_preferences`.
 
