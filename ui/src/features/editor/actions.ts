@@ -1,10 +1,19 @@
 import { useStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 
-import { type ClipId, commands } from "@/bindings";
+import { type ClipId, commands, type PreviewQuality } from "@/bindings";
 import { openExportDialog, useExportStore } from "@/features/export/exportStore";
 import { importFromDialog } from "@/features/media-bin/importActions";
 import { openLogsFolder } from "@/features/notifications/logs";
+import {
+  QUALITIES,
+  setPreviewQuality,
+  setPreviewZoom,
+  toggleFullScreen,
+  usePreviewStore,
+  zoomPreview,
+} from "@/features/preview/previewStore";
+import { FIT } from "@/features/preview/previewView";
 import { shuttle, toggleLoop, togglePlayback } from "@/features/preview/transport";
 import { fileActions } from "@/features/project/fileActions";
 import { checkForUpdates } from "@/features/updater/updater";
@@ -34,7 +43,7 @@ import {
 } from "@/features/timeline/navActions";
 import { historyLabelText, t } from "@/i18n";
 import { run } from "@/stores/appStore";
-import { playheadStore } from "@/stores/playheadStore";
+import { playheadStore, previewTimeline } from "@/stores/playheadStore";
 import { type ProjectState, useProjectStore } from "@/stores/projectStore";
 import { clearSelection, selectAll, selectionStore } from "@/stores/selectionStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -51,6 +60,11 @@ export type KeyBinding = {
    * with or without it and the label does not show Shift.
    */
   shift?: boolean | "any";
+  /**
+   * The binding applies only while this holds, so one key can serve several actions by state
+   * (Escape: leave full screen, leave a source preview, else deselect).
+   */
+  when?: (ctx: ActionContext) => boolean;
 };
 
 /** What actions read to decide their menu label, enabled and checked state. */
@@ -88,6 +102,13 @@ export type ActionContext = {
   looping: boolean;
   /** An export is running (only one at a time). */
   exporting: boolean;
+  /** A media item plays in the preview on its own instead of the timeline (F1.17). */
+  previewingMedia: boolean;
+  /** The preview fills the full-screen window (F1.63). */
+  fullScreen: boolean;
+  previewQuality: PreviewQuality;
+  /** Hover skimming on the timeline is on (F1.55). */
+  skimming: boolean;
 };
 
 /** The selection-store part of the context. */
@@ -97,7 +118,10 @@ export type SelectionFlags = Pick<ActionContext, "clipsSelected" | "gapSelected"
 export type ClipFlags = Pick<ActionContext, "linkToggle" | "canDetach" | "canReverse" | "reversed">;
 
 /** The playhead-store part of the context. */
-export type PlaybackFlags = Pick<ActionContext, "playing" | "looping">;
+export type PlaybackFlags = Pick<ActionContext, "playing" | "looping" | "previewingMedia">;
+
+/** The preview-store part of the context. */
+export type PreviewFlags = Pick<ActionContext, "fullScreen" | "previewQuality">;
 
 /** The export-store part of the context. */
 export type ExportFlags = Pick<ActionContext, "exporting">;
@@ -105,7 +129,7 @@ export type ExportFlags = Pick<ActionContext, "exporting">;
 /** The UI-store part of the context. */
 export type UiFlags = Pick<
   ActionContext,
-  "historyPanelOpen" | "mediaBinOpen" | "inspectorOpen" | "editorOpen"
+  "historyPanelOpen" | "mediaBinOpen" | "inspectorOpen" | "editorOpen" | "skimming"
 >;
 
 export type ActionId =
@@ -160,7 +184,16 @@ export type ActionId =
   | "go-to-end"
   | "zoom-in"
   | "zoom-out"
-  | "zoom-to-fit";
+  | "zoom-to-fit"
+  | "back-to-timeline"
+  | "full-screen"
+  | "preview-zoom-in"
+  | "preview-zoom-out"
+  | "preview-zoom-fit"
+  | "preview-quality-full"
+  | "preview-quality-half"
+  | "preview-quality-quarter"
+  | "skimming";
 
 /**
  * A user command. Register it once in `ACTIONS`; the main menu, the shortcut reference panel,
@@ -196,6 +229,23 @@ export type Action = {
 const editing = (ctx: ActionContext) => ctx.loaded && ctx.editorOpen;
 const clipsSelected = (ctx: ActionContext) => editing(ctx) && ctx.clipsSelected;
 const ui = () => useUiStore.getState();
+/** Something can play: the timeline has content, or a media item plays on its own. */
+const playable = (ctx: ActionContext) => ctx.canPlay || ctx.previewingMedia;
+
+const QUALITY_ACTION_IDS = {
+  full: "preview-quality-full",
+  half: "preview-quality-half",
+  quarter: "preview-quality-quarter",
+} as const satisfies Record<PreviewQuality, ActionId>;
+
+/** F1.61: one checked menu entry per quality level. */
+const qualityActions: Action[] = QUALITIES.map((quality) => ({
+  id: QUALITY_ACTION_IDS[quality],
+  label: t.view.previewQuality[quality],
+  enabled: editing,
+  checked: (ctx) => ctx.previewQuality === quality,
+  run: () => setPreviewQuality(quality),
+}));
 
 /** The single registry of editor actions. */
 export const ACTIONS: readonly Action[] = [
@@ -289,6 +339,23 @@ export const ACTIONS: readonly Action[] = [
     scope: "timeline",
     enabled: editing,
     run: selectAll,
+  },
+  // Before `deselect`: Escape leaves full screen, then a source preview, and only then deselects.
+  {
+    id: "full-screen",
+    label: t.view.fullScreen,
+    menuLabel: (ctx) => (ctx.fullScreen ? t.view.exitFullScreen : t.view.fullScreen),
+    shortcuts: [{ key: "f" }, { key: "Escape", when: (ctx) => ctx.fullScreen }],
+    enabled: (ctx) => editing(ctx) || ctx.fullScreen,
+    checked: (ctx) => ctx.fullScreen,
+    run: toggleFullScreen,
+  },
+  {
+    id: "back-to-timeline",
+    label: t.playback.backToTimeline,
+    shortcuts: [{ key: "Escape", when: (ctx) => ctx.previewingMedia }],
+    enabled: (ctx) => ctx.previewingMedia,
+    run: previewTimeline,
   },
   {
     id: "deselect",
@@ -472,14 +539,14 @@ export const ACTIONS: readonly Action[] = [
     label: t.playback.playPause,
     menuLabel: (ctx) => (ctx.playing ? t.playback.pause : t.playback.play),
     shortcuts: [{ key: " " }],
-    enabled: (ctx) => editing(ctx) && (ctx.canPlay || ctx.playing),
+    enabled: (ctx) => editing(ctx) && (playable(ctx) || ctx.playing),
     run: togglePlayback,
   },
   {
     id: "shuttle-reverse",
     label: t.playback.shuttleReverse,
     shortcuts: [{ key: "j" }],
-    enabled: (ctx) => editing(ctx) && ctx.canPlay,
+    enabled: (ctx) => editing(ctx) && playable(ctx),
     run: () => shuttle("reverse"),
   },
   {
@@ -493,7 +560,7 @@ export const ACTIONS: readonly Action[] = [
     id: "shuttle-forward",
     label: t.playback.shuttleForward,
     shortcuts: [{ key: "l" }],
-    enabled: (ctx) => editing(ctx) && ctx.canPlay,
+    enabled: (ctx) => editing(ctx) && playable(ctx),
     run: () => shuttle("forward"),
   },
   {
@@ -598,6 +665,43 @@ export const ACTIONS: readonly Action[] = [
     enabled: editing,
     run: fitTimeline,
   },
+  // F1.62: Ctrl with the timeline zoom keys; not timeline-scoped, the preview has no focus.
+  {
+    id: "preview-zoom-in",
+    label: t.view.previewZoomIn,
+    shortcuts: [
+      { key: "+", ctrl: true, shift: "any" },
+      { key: "=", ctrl: true, shift: "any" },
+    ],
+    blockDefault: true,
+    enabled: editing,
+    run: () => zoomPreview(1),
+  },
+  {
+    id: "preview-zoom-out",
+    label: t.view.previewZoomOut,
+    shortcuts: [{ key: "-", ctrl: true }],
+    blockDefault: true,
+    enabled: editing,
+    run: () => zoomPreview(-1),
+  },
+  {
+    id: "preview-zoom-fit",
+    label: t.view.previewZoomFit,
+    shortcuts: [{ key: "0", ctrl: true }],
+    blockDefault: true,
+    enabled: editing,
+    run: () => setPreviewZoom(FIT),
+  },
+  ...qualityActions,
+  {
+    id: "skimming",
+    label: t.view.skimming,
+    // A toolbar toggle and a menu entry; no default shortcut.
+    enabled: editing,
+    checked: (ctx) => ctx.skimming,
+    run: () => ui().setSkimming(!ui().skimming),
+  },
 ];
 
 export const SEPARATOR = "-";
@@ -678,7 +782,18 @@ export const MENUS: readonly Menu[] = [
       "shuttle-pause",
       "shuttle-forward",
       "loop",
+      "back-to-timeline",
       SEPARATOR,
+      "full-screen",
+      "preview-zoom-in",
+      "preview-zoom-out",
+      "preview-zoom-fit",
+      SEPARATOR,
+      "preview-quality-full",
+      "preview-quality-half",
+      "preview-quality-quarter",
+      SEPARATOR,
+      "skimming",
       "zoom-in",
       "zoom-out",
       "zoom-to-fit",
@@ -709,13 +824,16 @@ const NO_UI_FLAGS: UiFlags = {
   mediaBinOpen: false,
   inspectorOpen: false,
   editorOpen: false,
+  skimming: false,
 };
 
 const NO_SELECTION: SelectionFlags = { clipsSelected: false, gapSelected: false };
 
 const NO_CLIP_FLAGS: ClipFlags = { linkToggle: null, canDetach: false, canReverse: false, reversed: false };
 
-const NO_PLAYBACK: PlaybackFlags = { playing: false, looping: false };
+const NO_PLAYBACK: PlaybackFlags = { playing: false, looping: false, previewingMedia: false };
+
+const NO_PREVIEW: PreviewFlags = { fullScreen: false, previewQuality: "full" };
 
 const NO_EXPORT: ExportFlags = { exporting: false };
 
@@ -726,6 +844,7 @@ export function actionContext(
   clips: ClipFlags = NO_CLIP_FLAGS,
   playback: PlaybackFlags = NO_PLAYBACK,
   exporting: ExportFlags = NO_EXPORT,
+  preview: PreviewFlags = NO_PREVIEW,
 ): ActionContext {
   const history = state?.history;
   return {
@@ -741,6 +860,7 @@ export function actionContext(
     ...clips,
     ...playback,
     ...exporting,
+    ...preview,
   };
 }
 
@@ -752,11 +872,20 @@ function uiFlags(s: UiStoreState): UiFlags {
     mediaBinOpen: !s.collapsedPanels.mediaBin,
     inspectorOpen: !s.collapsedPanels.inspector,
     editorOpen: s.view === "editor",
+    skimming: s.skimming,
   };
 }
 
 function playbackFlags(s: ReturnType<typeof playheadStore.getState>): PlaybackFlags {
-  return { playing: s.state === "playing", looping: s.looping };
+  // The Play button and Space follow whatever plays: the timeline or a media item on its own.
+  const state = s.source?.state ?? s.state;
+  return { playing: state === "playing", looping: s.looping, previewingMedia: s.source !== null };
+}
+
+type PreviewStoreState = ReturnType<typeof usePreviewStore.getState>;
+
+function previewFlags(s: PreviewStoreState): PreviewFlags {
+  return { fullScreen: s.fullScreen, previewQuality: s.quality };
 }
 
 type SelectionStoreState = ReturnType<typeof selectionStore.getState>;
@@ -788,6 +917,7 @@ export function currentActionContext(): ActionContext {
     clipFlags(state, selection.clips),
     playbackFlags(playheadStore.getState()),
     { exporting: useExportStore.getState().job !== null },
+    previewFlags(usePreviewStore.getState()),
   );
 }
 
@@ -802,7 +932,8 @@ export function useActionContext(): ActionContext {
   // Shallow-compared too: playback ticks re-render only on play/pause and loop changes.
   const playback = useStore(playheadStore, useShallow(playbackFlags));
   const exporting = useExportStore((s) => s.job !== null);
-  return { ...project, ...flags, ...selection, ...clips, ...playback, exporting };
+  const preview = usePreviewStore(useShallow(previewFlags));
+  return { ...project, ...flags, ...selection, ...clips, ...playback, exporting, ...preview };
 }
 
 export function getAction(id: ActionId, actions: readonly Action[] = ACTIONS): Action {

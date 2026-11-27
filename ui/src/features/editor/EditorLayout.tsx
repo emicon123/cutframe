@@ -1,9 +1,11 @@
+import { useEffect } from "react";
 import { type PanelSize, useDefaultLayout } from "react-resizable-panels";
 
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { Inspector } from "@/features/inspector/Inspector";
 import { MediaBin } from "@/features/media-bin/MediaBin";
 import { PreviewArea } from "@/features/preview/PreviewArea";
+import { exitFullScreen } from "@/features/preview/previewStore";
 import { Timeline } from "@/features/timeline/Timeline";
 import { type PanelKey, useUiStore } from "@/stores/uiStore";
 
@@ -26,6 +28,9 @@ const onInspectorResize = trackCollapsed("inspector");
 export function EditorLayout() {
   // Reset panel layout bumps the version: the groups remount and read the (now empty) storage.
   const layoutVersion = useUiStore((s) => s.layoutVersion);
+  // Leaving the editor (Home) leaves full screen too: the window must not stay full screen
+  // without a preview in it.
+  useEffect(() => exitFullScreen, []);
   return (
     <div className="flex h-full flex-col">
       <TopBar />

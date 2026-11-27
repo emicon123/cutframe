@@ -5,7 +5,7 @@
  * `stepFrames`), which pauses or keeps playing as playback.md §2 says.
  */
 import { frameDuration } from "@/lib/time";
-import { playheadStore, seekTo, stepTo } from "@/stores/playheadStore";
+import { playheadStore, seekSource, seekTo, stepSource, stepTo } from "@/stores/playheadStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { setViewport, timelineViewStore } from "@/stores/timelineViewStore";
 
@@ -13,6 +13,14 @@ import { revealTime, ZOOM_STEP, zoomAnchor, zoomAt, zoomTo, zoomToFit } from "./
 import { editPoints, frameStep, lastFrame, nextEdit, previousEdit } from "./navigation";
 
 const project = () => useProjectStore.getState().state?.project;
+
+/** The media item playing on its own (source preview), if any, with its project view. */
+function sourceMedia() {
+  const source = playheadStore.getState().source;
+  if (!source) return null;
+  const p = project();
+  return { source, media: p?.media.find((item) => item.id === source.media), project: p };
+}
 
 /** Scrolls the timeline so the (new) playhead is in view. */
 function reveal() {
@@ -31,6 +39,11 @@ function seek(time: number) {
  * frame grid; the UI shows where it expects the step to land until the tick confirms it.
  */
 export function stepFrames(frames: number) {
+  // A source preview steps in media time; the timeline playhead stays.
+  if (sourceMedia()) {
+    stepSource(frames);
+    return;
+  }
   const p = project();
   if (!p) return;
   stepTo(
@@ -49,13 +62,21 @@ export function jumpToEdit(direction: -1 | 1) {
   seek(direction < 0 ? previousEdit(points, time) : nextEdit(points, time));
 }
 
-/** Home: the start of the timeline. */
+/** Home: the start of the timeline (of the media item in a source preview). */
 export function goToStart() {
-  seek(0);
+  if (sourceMedia()) seekSource(0);
+  else seek(0);
 }
 
-/** End: the start of the last frame of the timeline, in integer flicks. */
+/** End: the start of the last frame of the timeline (or of the previewed media), in integer flicks. */
 export function goToEnd() {
+  const preview = sourceMedia();
+  if (preview) {
+    const { media, project: p } = preview;
+    const rate = media?.frameRate ?? p?.settings.frameRate;
+    if (media && media.duration !== null && rate) seekSource(lastFrame(media.duration, frameDuration(rate)));
+    return;
+  }
   const p = project();
   if (!p) return;
   seek(lastFrame(p.duration, frameDuration(p.settings.frameRate)));

@@ -12,22 +12,24 @@ export type View = "home" | "editor";
 export type PanelKey = "mediaBin" | "inspector";
 
 const SNAPPING_KEY = "timeline.snapping.v1";
+const SKIMMING_KEY = "timeline.skimming.v1";
 
 /**
- * The timeline snapping toggle is a per-user UI preference in `localStorage`, like the panel
- * layout (design `preferences.md` §6): it has no meaning in Rust. Blocked storage means "on".
+ * The timeline snapping and skimming toggles are per-user UI preferences in `localStorage`, like
+ * the panel layout (design `preferences.md` §6): they have no meaning in Rust. Blocked storage
+ * means "on".
  */
-function readSnapping(): boolean {
+function readToggle(key: string): boolean {
   try {
-    return window.localStorage.getItem(SNAPPING_KEY) !== "off";
+    return window.localStorage.getItem(key) !== "off";
   } catch {
     return true;
   }
 }
 
-function writeSnapping(on: boolean) {
+function writeToggle(key: string, on: boolean) {
   try {
-    window.localStorage.setItem(SNAPPING_KEY, on ? "on" : "off");
+    window.localStorage.setItem(key, on ? "on" : "off");
   } catch {
     // Blocked storage: the choice lasts for this session only.
   }
@@ -60,6 +62,9 @@ type UiStore = {
   /** Timeline snapping (F1.45); Alt held during a drag bypasses it. */
   snapping: boolean;
   setSnapping: (on: boolean) => void;
+  /** Hover skimming on the timeline (F1.55): the preview shows the frame under the pointer. */
+  skimming: boolean;
+  setSkimming: (on: boolean) => void;
   setView: (view: View) => void;
   setStarted: () => void;
   setHistoryPanelOpen: (open: boolean) => void;
@@ -88,10 +93,15 @@ export const useUiStore = create<UiStore>()((set) => ({
   aboutOpen: false,
   collapsedPanels: { mediaBin: false, inspector: false },
   layoutVersion: 0,
-  snapping: readSnapping(),
+  snapping: readToggle(SNAPPING_KEY),
   setSnapping: (snapping) => {
-    writeSnapping(snapping);
+    writeToggle(SNAPPING_KEY, snapping);
     set({ snapping });
+  },
+  skimming: readToggle(SKIMMING_KEY),
+  setSkimming: (skimming) => {
+    writeToggle(SKIMMING_KEY, skimming);
+    set({ skimming });
   },
   setView: (view) => set({ view }),
   setStarted: () => set({ started: true }),

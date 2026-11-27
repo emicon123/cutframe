@@ -1,12 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { mockCommands } from "@/bindings";
+import { usePreviewStore } from "@/features/preview/previewStore";
 import { playheadStore } from "@/stores/playheadStore";
 import { type ProjectState, useProjectStore } from "@/stores/projectStore";
 import { selectionStore } from "@/stores/selectionStore";
 import { useUiStore } from "@/stores/uiStore";
 
 import type { Action } from "./actions";
+
+const setFullscreen = vi.fn<(on: boolean) => Promise<void>>(() => Promise.resolve());
+vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ setFullscreen }) }));
 import {
   findShortcut,
   handleShortcut,
@@ -64,7 +68,7 @@ describe("findShortcut", () => {
     expect(findShortcut(key("c", { ctrlKey: true }))?.id).toBe("copy");
     expect(findShortcut(key("v", { ctrlKey: true }))?.id).toBe("paste");
     expect(findShortcut(key("F", { shiftKey: true }))?.id).toBe("freeze-frame");
-    expect(findShortcut(key("f"))).toBeUndefined();
+    expect(findShortcut(key("f"))?.id).toBe("full-screen");
     expect(findShortcut(key("d", { ctrlKey: true }))?.id).toBe("duplicate");
     expect(findShortcut(key("q", { ctrlKey: true }))).toBeUndefined();
   });
@@ -335,6 +339,70 @@ describe("handleShortcut", () => {
   it("does not open the shortcut reference while typing ?", () => {
     handleShortcut(press("?", { shiftKey: true }, document.createElement("textarea")));
     expect(useUiStore.getState().shortcutsOpen).toBe(false);
+  });
+  describe("full screen and source preview", () => {
+    const sent: string[] = [];
+    const editor = () => {
+      useProjectStore.setState({
+        state: {
+          ...state,
+          project: { duration: 1000, settings: { frameRate: { num: 25, den: 1 } }, tracks: [], media: [] },
+        } as unknown as ProjectState,
+      });
+      useUiStore.setState({ view: "editor" });
+      selectionStore.setState({ clips: ["a"], gap: null });
+      mockCommands({
+        togglePlayback: () => {
+          sent.push("toggle");
+          return null;
+        },
+        setPlaybackTarget: ({ target }) => {
+          sent.push(`target ${target.kind}`);
+          return 50;
+        },
+      });
+    };
+
+    afterEach(() => {
+      sent.length = 0;
+      setFullscreen.mockClear();
+      usePreviewStore.setState({ fullScreen: false });
+      playheadStore.setState({ source: null, seekGeneration: null });
+      selectionStore.setState({ clips: [], gap: null });
+    });
+
+    it("enters full screen with F and leaves it with Escape, which deselects only afterwards", () => {
+      editor();
+      handleShortcut(press("f"));
+      expect(usePreviewStore.getState().fullScreen).toBe(true);
+      expect(setFullscreen).toHaveBeenLastCalledWith(true);
+
+      handleShortcut(press("Escape"));
+      expect(usePreviewStore.getState().fullScreen).toBe(false);
+      expect(setFullscreen).toHaveBeenLastCalledWith(false);
+      expect(selectionStore.getState().clips).toEqual(["a"]);
+
+      handleShortcut(press("Escape"));
+      expect(selectionStore.getState().clips).toEqual([]);
+      expect(setFullscreen).toHaveBeenCalledTimes(2);
+    });
+
+    it("still plays with Space in full screen", async () => {
+      editor();
+      handleShortcut(press("f"));
+      handleShortcut(press(" "));
+      await vi.waitFor(() => expect(sent).toEqual(["toggle"]));
+    });
+
+    it("goes back to the timeline with Escape during a source preview, and plays the media with Space", async () => {
+      editor();
+      playheadStore.setState({ source: { media: "m1", time: 0, at: 0, state: "paused", rate: 0 } });
+      handleShortcut(press(" "));
+      handleShortcut(press("Escape"));
+      expect(playheadStore.getState().source).toBeNull();
+      expect(selectionStore.getState().clips).toEqual(["a"]);
+      await vi.waitFor(() => expect(sent).toEqual(["toggle", "target timeline"]));
+    });
   });
 });
 

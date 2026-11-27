@@ -1,4 +1,4 @@
-import { FolderSearch, Link, ListStart, Plus, Trash2, Upload } from "lucide-react";
+import { FolderSearch, Link, ListStart, MonitorPlay, Plus, Trash2, Upload } from "lucide-react";
 import { type KeyboardEvent, type MouseEvent, type PointerEvent, useEffect, useRef, useState } from "react";
 
 import type { MediaId, MediaView_Serialize } from "@/bindings";
@@ -15,6 +15,7 @@ import { t } from "@/i18n";
 import { appendMedia, insertMediaAtPlayhead } from "@/features/timeline/addActions";
 import { cn } from "@/lib/utils";
 import { cancelMediaDrag, finishMediaDrag, moveMediaDrag, startMediaDrag } from "@/stores/mediaDragStore";
+import { previewMedia } from "@/stores/playheadStore";
 import type { MediaLayout } from "@/stores/uiStore";
 
 import { importFromDialog, revealMedia } from "./importActions";
@@ -57,7 +58,8 @@ function gridColumns(element: HTMLElement | null): number {
 
 /**
  * The media items (already sorted and filtered) as a multi-select listbox: click, Ctrl/Shift-click,
- * arrow keys, Ctrl+A, Delete, and a context menu with Show in Explorer and Remove.
+ * arrow keys, Ctrl+A, Delete, and a context menu with Show in Explorer and Remove. Double-click,
+ * Enter or the context menu's Preview plays one item alone in the preview (F1.17).
  */
 export function MediaBrowser({ media, layout }: { media: MediaView_Serialize[]; layout: MediaLayout }) {
   const list = useRef<HTMLDivElement>(null);
@@ -116,6 +118,11 @@ export function MediaBrowser({ media, layout }: { media: MediaView_Serialize[]; 
       return;
     }
     apply({ type: "click", id, ctrl: event.ctrlKey || event.metaKey, shift: event.shiftKey, order });
+  };
+
+  const onDoubleClick = (event: MouseEvent) => {
+    const id = idOf(event.target);
+    if (id !== null && !isAddButton(event.target)) previewMedia(id);
   };
 
   const onContextMenu = (event: MouseEvent) => {
@@ -188,6 +195,7 @@ export function MediaBrowser({ media, layout }: { media: MediaView_Serialize[]; 
     if (step !== undefined && !ctrl) apply({ type: "move", step, shift: event.shiftKey, order }, true);
     else if (ctrl && event.key.toLowerCase() === "a") apply({ type: "selectAll", order });
     else if (event.key === "Delete" && !ctrl) askRemove(selectedIds);
+    else if (event.key === "Enter" && !ctrl && focusId !== null) previewMedia(focusId);
     else handled = false;
     if (handled) {
       event.preventDefault();
@@ -216,6 +224,7 @@ export function MediaBrowser({ media, layout }: { media: MediaView_Serialize[]; 
                 : "flex flex-col",
             )}
             onClick={onClick}
+            onDoubleClick={onDoubleClick}
             onContextMenu={onContextMenu}
             onKeyDown={onKeyDown}
             onPointerDown={onPointerDown}
@@ -243,6 +252,10 @@ export function MediaBrowser({ media, layout }: { media: MediaView_Serialize[]; 
             {t.file.importMedia}
           </ContextMenuItem>
           <ContextMenuSeparator />
+          <ContextMenuItem disabled={single === undefined} onSelect={() => single && previewMedia(single)}>
+            <MonitorPlay aria-hidden />
+            {t.mediaBin.actions.preview}
+          </ContextMenuItem>
           <ContextMenuItem disabled={selectedIds.length === 0} onSelect={() => void appendMedia(selectedIds)}>
             <Plus aria-hidden />
             {t.mediaBin.add.append}

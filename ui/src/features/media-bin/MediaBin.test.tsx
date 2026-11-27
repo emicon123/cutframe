@@ -10,7 +10,7 @@ import { FLICKS_PER_SECOND } from "@/lib/time";
 import { jobResults } from "@/ipc/jobResults";
 import { useAppStore } from "@/stores/appStore";
 import { mediaDragStore, registerDropZone } from "@/stores/mediaDragStore";
-import { setPlayhead } from "@/stores/playheadStore";
+import { playheadStore, setPlayhead } from "@/stores/playheadStore";
 import { initialImportState, useImportStore } from "@/stores/importStore";
 import { type ProjectState, useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
@@ -468,5 +468,32 @@ describe("MediaBin", () => {
     fireEvent.keyDown(option("portrait.mp4"), { key: "Delete" });
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByRole("alert").textContent).toBe(t.mediaBin.remove.used(3));
+  });
+
+  it("previews an item alone in the player: double-click, Enter or the context menu (F1.17)", async () => {
+    const targets: string[] = [];
+    mockCommands({
+      setPlaybackTarget: ({ target }) => {
+        targets.push(target.kind === "media" ? target.media : target.kind);
+        return 3;
+      },
+    });
+    useProjectStore.setState({ state: withMedia([video, photo, song]) });
+    setPlayhead(5 * FLICKS_PER_SECOND);
+    render(<MediaBin />);
+
+    fireEvent.doubleClick(option("portrait.mp4"));
+    expect(playheadStore.getState().source?.media).toBe("m1");
+    expect(playheadStore.getState().time).toBe(5 * FLICKS_PER_SECOND);
+
+    fireEvent.click(option("song.mp3"));
+    fireEvent.keyDown(option("song.mp3"), { key: "Enter" });
+    expect(playheadStore.getState().source?.media).toBe("m3");
+
+    fireEvent.contextMenu(option("beach.heic"));
+    const menu = await screen.findByRole("menu");
+    fireEvent.click(within(menu).getByRole("menuitem", { name: t.mediaBin.actions.preview }));
+    await waitFor(() => expect(targets).toEqual(["m1", "m3", "m2"]));
+    playheadStore.setState({ source: null, seekGeneration: null });
   });
 });

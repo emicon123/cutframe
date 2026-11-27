@@ -1,13 +1,34 @@
 import { createStore } from "zustand/vanilla";
 
-import { commands, type PlaybackTick, type SeekMode, type Time, type TransportStateView } from "@/bindings";
+import {
+  commands,
+  type MediaId,
+  type PlaybackTick,
+  type SeekMode,
+  type Time,
+  type TransportStateView,
+} from "@/bindings";
 import { isIpcError, logError } from "@/ipc/errors";
 import { FLICKS_PER_SECOND } from "@/lib/time";
 
+/**
+ * The transport of a media item playing on its own (source preview, F1.17): times are media
+ * times, from 0 to the media's length.
+ */
+export type SourceTransport = {
+  media: MediaId;
+  time: Time;
+  /** `performance.now()` when `time` last moved. */
+  at: number;
+  state: TransportStateView;
+  rate: number;
+};
+
 export type PlayheadState = {
   /**
-   * Playhead position in flicks: the engine's playhead while paused, the start of the frame on
-   * screen while playing, or a local move the engine has not answered yet.
+   * Timeline playhead in flicks: the engine's playhead while paused, the start of the frame on
+   * screen while playing, or a local move the engine has not answered yet. Kept while a media item
+   * plays (`source`), so the timeline shows its playhead where the user left it.
    */
   time: Time;
   /** `performance.now()` when `time` last moved: the base of the extrapolation while playing. */
@@ -23,6 +44,11 @@ export type PlayheadState = {
    * before the first one. Ticks of an older generation are stale (playback.md §8).
    */
   seekGeneration: number | null;
+  /**
+   * The media item the preview plays instead of the timeline (`setPlaybackTarget`), `null` for the
+   * timeline. `time`, `state` and `rate` above stay the paused timeline's meanwhile.
+   */
+  source: SourceTransport | null;
 };
 
 /**
@@ -40,6 +66,7 @@ export const playheadStore = createStore<PlayheadState>()(() => ({
   looping: false,
   droppedFrames: 0,
   seekGeneration: null,
+  source: null,
 }));
 
 /** Moves the UI playhead only, without telling the engine. Use `seekTo` for user moves. */
@@ -55,15 +82,37 @@ export function setPlayhead(time: Time) {
 export function reduceTick(s: PlayheadState, tick: PlaybackTick, now: number): PlayheadState | null {
   if (s.seekGeneration !== null && tick.seek < s.seekGeneration) return null;
   const rate = tick.state === "playing" ? tick.rate : 0;
+  const common = {
+    looping: tick.looping,
+    droppedFrames: tick.droppedFrames,
+    seekGeneration: Math.max(s.seekGeneration ?? tick.seek, tick.seek),
+  };
+  if (tick.target.kind === "media") {
+    // Media time: the timeline playhead stays put, paused (the target change paused it).
+    const prev = s.source?.media === tick.target.media ? s.source : null;
+    const moved = !prev || tick.time !== prev.time || tick.state !== prev.state || rate !== prev.rate;
+    return {
+      ...s,
+      ...common,
+      state: "paused",
+      rate: 0,
+      source: {
+        media: tick.target.media,
+        time: tick.time,
+        at: moved ? now : prev.at,
+        state: tick.state,
+        rate,
+      },
+    };
+  }
   const moved = tick.time !== s.time || tick.state !== s.state || rate !== s.rate;
   return {
+    ...common,
     time: tick.time,
     at: moved ? now : s.at,
     state: tick.state,
     rate,
-    looping: tick.looping,
-    droppedFrames: tick.droppedFrames,
-    seekGeneration: Math.max(s.seekGeneration ?? tick.seek, tick.seek),
+    source: null,
   };
 }
 
@@ -128,7 +177,7 @@ function releaseHeldTick(): void {
   if (heldTick !== null) applyTick(heldTick);
 }
 
-function send(command: string, call: () => Promise<number>): Promise<void> {
+function send(command: string, call: () => Promise<number>, onError?: () => void): Promise<void> {
   unanswered += 1;
   queue = queue.then(() =>
     call()
@@ -137,7 +186,10 @@ function send(command: string, call: () => Promise<number>): Promise<void> {
           seekGeneration: Math.max(s.seekGeneration ?? generation, generation),
         })),
       )
-      .catch(logTransportError(command))
+      .catch((error: unknown) => {
+        logTransportError(command)(error);
+        onError?.();
+      })
       .finally(() => {
         unanswered -= 1;
         releaseHeldTick();
@@ -180,6 +232,9 @@ function dropPendingScrub(): void {
  *   on from there). A pending scrub is dropped, since the exact seek carries the final time.
  */
 export function seekTo(time: Time, mode: SeekMode): void {
+  // A timeline seek while a media item plays returns to the timeline first (same queue, so the
+  // engine restores the timeline before it seeks).
+  previewTimeline();
   const before = playheadStore.getState().time;
   setPlayhead(time);
   const target = playheadStore.getState().time;
@@ -202,4 +257,54 @@ export function stepTo(frames: number, expected: Time): void {
   setPlayhead(expected);
   playheadStore.setState({ state: "paused", rate: 0 });
   void send("stepFrames", () => commands.stepFrames(frames));
+}
+
+/**
+ * Frame steps while a media item plays on its own: in media time. There is no media frame grid in
+ * the UI to predict the landing frame, so the source time waits for the tick.
+ */
+export function stepSource(frames: number): void {
+  const source = playheadStore.getState().source;
+  if (!source) return;
+  playheadStore.setState({ source: { ...source, state: "paused", rate: 0 } });
+  void send("stepFrames", () => commands.stepFrames(frames));
+}
+
+/** An exact seek in media time while a media item plays on its own (Home, End). */
+export function seekSource(time: Time): void {
+  const source = playheadStore.getState().source;
+  if (!source) return;
+  const target = Math.max(0, Math.round(time));
+  playheadStore.setState({ source: { ...source, time: target, at: performance.now() } });
+  void send("seek", () => commands.seek(target, "exact"));
+}
+
+/**
+ * Source preview (F1.17, playback.md §2): the preview plays `media` alone, from 0, paused. The
+ * timeline playhead is kept and comes back with `previewTimeline`. Shown at once; a failure
+ * (media no longer in the project, no preview engine) returns the UI to the timeline.
+ */
+export function previewMedia(media: MediaId): void {
+  const s = playheadStore.getState();
+  if (s.source?.media === media) return;
+  dropPendingScrub();
+  playheadStore.setState({
+    state: "paused",
+    rate: 0,
+    source: { media, time: 0, at: performance.now(), state: "paused", rate: 0 },
+  });
+  void send(
+    "setPlaybackTarget",
+    () => commands.setPlaybackTarget({ kind: "media", media }),
+    () => {
+      if (playheadStore.getState().source?.media === media) playheadStore.setState({ source: null });
+    },
+  );
+}
+
+/** Back to the timeline after a source preview, at the playhead it had. Nothing if it plays. */
+export function previewTimeline(): void {
+  if (playheadStore.getState().source === null) return;
+  playheadStore.setState({ source: null });
+  void send("setPlaybackTarget", () => commands.setPlaybackTarget({ kind: "timeline" }));
 }

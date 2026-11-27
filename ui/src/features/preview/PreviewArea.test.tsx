@@ -11,6 +11,10 @@ import { type ProjectState, useProjectStore } from "@/stores/projectStore";
 import { useUiStore } from "@/stores/uiStore";
 
 import { PreviewArea } from "./PreviewArea";
+import { usePreviewStore } from "./previewStore";
+
+const setFullscreen = vi.fn<(on: boolean) => Promise<void>>(() => Promise.resolve());
+vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ setFullscreen }) }));
 
 class ResizeObserverStub {
   observe() {}
@@ -51,7 +55,20 @@ afterEach(() => {
   useAppStore.setState({ info: null, previewOccluders: 0 });
   useProjectStore.setState({ state: null });
   useUiStore.setState({ view: "home" });
-  playheadStore.setState({ time: 0, state: "paused", rate: 0, looping: false, seekGeneration: null });
+  playheadStore.setState({
+    time: 0,
+    state: "paused",
+    rate: 0,
+    looping: false,
+    seekGeneration: null,
+    source: null,
+  });
+  usePreviewStore.setState({
+    fullScreen: false,
+    zoom: { kind: "fit" },
+    pan: { x: 0, y: 0 },
+    quality: "full",
+  });
 });
 
 describe("PreviewArea in native mode", () => {
@@ -159,5 +176,108 @@ describe("TransportBar (F1.59, F1.67)", () => {
     fireEvent.click(screen.getByRole("button", { name: t.playback.play }));
     await waitFor(() => expect(debug).toHaveBeenCalledWith("[ipc] togglePlayback: no preview engine"));
     expect(error).not.toHaveBeenCalled();
+  });
+});
+
+describe("source preview (F1.17)", () => {
+  const S = FLICKS_PER_SECOND;
+
+  function openProject() {
+    useProjectStore.setState({
+      state: {
+        project: {
+          duration: 65 * S,
+          magnetic: true,
+          settings: { width: 1920, height: 1080, frameRate: { num: 25, den: 1 } },
+          tracks: [],
+          media: [{ id: "m1", fileName: "beach.mp4", duration: 8 * S, frameRate: { num: 50, den: 1 } }],
+        },
+        history: { canUndo: false, canRedo: false, undoLabel: null, redoLabel: null },
+      } as unknown as ProjectState,
+    });
+    useUiStore.setState({ view: "editor" });
+  }
+
+  it("names the media, shows media time and length, and leads back to the timeline", async () => {
+    const targets: string[] = [];
+    mockPreview({
+      setPlaybackTarget: ({ target }) => {
+        targets.push(target.kind);
+        return 7;
+      },
+    });
+    openProject();
+    playheadStore.setState({ time: 10 * S });
+    renderPreview();
+    expect(screen.queryByText(t.preview.source.previewing("beach.mp4"))).toBeNull();
+
+    act(() =>
+      playheadStore.setState({ source: { media: "m1", time: S + S / 50, at: 0, state: "paused", rate: 0 } }),
+    );
+    expect(screen.getByText(t.preview.source.previewing("beach.mp4"))).toBeDefined();
+    expect(screen.getByTestId("playhead-timecode").textContent).toBe("00:00:01:01");
+    expect(screen.getByTestId("timeline-length").textContent).toBe("00:00:08:00");
+
+    fireEvent.click(screen.getByRole("button", { name: t.playback.backToTimeline }));
+    await waitFor(() => expect(targets).toEqual(["timeline"]));
+    expect(screen.queryByText(t.preview.source.previewing("beach.mp4"))).toBeNull();
+    expect(screen.getByTestId("playhead-timecode").textContent).toBe("00:00:10:00");
+    expect(screen.getByTestId("timeline-length").textContent).toBe("00:01:05:00");
+  });
+});
+
+describe("preview controls (F1.61-F1.63)", () => {
+  function openProject() {
+    useProjectStore.setState({
+      state: {
+        project: {
+          duration: FLICKS_PER_SECOND,
+          magnetic: true,
+          settings: { width: 1920, height: 1080, frameRate: { num: 25, den: 1 } },
+          tracks: [],
+          media: [],
+        },
+        history: { canUndo: false, canRedo: false, undoLabel: null, redoLabel: null },
+      } as unknown as ProjectState,
+    });
+    useUiStore.setState({ view: "editor" });
+  }
+
+  it("covers the whole webview in full screen and restores the panel on exit", async () => {
+    openProject();
+    renderPreview();
+    const area = screen.getByTestId("preview-area");
+    expect(area.className).not.toContain("fixed");
+
+    fireEvent.click(screen.getByRole("button", { name: t.view.fullScreen }));
+    expect(area.className).toContain("fixed");
+    expect(setFullscreen).toHaveBeenLastCalledWith(true);
+
+    fireEvent.click(screen.getByRole("button", { name: t.view.exitFullScreen }));
+    expect(area.className).not.toContain("fixed");
+    await waitFor(() => expect(setFullscreen).toHaveBeenLastCalledWith(false));
+  });
+
+  it("zooms with Ctrl+wheel over the picture, one step per notch", async () => {
+    const views: string[] = [];
+    mockPreview({
+      setPreviewView: ({ view }) => {
+        views.push(view.zoom.kind === "fit" ? "fit" : `${view.zoom.percent}`);
+      },
+    });
+    openProject();
+    renderPreview();
+    const picture = screen.getByTestId("preview-area").children[0];
+    if (!picture) throw new Error("no picture");
+    const wheel = (deltaY: number, ctrlKey = true) =>
+      picture.dispatchEvent(new WheelEvent("wheel", { deltaY, ctrlKey, bubbles: true, cancelable: true }));
+
+    expect(wheel(-100, false)).toBe(true);
+    expect(wheel(-100)).toBe(false); // default prevented: no page zoom
+    wheel(-20);
+    wheel(-40);
+    // The slot is 0 x 0 in jsdom, so fit counts as 100 %.
+    await waitFor(() => expect(views).toEqual(["200", "400"]));
+    expect(usePreviewStore.getState().zoom).toEqual({ kind: "percent", percent: 400 });
   });
 });

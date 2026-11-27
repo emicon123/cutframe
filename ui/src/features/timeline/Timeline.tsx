@@ -6,6 +6,7 @@ import {
   Magnet,
   Maximize2,
   Plus,
+  ScanEye,
   Scissors,
   Trash2,
   Type,
@@ -54,6 +55,7 @@ import {
   scrollBy,
   sliderToZoom,
   trackTop,
+  xToTime,
   zoomAt,
   zoomToSlider,
   type Viewport,
@@ -69,6 +71,7 @@ import { createClipMedia } from "./clipMedia";
 import { setZoomLevel } from "./navActions";
 import { attachPointerInteraction, type PointerOverlay } from "./pointer";
 import { drawTimeline, readTheme, type TimelineTheme } from "./renderer";
+import { createTimelineSkimmer } from "./skimming";
 
 const EMPTY_TRACKS: TrackView[] = [];
 const EMPTY_MEDIA: MediaView_Serialize[] = [];
@@ -115,6 +118,7 @@ function TimelineToolbar() {
       <div className="mx-1 h-5 w-px bg-border" aria-hidden />
       <ActionButton id="magnetic" icon={FoldHorizontal} />
       <SnappingToggle />
+      <ActionButton id="skimming" icon={ScanEye} />
       <div className="ml-auto flex items-center gap-1">
         <ActionButton id="zoom-out" icon={ZoomOut} />
         <ZoomSlider />
@@ -341,8 +345,29 @@ function TimelineCanvas({
     resize.observe(container);
 
     // The time and the motion are drawn; a new seek generation or loop flag alone needs no redraw.
+    // F1.55: hovering shows that frame in the preview while paused; never during a drag.
+    const skimmer = createTimelineSkimmer();
+    const onSkimMove = (event: PointerEvent) => {
+      if (event.buttons !== 0 || canvas.hasPointerCapture(event.pointerId)) {
+        skimmer.leave();
+        return;
+      }
+      skimmer.hover(xToTime(event.clientX - canvas.getBoundingClientRect().left, viewport()));
+    };
+    const onSkimLeave = () => skimmer.leave();
+    canvas.addEventListener("pointermove", onSkimMove);
+    canvas.addEventListener("pointerleave", onSkimLeave);
+    canvas.addEventListener("pointerdown", onSkimLeave);
+    window.addEventListener("blur", onSkimLeave);
+    const unsubscribeSkimming = useUiStore.subscribe((s, prev) => {
+      if (!s.skimming && prev.skimming) skimmer.leave();
+    });
+
     const unsubscribePlayhead = playheadStore.subscribe((s, prev) => {
       if (s.time !== prev.time || s.state !== prev.state || s.rate !== prev.rate) requestDraw();
+      // Play and a target change clear the skim in the engine.
+      if ((s.state === "playing" && prev.state !== "playing") || (s.source !== null && prev.source === null))
+        skimmer.reset();
     });
     const unsubscribeSelection = selectionStore.subscribe(requestDraw);
     const unsubscribeView = timelineViewStore.subscribe(requestDraw);
@@ -394,6 +419,12 @@ function TimelineCanvas({
     return () => {
       cancelAnimationFrame(frame);
       resize.disconnect();
+      skimmer.leave();
+      canvas.removeEventListener("pointermove", onSkimMove);
+      canvas.removeEventListener("pointerleave", onSkimLeave);
+      canvas.removeEventListener("pointerdown", onSkimLeave);
+      window.removeEventListener("blur", onSkimLeave);
+      unsubscribeSkimming();
       unsubscribePlayhead();
       unsubscribeSelection();
       unsubscribeView();

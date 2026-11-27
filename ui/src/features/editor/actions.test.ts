@@ -41,6 +41,10 @@ const ctx = (overrides: Partial<ActionContext> = {}): ActionContext => ({
   playing: false,
   looping: false,
   exporting: false,
+  previewingMedia: false,
+  fullScreen: false,
+  previewQuality: "full",
+  skimming: false,
   ...overrides,
 });
 
@@ -55,8 +59,10 @@ describe("registry", () => {
     for (const id of ids) expect(inMenus.has(id)).toBe(true);
   });
 
-  it("uses each key combination for one action only", () => {
-    const combos = ACTIONS.flatMap((a) => a.shortcuts ?? []).map(bindingLabel);
+  it("uses each key combination for one action only, except bindings that depend on state", () => {
+    const combos = ACTIONS.flatMap((a) => a.shortcuts ?? [])
+      .filter((binding) => !binding.when)
+      .map(bindingLabel);
     expect(new Set(combos).size).toBe(combos.length);
   });
 });
@@ -192,6 +198,11 @@ describe("shortcutGroups", () => {
       { id: "shuttle-reverse", label: t.playback.shuttleReverse, keys: ["J"] },
       { id: "shuttle-pause", label: t.playback.shuttlePause, keys: ["K"] },
       { id: "shuttle-forward", label: t.playback.shuttleForward, keys: ["L"] },
+      { id: "back-to-timeline", label: t.playback.backToTimeline, keys: [t.keys.escape] },
+      { id: "full-screen", label: t.view.fullScreen, keys: ["F", t.keys.escape] },
+      { id: "preview-zoom-in", label: t.view.previewZoomIn, keys: ["Ctrl++", "Ctrl+="] },
+      { id: "preview-zoom-out", label: t.view.previewZoomOut, keys: ["Ctrl+-"] },
+      { id: "preview-zoom-fit", label: t.view.previewZoomFit, keys: ["Ctrl+0"] },
       { id: "zoom-in", label: t.view.zoomIn, keys: ["+", "="] },
       { id: "zoom-out", label: t.view.zoomOut, keys: ["-"] },
       { id: "zoom-to-fit", label: t.view.zoomToFit, keys: ["Shift+Z"] },
@@ -263,6 +274,7 @@ describe("actionContext", () => {
         mediaBinOpen: false,
         inspectorOpen: true,
         editorOpen: true,
+        skimming: false,
       }),
     ).toEqual(
       ctx({ loaded: false, historyPanelOpen: true, mediaBinOpen: false, magnetic: false, canPlay: false }),
@@ -271,7 +283,11 @@ describe("actionContext", () => {
 
   it("can play a timeline with content and mirrors the transport flags", () => {
     const state = { project: { duration: 1, magnetic: true }, history: {} } as unknown as ProjectState;
-    const c = actionContext(state, undefined, undefined, undefined, { playing: true, looping: true });
+    const c = actionContext(state, undefined, undefined, undefined, {
+      playing: true,
+      looping: true,
+      previewingMedia: false,
+    });
     expect(c).toMatchObject({ canPlay: true, playing: true, looping: true });
     const empty = { project: { duration: 0, magnetic: true }, history: {} } as unknown as ProjectState;
     expect(actionContext(empty).canPlay).toBe(false);
@@ -447,5 +463,44 @@ describe("clipFlags", () => {
     expect(clipFlags(state, ["a", "b"])).toMatchObject({ canReverse: true, reversed: false });
     expect(clipFlags(state, ["b", "i"])).toMatchObject({ canReverse: true, reversed: true });
     expect(clipFlags(state, ["i"])).toMatchObject({ canReverse: false, reversed: false });
+  });
+});
+
+describe("preview actions (F1.55, F1.61-F1.63, F1.17)", () => {
+  const view = (c: ActionContext) => actionItems(menuModel(c)[2]);
+  const item = (c: ActionContext, id: string) => view(c).find((i) => i.id === id);
+
+  it("checks the quality in use", () => {
+    const half = ctx({ previewQuality: "half" });
+    expect(item(half, "preview-quality-half")?.checked).toBe(true);
+    expect(item(half, "preview-quality-full")?.checked).toBe(false);
+    expect(item(half, "preview-quality-quarter")).toMatchObject({ label: t.view.previewQuality.quarter });
+  });
+
+  it("labels full screen by state, with F", () => {
+    expect(item(ctx(), "full-screen")).toMatchObject({
+      label: t.view.fullScreen,
+      shortcut: "F",
+      checked: false,
+    });
+    expect(item(ctx({ fullScreen: true }), "full-screen")).toMatchObject({
+      label: t.view.exitFullScreen,
+      checked: true,
+    });
+  });
+
+  it("shows the skimming toggle and the preview zoom shortcuts", () => {
+    expect(item(ctx({ skimming: true }), "skimming")?.checked).toBe(true);
+    expect(item(ctx(), "skimming")?.checked).toBe(false);
+    expect(item(ctx(), "preview-zoom-in")?.shortcut).toBe("Ctrl++");
+    expect(item(ctx(), "preview-zoom-fit")?.shortcut).toBe("Ctrl+0");
+  });
+
+  it("plays a previewed media item even on an empty timeline and goes back only from one", () => {
+    const empty = ctx({ canPlay: false, previewingMedia: true });
+    expect(item(empty, "play-pause")?.disabled).toBe(false);
+    expect(item(empty, "shuttle-forward")?.disabled).toBe(false);
+    expect(item(empty, "back-to-timeline")?.disabled).toBe(false);
+    expect(item(ctx(), "back-to-timeline")?.disabled).toBe(true);
   });
 });

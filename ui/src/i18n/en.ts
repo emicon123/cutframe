@@ -15,6 +15,7 @@ import {
   type MediaErrorKind,
   type MediaKind,
   type MediaStatus,
+  type PreviewQuality,
   type UiLanguage,
   type VideoCodec,
 } from "@/bindings";
@@ -196,6 +197,19 @@ export const en = {
     frameForward: "Next frame",
     frameBack10: "Back 10 frames",
     frameForward10: "Forward 10 frames",
+    /** Preview zoom (F1.62), full screen (F1.63) and quality (F1.61), render-graph design §8. */
+    previewZoomIn: "Zoom preview in",
+    previewZoomOut: "Zoom preview out",
+    previewZoomFit: "Fit preview",
+    fullScreen: "Full screen preview",
+    exitFullScreen: "Exit full screen",
+    previewQuality: {
+      full: "Preview quality: Full",
+      half: "Preview quality: Half",
+      quarter: "Preview quality: Quarter",
+    } satisfies Record<PreviewQuality, string>,
+    /** F1.55: hovering the timeline shows that frame in the preview. */
+    skimming: "Skimming",
   },
   /** Transport actions (playback design §2); in the View menu and the shortcut reference. */
   playback: {
@@ -206,6 +220,8 @@ export const en = {
     shuttlePause: "Stop shuttle",
     shuttleForward: "Play forward (faster on repeat)",
     loop: "Loop playback",
+    /** Leaves a source preview (F1.17). */
+    backToTimeline: "Back to timeline",
   },
   preferences: {
     title: "Preferences",
@@ -696,6 +712,8 @@ export const en = {
     },
     previewUnavailable: "No preview",
     actions: {
+      /** F1.17: plays the item alone in the preview (also double-click or Enter). */
+      preview: "Preview in player",
       reveal: "Show in Explorer",
       remove: "Remove from project",
       removeMany: (n: number) => `Remove ${n} items from project`,
@@ -776,6 +794,21 @@ export const en = {
     loading: "Starting preview…",
     /** Between the playhead timecode and the timeline length. */
     timecodeOf: "/",
+    zoom: {
+      menu: (level: string) => `Preview zoom: ${level}`,
+      fit: "Fit",
+      percent: (percent: number) => `${percent}%`,
+    },
+    quality: {
+      menu: (level: string) => `Preview quality: ${level}`,
+      levels: { full: "Full", half: "Half", quarter: "Quarter" } satisfies Record<PreviewQuality, string>,
+      hint: "Lower quality plays more smoothly; export is always full quality",
+    },
+    /** F1.17: a media item plays in the preview on its own. */
+    source: {
+      previewing: (name: string) => `Previewing ${name}`,
+      unknown: "media",
+    },
   },
   inspector: {
     title: "Project",

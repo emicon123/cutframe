@@ -12,6 +12,7 @@ import { ErrorDialog } from "@/features/notifications/ErrorDialog";
 import { Toaster } from "@/features/notifications/Toaster";
 import { PreferencesDialog } from "@/features/preferences/PreferencesDialog";
 import { loadPreferences } from "@/features/preferences/preferencesStore";
+import { syncPreviewSettings } from "@/features/preview/previewStore";
 import { ProjectSettingsDialog } from "@/features/project/ProjectSettingsDialog";
 import { RecoveryDialog } from "@/features/project/RecoveryDialog";
 import { UnsavedChangesDialog } from "@/features/project/UnsavedChangesDialog";
@@ -28,6 +29,8 @@ export function App() {
   useEffect(() => startProjectSync(), []);
   useEffect(() => installShortcuts(), []);
   useEffect(() => void loadPreferences(), []);
+  // The preview quality preference and the view: Rust does not keep them (render-graph.md §8).
+  useEffect(() => syncPreviewSettings(), []);
   useEffect(() => startUpdateSync(), []);
   useWindowTitle();
   const settingsOpen = useUiStore((s) => s.projectSettingsOpen);

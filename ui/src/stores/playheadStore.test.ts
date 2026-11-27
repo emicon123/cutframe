@@ -187,6 +187,7 @@ describe("reduceTick", () => {
       looping: true,
       droppedFrames: 3,
       seekGeneration: 4,
+      source: null,
     });
   });
 
@@ -281,5 +282,111 @@ describe("stepTo", () => {
     expect(playhead.playheadStore.getState()).toMatchObject({ time: 40, state: "paused", rate: 0 });
     await vi.waitFor(() => expect(playhead.playheadStore.getState().seekGeneration).toBe(6));
     expect(steps).toEqual([-10]);
+  });
+});
+
+describe("source preview", () => {
+  const media = "media-1";
+
+  /** Every `setPlaybackTarget` and transport command in the order Rust receives it. */
+  function mockTransport(generations: { target?: number; seek?: number; step?: number } = {}) {
+    mockCommands({
+      setPlaybackTarget: ({ target }) => {
+        log.push(target.kind === "media" ? `target ${target.media}` : "target timeline");
+        return generations.target ?? 10;
+      },
+      seek: ({ time, mode }) => {
+        log.push(`${mode} ${time}`);
+        return generations.seek ?? 11;
+      },
+      stepFrames: ({ frames }) => {
+        log.push(`step ${frames}`);
+        return generations.step ?? 12;
+      },
+    });
+  }
+
+  it("shows the media at 0 at once and keeps the timeline playhead", async () => {
+    mockTransport();
+    playhead.applyTick(tick({ time: 900, seek: 2 }));
+    playhead.previewMedia(media);
+    expect(playhead.playheadStore.getState()).toMatchObject({
+      time: 900,
+      state: "paused",
+      source: { media, time: 0, state: "paused" },
+    });
+    await vi.waitFor(() => expect(playhead.playheadStore.getState().seekGeneration).toBe(10));
+    expect(log).toEqual([`target ${media}`]);
+  });
+
+  it("mirrors media ticks into the source transport, never into the timeline playhead", async () => {
+    mockTransport();
+    playhead.applyTick(tick({ time: 900, seek: 2 }));
+    playhead.previewMedia(media);
+    await vi.waitFor(() => expect(playhead.playheadStore.getState().seekGeneration).toBe(10));
+
+    playhead.applyTick(
+      tick({ time: 4000, seek: 10, state: "playing", rate: 1, target: { kind: "media", media } }),
+    );
+    expect(playhead.playheadStore.getState()).toMatchObject({
+      time: 900,
+      state: "paused",
+      rate: 0,
+      source: { media, time: 4000, state: "playing", rate: 1 },
+    });
+  });
+
+  it("ignores a stale timeline tick from before the target change", async () => {
+    mockTransport();
+    playhead.applyTick(tick({ time: 900, seek: 2, state: "playing", rate: 1 }));
+    playhead.previewMedia(media);
+    await vi.waitFor(() => expect(playhead.playheadStore.getState().seekGeneration).toBe(10));
+
+    playhead.applyTick(tick({ time: 950, seek: 2, state: "playing", rate: 1 }));
+    expect(playhead.playheadStore.getState()).toMatchObject({ time: 900, source: { media, time: 0 } });
+  });
+
+  it("returns to the timeline, which the next tick confirms at the kept playhead", async () => {
+    mockTransport({ target: 13 });
+    playhead.applyTick(tick({ time: 900, seek: 2 }));
+    playhead.previewMedia(media);
+    playhead.previewTimeline();
+    expect(playhead.playheadStore.getState()).toMatchObject({ time: 900, source: null });
+    await vi.waitFor(() => expect(log).toEqual([`target ${media}`, "target timeline"]));
+
+    playhead.applyTick(tick({ time: 900, seek: 13 }));
+    expect(playhead.playheadStore.getState()).toMatchObject({ time: 900, source: null, seekGeneration: 13 });
+    // Nothing to do on the timeline already.
+    playhead.previewTimeline();
+    await Promise.resolve();
+    expect(log).toHaveLength(2);
+  });
+
+  it("steps and seeks in media time without moving the timeline playhead", async () => {
+    mockTransport();
+    playhead.applyTick(tick({ time: 900, seek: 2 }));
+    playhead.previewMedia(media);
+    playhead.stepSource(1);
+    playhead.seekSource(300.4);
+    expect(playhead.playheadStore.getState()).toMatchObject({ time: 900, source: { time: 300 } });
+    await vi.waitFor(() => expect(log).toEqual([`target ${media}`, "step 1", "exact 300"]));
+  });
+
+  it("goes back to the timeline before a timeline seek", async () => {
+    mockTransport();
+    playhead.previewMedia(media);
+    playhead.seekTo(5000, "exact");
+    expect(playhead.playheadStore.getState()).toMatchObject({ time: 5000, source: null });
+    await vi.waitFor(() => expect(log).toEqual([`target ${media}`, "target timeline", "exact 5000"]));
+  });
+
+  it("leaves the source preview when the engine refuses it", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    mockCommands({
+      setPlaybackTarget: () => rejectAsTauri({ kind: "invalidEdit", message: "unknown media" }),
+    });
+    playhead.previewMedia(media);
+    expect(playhead.playheadStore.getState().source?.media).toBe(media);
+    await vi.waitFor(() => expect(playhead.playheadStore.getState().source).toBeNull());
   });
 });

@@ -1,4 +1,11 @@
-import { type Action, ACTIONS, currentActionContext, isEnabled, type KeyBinding } from "./actions";
+import {
+  type Action,
+  type ActionContext,
+  ACTIONS,
+  currentActionContext,
+  isEnabled,
+  type KeyBinding,
+} from "./actions";
 
 export type KeyInput = Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "shiftKey" | "altKey">;
 
@@ -12,9 +19,21 @@ export function matchesBinding(input: KeyInput, binding: KeyBinding): boolean {
   );
 }
 
-/** The registered action whose shortcut matches `input`. */
-export function findShortcut(input: KeyInput, actions: readonly Action[] = ACTIONS): Action | undefined {
-  return actions.find((a) => a.shortcuts?.some((binding) => matchesBinding(input, binding)));
+/**
+ * The registered action whose shortcut matches `input`. A binding with a `when` condition
+ * matches only with a `ctx` in which it holds.
+ */
+export function findShortcut(
+  input: KeyInput,
+  actions: readonly Action[] = ACTIONS,
+  ctx?: ActionContext,
+): Action | undefined {
+  return actions.find((a) =>
+    a.shortcuts?.some(
+      (binding) =>
+        matchesBinding(input, binding) && (!binding.when || (ctx !== undefined && binding.when(ctx))),
+    ),
+  );
 }
 
 /** Shortcuts are ignored while the user types. */
@@ -49,7 +68,8 @@ export function isInLocalScope(target: EventTarget | null): boolean {
 export function handleShortcut(event: KeyboardEvent, actions: readonly Action[] = ACTIONS): void {
   // Already handled, e.g. Escape cancelling a drag (ipc/gesture.ts): it must not also deselect.
   if (event.defaultPrevented) return;
-  const action = findShortcut(event, actions);
+  const ctx = currentActionContext();
+  const action = findShortcut(event, actions, ctx);
   if (!action) return;
   const ignored =
     isTextEntry(event.target) ||
@@ -57,7 +77,7 @@ export function handleShortcut(event: KeyboardEvent, actions: readonly Action[] 
     (action.scope === "timeline" && isInLocalScope(event.target));
   if (ignored && !action.blockDefault) return;
   event.preventDefault();
-  if (!ignored && isEnabled(action, currentActionContext())) action.run();
+  if (!ignored && isEnabled(action, ctx)) action.run();
 }
 
 export function installShortcuts(): () => void {
