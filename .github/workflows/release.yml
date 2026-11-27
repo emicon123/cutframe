@@ -19,6 +19,25 @@ jobs:
           $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches.Groups[1].Value
           if ("v$version" -ne "${{ github.ref_name }}") { throw "Tag ${{ github.ref_name }} does not match Cargo.toml version $version" }
 
+      # Updater preflight: fail before the long build if the updater cannot work. The signing key and
+      # its password come from Actions secrets (docs/updates.md); the public key in tauri.conf.json
+      # must be the real minisign key, not the placeholder, or installed copies could never verify
+      # an update. Secrets are only read from the environment, never printed.
+      - name: Updater preflight (signing secrets and public key)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $missing = @()
+          if (-not $env:TAURI_SIGNING_PRIVATE_KEY) { $missing += 'TAURI_SIGNING_PRIVATE_KEY' }
+          if (-not $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) { $missing += 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD' }
+          if ($missing) { throw "Missing Actions secret(s): $($missing -join ', '). Add them under Settings > Secrets and variables > Actions (docs/updates.md)." }
+          $pubkey = (Get-Content -Raw src-tauri/tauri.conf.json | ConvertFrom-Json).plugins.updater.pubkey
+          $decoded = ''
+          try { $decoded = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($pubkey)) } catch { }
+          if ($decoded -notmatch 'minisign public key') { throw "plugins.updater.pubkey in src-tauri/tauri.conf.json is not a minisign public key (still the placeholder?). Paste the .pub file contents printed by 'pnpm tauri signer generate' (docs/updates.md)." }
+          Write-Host "Updater public key: $(($decoded -split "`n")[0])"
+
       - uses: actions-rust-lang/setup-rust-toolchain@v2
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
@@ -65,13 +84,95 @@ jobs:
       - name: Third-party licence notices
         run: pnpm gen:licenses
 
-      # Code signing (Azure Trusted Signing) and the updater (latest.json) are added once the
-      # signing account and the updater key exist. Until then releases are unsigned.
+      # Release notes: the message of the annotated tag (git tag -a vX.Y.Z -m "..."), else a default.
+      # They become the release body and the `notes` the app shows in its update prompt.
+      - name: Release notes from the tag
+        id: notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $notes = "Cutframe $tag"
+          $ref = gh api "repos/${{ github.repository }}/git/ref/tags/$tag" | ConvertFrom-Json
+          if ($ref.object.type -eq 'tag') {
+            $message = (gh api "repos/${{ github.repository }}/git/tags/$($ref.object.sha)" | ConvertFrom-Json).message
+            # Drop an SSH/GPG signature block a signed tag carries.
+            $message = ($message -split '-----BEGIN ')[0].Trim()
+            if ($message) { $notes = $message }
+          }
+          $delimiter = "NOTES_$([guid]::NewGuid().ToString('N'))"
+          "text<<$delimiter`n$notes`n$delimiter" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      # Build the NSIS installer and upload it with its updater signature to a draft release.
+      # Updater artifacts (the .sig) are enabled only here, via src-tauri/tauri.updater.conf.json
+      # merged with --config, so a local `pnpm tauri build` works without the private key. The
+      # installer and .exe stay unsigned (private use, no Authenticode).
+      # tauri-action's own latest.json is off: it points at api.github.com asset URLs (rate-limited
+      # for unauthenticated clients); the next step writes one with github.com download URLs.
       - uses: tauri-apps/tauri-action@v1
+        id: tauri
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: Cutframe ${{ github.ref_name }}
-          releaseBody: Unsigned development build. Windows SmartScreen will warn until code signing is set up.
+          releaseBody: ${{ steps.notes.outputs.text }}
           releaseDraft: true
+          args: --config src-tauri/tauri.updater.conf.json
+          uploadUpdaterJson: false
+          uploadUpdaterSignatures: true
+
+      # latest.json for tauri-plugin-updater, uploaded to the same draft release. The installed app
+      # reads https://github.com/<repo>/releases/latest/download/latest.json, which resolves only
+      # once a human publishes the draft (GitHub's "latest" ignores drafts and prereleases).
+      - name: Write and upload latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARTIFACT_PATHS: ${{ steps.tauri.outputs.artifactPaths }}
+          RELEASE_ID: ${{ steps.tauri.outputs.releaseId }}
+          NOTES: ${{ steps.notes.outputs.text }}
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $repo = '${{ github.repository }}'
+          $version = $tag.TrimStart('v')
+          $paths = $env:ARTIFACT_PATHS | ConvertFrom-Json
+          $setup = @($paths | Where-Object { $_ -like '*-setup.exe' })
+          $sig = @($paths | Where-Object { $_ -like '*-setup.exe.sig' })
+          if ($setup.Count -ne 1 -or $sig.Count -ne 1) { throw "Expected one -setup.exe and one -setup.exe.sig, got: $($paths -join ', ')" }
+          $setupName = Split-Path -Leaf $setup[0]
+          $sigName = Split-Path -Leaf $sig[0]
+
+          $headers = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
+
+          # The release must carry both files under exactly these names, or the URL below is dead.
+          $assets = @(Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/$env:RELEASE_ID/assets?per_page=100")
+          foreach ($name in @($setupName, $sigName)) {
+            if (@($assets.name) -notcontains $name) { throw "Release asset '$name' not found; assets: $(@($assets.name) -join ', ')" }
+          }
+
+          $entry = [ordered]@{
+            signature = (Get-Content -Raw -LiteralPath $sig[0]).Trim()
+            url       = "https://github.com/$repo/releases/download/$tag/$([uri]::EscapeDataString($setupName))"
+          }
+          $latest = [ordered]@{
+            version   = $version
+            notes     = $env:NOTES
+            pub_date  = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            platforms = [ordered]@{
+              'windows-x86_64'      = $entry
+              'windows-x86_64-nsis' = $entry
+            }
+          }
+          $file = Join-Path $env:RUNNER_TEMP 'latest.json'
+          [IO.File]::WriteAllText($file, ($latest | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
+          Get-Content -Raw $file
+
+          # A re-run reuses the existing draft for the tag: replace its latest.json.
+          foreach ($old in @($assets | Where-Object { $_.name -eq 'latest.json' })) {
+            Invoke-RestMethod -Method Delete -Headers $headers -Uri "https://api.github.com/repos/$repo/releases/assets/$($old.id)" | Out-Null
+          }
+          Invoke-RestMethod -Method Post -Headers $headers -ContentType 'application/json' -InFile $file `
+            -Uri "https://uploads.github.com/repos/$repo/releases/$env:RELEASE_ID/assets?name=latest.json" | Out-Null
+          Write-Host "Draft release ready. Publish it to roll the update out (docs/updates.md)."

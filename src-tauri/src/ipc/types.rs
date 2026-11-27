@@ -684,6 +684,20 @@ pub struct AboutInfo {
     pub log_dir: Option<String>,
 }
 
+/// A newer release found by `checkForUpdate` (F0.12).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateInfo {
+    /// The announced version, e.g. `0.2.0`.
+    pub version: String,
+    /// The running version, e.g. `0.1.0`.
+    pub current_version: String,
+    /// Publish date as the release states it (RFC 3339), if it states one.
+    pub date: Option<String>,
+    /// Release notes as written in the release (Markdown or plain text, not translated).
+    pub notes: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use engine::render::{DeviceKind, FallbackReason, GpuInfo};

@@ -133,7 +133,9 @@ Encoder policy is a second, independent guard: `engine::media::encoders` has an 
 `deny.toml` allows permissive licences only (`MIT`, `Apache-2.0`, `BSD-*`, `ISC`, `MPL-2.0`,
 `Unicode-3.0`, `Zlib`, `CC0-1.0`, `Unlicense`, `0BSD`). GPL, AGPL and LGPL crates are rejected;
 FFmpeg is linked separately as LGPL DLLs, not as a crate. Wildcard dependency versions are denied,
-unknown registries and git sources are denied, and yanked advisories are warnings. Run it when
+unknown registries and git sources are denied, and yanked advisories are warnings. Only the
+`x86_64-pc-windows-msvc` dependency graph is checked (`[graph] targets`), so crates that exist only
+for other targets (e.g. wasm32-only `webpki-root-certs`) do not need exceptions. Run it when
 dependencies change:
 
 ```bash
@@ -188,9 +190,14 @@ association is per-user (`HKCU`, no admin), then uninstalls silently and checks 
 gone.
 
 Release (`.github/workflows/release.yml`) runs on a `v*` tag, refuses a tag that does not match the
-workspace version in `Cargo.toml`, and builds the installer for a draft GitHub Release. There is no
-code signing and no updater yet: `tauri-plugin-updater` is not registered, and updates are a
-**Target** tracked by `.claude/tasks/0170-t0-updater.task.md`.
+workspace version in `Cargo.toml`, and checks the updater prerequisites first (signing-key secrets
+present, `plugins.updater.pubkey` a real minisign key). It builds the NSIS installer with
+`--config src-tauri/tauri.updater.conf.json` (`bundle.createUpdaterArtifacts: true`, CI only, so a
+local `tauri build` needs no private key), signs the updater artifact with
+`TAURI_SIGNING_PRIVATE_KEY`, and uploads `*-setup.exe`, `*-setup.exe.sig` and a `latest.json`
+(`windows-x86_64` entry with a `github.com/.../releases/download/<tag>/` URL) to a **draft** release.
+Installed copies see the update only after the draft is published. No Authenticode signing.
+User steps and the end-to-end test: `docs/updates.md`.
 
 ## 8. Packaging facts that constrain code
 

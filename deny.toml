@@ -2,6 +2,10 @@
 
 [graph]
 all-features = false
+# Windows 10/11 x64 is the only platform (CLAUDE.md), so only dependencies built for it are checked.
+# This also keeps wasm32-only crates such as webpki-root-certs (CDLA-Permissive-2.0, pulled in by
+# rustls-platform-verifier) out of the licence check without an exception.
+targets = ["x86_64-pc-windows-msvc"]
 
 [advisories]
 version = 2

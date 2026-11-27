@@ -83,6 +83,7 @@ directly, so a drag or a playhead move does not re-render React.
 | `mediaDragStore` | `stores/mediaDragStore.ts` | `create` | the media item being dragged from the panel to the timeline |
 | `relinkStore` | `features/media-bin/relinkStore.ts` | `create` | the relink dialog's target and per-file outcomes |
 | `preferencesStore` | `features/preferences/preferencesStore.ts` | `create` | the preferences dialog's draft and the applied `Preferences` |
+| `useUpdateStore` | `features/updater/updater.ts` | `create` | the update prompt: found release, download progress, ready/failed (pure `reduceUpdate` in `updateState.ts`) |
 
 The two stores outside `stores/` belong to the feature that owns them; the shared ones live in
 `stores/` because several features read them.
@@ -297,12 +298,20 @@ comes back from `set_preferences`.
   `fileActions` routes a failed **open** (File → Open, a recent project, a double-clicked file) and a
   failed **save** (Save, Save As, the save inside the unsaved-changes prompt) to it; a failed save
   offers Save As…. A failed file picker, New project or close stays a toast.
-- **Help** menu: Open logs folder (`openLogsFolder` → toast on `unavailable`/`io`) and About.
+- **Help** menu: Check for updates…, Open logs folder (`openLogsFolder` → toast on `unavailable`/`io`) and About.
   `AboutDialog` (`features/about/`) shows `getAboutInfo` and the licences from
   `src/generated/licenses.json` (made by `pnpm gen:licenses`, gitignored), loaded through
   `import.meta.glob` so it is its own chunk and a missing file still builds; the package list is
   searchable and paged (50 rows), and a licence text renders only when its row is expanded. URLs are
   shown as text with a copy button: the webview has no permission to open external links.
+- **Updates** (`features/updater/`, F0.12): `App` calls `checkForUpdate` once after `started` (a
+  failure only reaches the console); Help → Check for updates… shows "You're up to date" or the
+  failure as a toast. A found release shows `UpdatePrompt`, a non-modal card at the bottom of the
+  toast stack (no preview occluder): version, expandable release notes, Update / Later. Update calls
+  `installUpdate`; `update-progress` (subscribed by `startUpdateSync`) drives a progress bar (percent
+  with a total, bytes without), then **Restart to update** runs `fileActions.replaceGuarded` (the
+  unsaved-changes prompt) around `restartApp`. `failed` shows the reason and Retry. Later hides the
+  card; `ready`, `failed` or another check bring it back, and a check during a download keeps it.
 
 ## 10. Tests
 

@@ -14,6 +14,7 @@ import { ProjectSettingsDialog } from "@/features/project/ProjectSettingsDialog"
 import { RecoveryDialog } from "@/features/project/RecoveryDialog";
 import { UnsavedChangesDialog } from "@/features/project/UnsavedChangesDialog";
 import { useWindowTitle } from "@/features/project/useWindowTitle";
+import { checkOnStartup, startUpdateSync } from "@/features/updater/updater";
 import { startJobSync } from "@/ipc/jobSync";
 import { startProjectSync } from "@/ipc/projectSync";
 import { useUiStore } from "@/stores/uiStore";
@@ -23,12 +24,17 @@ export function App() {
   useEffect(() => startProjectSync(), []);
   useEffect(() => installShortcuts(), []);
   useEffect(() => void loadPreferences(), []);
+  useEffect(() => startUpdateSync(), []);
   useWindowTitle();
   const settingsOpen = useUiStore((s) => s.projectSettingsOpen);
   const setSettingsOpen = useUiStore((s) => s.setProjectSettingsOpen);
   const view = useUiStore((s) => s.view);
   // Nothing until startup has opened the launch path, so it does not flash the home screen.
   const started = useUiStore((s) => s.started);
+  // After the first screen is up, never in its way; a failure only reaches the console (F0.12).
+  useEffect(() => {
+    if (started) checkOnStartup();
+  }, [started]);
 
   return (
     <TooltipProvider delayDuration={400}>

@@ -30,6 +30,10 @@ pnpm setup:ffmpeg # pinned LGPL FFmpeg 7.1 into .ffmpeg/ (SHA-256 + licence chec
 pnpm dev          # = tauri dev: Vite + the Rust app with hot reload
 ```
 
+Debug builds do not check for updates. To try the update prompt in `pnpm dev`, set
+`CUTFRAME_UPDATER=1` first (PowerShell: `$env:CUTFRAME_UPDATER = "1"; pnpm dev`); it then needs a
+real updater key and a published release newer than the running version (see `docs/updates.md`).
+
 `pnpm setup:ffmpeg` (`scripts/fetch-ffmpeg.ps1`) is idempotent and needs no admin rights. It
 downloads the build pinned in `scripts/ffmpeg.json`, refuses it on a hash mismatch or if any DLL is
 not LGPL, and sets `FFMPEG_DIR`, `FFMPEG_INCLUDE_DIR`, `FFMPEG_LIBS_DIR`, `FFMPEG_LINK_MODE` (and

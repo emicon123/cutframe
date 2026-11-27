@@ -6,6 +6,7 @@ import { importFromDialog } from "@/features/media-bin/importActions";
 import { openLogsFolder } from "@/features/notifications/logs";
 import { shuttle, toggleLoop, togglePlayback } from "@/features/preview/transport";
 import { fileActions } from "@/features/project/fileActions";
+import { checkForUpdates } from "@/features/updater/updater";
 import {
   copySelection,
   cutSelection,
@@ -125,6 +126,7 @@ export type ActionId =
   | "toggle-inspector"
   | "reset-panel-layout"
   | "keyboard-shortcuts"
+  | "check-for-updates"
   | "open-logs-folder"
   | "about"
   | "play-pause"
@@ -406,6 +408,11 @@ export const ACTIONS: readonly Action[] = [
     run: () => ui().setShortcutsOpen(true),
   },
   {
+    id: "check-for-updates",
+    label: t.help.checkForUpdates,
+    run: () => void checkForUpdates({ manual: true }),
+  },
+  {
     id: "open-logs-folder",
     label: t.help.openLogs,
     run: () => void openLogsFolder(),
@@ -645,7 +652,7 @@ export const MENUS: readonly Menu[] = [
   {
     id: "help",
     label: t.menu.help,
-    items: ["keyboard-shortcuts", SEPARATOR, "open-logs-folder", SEPARATOR, "about"],
+    items: ["keyboard-shortcuts", SEPARATOR, "check-for-updates", "open-logs-folder", SEPARATOR, "about"],
   },
 ];
 

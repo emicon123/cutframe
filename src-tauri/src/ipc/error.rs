@@ -50,6 +50,10 @@ pub enum IpcError {
     /// `replace_clip_media`: the new media is shorter than the clip. The project is unchanged.
     #[error("{0}")]
     MediaTooShort(String),
+    /// Update: the downloaded update or its signature did not verify against the app's updater
+    /// key (or the file is not an installer). Nothing was installed.
+    #[error("{0}")]
+    UpdateRejected(String),
 }
 
 impl IpcError {
@@ -120,6 +124,7 @@ mod tests {
             (IpcError::Overlap("x".into()), "overlap"),
             (IpcError::TrackLocked("x".into()), "trackLocked"),
             (IpcError::MediaTooShort("x".into()), "mediaTooShort"),
+            (IpcError::UpdateRejected("x".into()), "updateRejected"),
         ];
         for (error, kind) in cases {
             assert_eq!(

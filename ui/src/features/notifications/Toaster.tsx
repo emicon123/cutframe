@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { t } from "@/i18n";
+import { UpdatePrompt } from "@/features/updater/UpdatePrompt";
 import { cn } from "@/lib/utils";
 import { TOAST_DURATION_MS, type Toast, type ToastTone, useToastStore } from "@/stores/toastStore";
 
@@ -29,6 +30,8 @@ export function Toaster() {
       {toasts.map((toast) => (
         <ToastItem key={toast.id} toast={toast} />
       ))}
+      {/* Persistent until answered, so it sits in the corner below the passing toasts (F0.12). */}
+      <UpdatePrompt />
     </section>
   );
 }
