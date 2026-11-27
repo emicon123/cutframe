@@ -151,7 +151,7 @@ sequenceDiagram
   else normal
     Rust->>Rust: single-instance plugin (not for smoke test)
   end
-  Rust->>Shell: dialog plugin, window-state plugin, IPC, media://, setup
+  Rust->>Shell: dialog, updater, window-state plugins, IPC, media://, setup
   Shell->>Shell: Preview::create (main thread, child window hidden)
   Shell->>Shell: Preferences, RecentStore, RecoveryStore, JobManager, cache, Autosaver
   Shell->>UI: manage AppState, then the webview loads
@@ -183,6 +183,10 @@ the window is destroyed, the autosave thread deletes this session's recovery env
 the process waits at most 2 s for it. A crash skips this, which is exactly what makes the recovery
 prompt appear on the next start.
 
+`restartApp` (after the same prompt) shuts the autosave down itself: before a plain restart, or, when
+an update is ready, in the updater's exit hook right before the NSIS installer starts and the process
+exits ([05](05-ipc-contract.md) §4.5).
+
 ## 8. What exists today
 
 | Area | State |
@@ -193,7 +197,7 @@ prompt appear on the next start.
 | Project files, autosave, recovery, recent list, preferences | implemented |
 | Playback with audio, transport, A/V sync | implemented (task 0330) |
 | Skimming and source preview, effects, export | **Target** (`docs/design/playback.md`, `render-graph.md`, `export.md`) |
-| Updater and code signing | **Target** (task 0170) |
+| Updater: check, download, install on restart (backend, `updater.rs`) | implemented; signed artifacts + `latest.json` publishing in `release.yml` (`docs/updates.md`): implemented, untested until the first tagged release; release key: user step; update prompt (UI): task 0170. Code signing: dropped (ADR-0001 amendment) |
 
 ## Links
 

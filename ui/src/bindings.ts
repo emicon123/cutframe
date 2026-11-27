@@ -510,6 +510,27 @@ export const commands = {
 	 *  file is gone and `unavailable` when the file manager cannot be started.
 	 */
 	revealProjectFile: (path: string, options?: InvokeOptions) => __TAURI_INVOKE<null>("reveal_project_file", { path }, options),
+	/**
+	 *  Asks the update server for a newer release (F0.12) and holds it for `installUpdate`. `null`
+	 *  means up to date. While a download runs or waits for `restartApp`, answers with that update
+	 *  without asking the server. Fails with `unavailable` when checks are off (debug build without
+	 *  `CUTFRAME_UPDATER=1`, no updater key configured) or the server cannot be reached; call it on
+	 *  startup and stay quiet on failure.
+	 */
+	checkForUpdate: (options?: InvokeOptions) => __TAURI_INVOKE<UpdateInfo_Serialize | null>("check_for_update", undefined, options),
+	/**
+	 *  Starts downloading the update the last `checkForUpdate` found and returns at once; progress
+	 *  and the end come as `updateProgress`. A second call during the download does nothing; after
+	 *  `ready` it sends `ready` again. Fails with `internal` when no update was found.
+	 */
+	installUpdate: (options?: InvokeOptions) => __TAURI_INVOKE<null>("install_update", undefined, options),
+	/**
+	 *  Closes the app without asking and starts it again: with a `ready` update, the installer runs
+	 *  in between (passive, no admin) and starts the new version. Call it after the unsaved-changes
+	 *  prompt (Save succeeded, or Don't save), like `confirmClose`. Returns only on failure: the
+	 *  update stays ready (`updateRejected`, `io`, `internal`; `unavailable` outside Windows).
+	 */
+	restartApp: (options?: InvokeOptions) => __TAURI_INVOKE<null>("restart_app", undefined, options),
 };
 
 /** Events */
@@ -522,6 +543,7 @@ export const events = {
 	playbackTick: makeEvent<PlaybackTick, PlaybackTick>("playback-tick"),
 	projectChanged: makeEvent<ProjectChanged_Serialize, ProjectChanged_Deserialize>("project-changed"),
 	quitRequested: makeEvent<QuitRequested, QuitRequested>("quit-requested"),
+	updateProgress: makeEvent<UpdateProgress_Serialize, UpdateProgress_Deserialize>("update-progress"),
 };
 
 /* Constants */
@@ -1041,7 +1063,12 @@ export type IpcError =
 /**  The edit would change a clip on a locked track. The project is unchanged. */
 { kind: "trackLocked"; message: string } | 
 /**  `replace_clip_media`: the new media is shorter than the clip. The project is unchanged. */
-{ kind: "mediaTooShort"; message: string };
+{ kind: "mediaTooShort"; message: string } | 
+/**
+ *  Update: the downloaded update or its signature did not verify against the app's updater
+ *  key (or the file is not an installer). Nothing was installed.
+ */
+{ kind: "updateRejected"; message: string };
 
 /**  The end of a job. After `cancel_job` the result is `{ Err: { kind: "cancelled" } }`. */
 export type JobFinished = {
@@ -1703,6 +1730,75 @@ export type TransportStateView = "paused" | "playing";
 /**  UI language. The UI picks its translation table by this key. */
 export type UiLanguage = "en";
 
+/**  A newer release found by `checkForUpdate` (F0.12). */
+export type UpdateInfo = UpdateInfo_Serialize | UpdateInfo_Deserialize;
+
+/**  A newer release found by `checkForUpdate` (F0.12). */
+export type UpdateInfo_Deserialize = {
+	/**  The announced version, e.g. `0.2.0`. */
+	version: string,
+	/**  The running version, e.g. `0.1.0`. */
+	currentVersion: string,
+	/**  Publish date as the release states it (RFC 3339), if it states one. */
+	date?: string | null,
+	/**  Release notes as written in the release (Markdown or plain text, not translated). */
+	notes?: string | null,
+};
+
+/**  A newer release found by `checkForUpdate` (F0.12). */
+export type UpdateInfo_Serialize = {
+	/**  The announced version, e.g. `0.2.0`. */
+	version: string,
+	/**  The running version, e.g. `0.1.0`. */
+	currentVersion: string,
+	/**  Publish date as the release states it (RFC 3339), if it states one. */
+	date: string | null,
+	/**  Release notes as written in the release (Markdown or plain text, not translated). */
+	notes: string | null,
+};
+
+/**
+ *  Progress of the download that `installUpdate` started (F0.12). `downloading` comes at most
+ *  10 Hz; each download ends with exactly one `ready` or `failed`.
+ */
+export type UpdateProgress = UpdateProgress_Serialize | UpdateProgress_Deserialize;
+
+/**
+ *  Progress of the download that `installUpdate` started (F0.12). `downloading` comes at most
+ *  10 Hz; each download ends with exactly one `ready` or `failed`.
+ */
+export type UpdateProgress_Deserialize = 
+/**
+ *  Byte counts are decimal strings (64-bit, ADR-0003 §3). `total` is `None` when the server
+ *  does not send a length.
+ */
+{ state: "downloading"; downloaded: string; total?: string | null } | 
+/**  Downloaded and the signature verified: `restartApp` installs it and starts the new version. */
+{ state: "ready" } | 
+/**
+ *  The download or the verification failed; `installUpdate` may be called again. `error.kind`
+ *  is `unavailable` (network), `updateRejected` (bad signature or file) or `io`/`internal`.
+ */
+{ state: "failed"; error: IpcError };
+
+/**
+ *  Progress of the download that `installUpdate` started (F0.12). `downloading` comes at most
+ *  10 Hz; each download ends with exactly one `ready` or `failed`.
+ */
+export type UpdateProgress_Serialize = 
+/**
+ *  Byte counts are decimal strings (64-bit, ADR-0003 §3). `total` is `None` when the server
+ *  does not send a length.
+ */
+{ state: "downloading"; downloaded: string; total: string | null } | 
+/**  Downloaded and the signature verified: `restartApp` installs it and starts the new version. */
+{ state: "ready" } | 
+/**
+ *  The download or the verification failed; `installUpdate` may be called again. `error.kind`
+ *  is `unavailable` (network), `updateRejected` (bad signature or file) or `io`/`internal`.
+ */
+{ state: "failed"; error: IpcError };
+
 export type Vec2 = {
 	x: number | null,
 	y: number | null,
@@ -1855,6 +1951,9 @@ export type MockCommandHandlers = {
     duplicateProjectFile: (args: { path: string; name: string }) => null | Promise<null>,
     trashProjectFile: (args: { path: string }) => null | Promise<null>,
     revealProjectFile: (args: { path: string }) => null | Promise<null>,
+    checkForUpdate: () => UpdateInfo_Serialize | null | Promise<UpdateInfo_Serialize | null>,
+    installUpdate: () => null | Promise<null>,
+    restartApp: () => null | Promise<null>,
 };
 
 /**
@@ -1951,6 +2050,9 @@ export function mockCommands(handlers: Partial<MockCommandHandlers> = {}): void 
             case "duplicate_project_file": return mockCommandHandler(mockHandlers.duplicateProjectFile, "duplicate_project_file", args);
             case "trash_project_file": return mockCommandHandler(mockHandlers.trashProjectFile, "trash_project_file", args);
             case "reveal_project_file": return mockCommandHandler(mockHandlers.revealProjectFile, "reveal_project_file", args);
+            case "check_for_update": return mockCommandHandler(mockHandlers.checkForUpdate, "check_for_update", args);
+            case "install_update": return mockCommandHandler(mockHandlers.installUpdate, "install_update", args);
+            case "restart_app": return mockCommandHandler(mockHandlers.restartApp, "restart_app", args);
             default: throw new Error(`No mock handler registered for command '${cmd}'`);
         }
     }, { shouldMockEvents: true });
