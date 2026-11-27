@@ -32,7 +32,17 @@ should update from: a build made with the placeholder key never checks for updat
 
 2. **Generate the updater key pair, outside the repository**, on your Windows machine:
 
+   In **cmd** (Command Prompt):
+
+   ```bat
+   mkdir "%USERPROFILE%\.tauri"
+   pnpm tauri signer generate -w "%USERPROFILE%\.tauri\cutframe-updater.key"
+   ```
+
+   In **PowerShell** (if `pnpm` is blocked by the execution policy there, use cmd instead):
+
    ```powershell
+   mkdir "$env:USERPROFILE\.tauri"
    pnpm tauri signer generate -w "$env:USERPROFILE\.tauri\cutframe-updater.key"
    ```
 

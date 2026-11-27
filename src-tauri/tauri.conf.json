@@ -60,7 +60,7 @@
       "endpoints": [
         "https://github.com/emicon123/cutframe/releases/latest/download/latest.json"
       ],
-      "pubkey": "PLACEHOLDER: paste the public key printed by `pnpm tauri signer generate` here",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDczRTY4RDFENzY5MTk2NkUKUldSdWxwRjJIWTNtYy9pZnFCSjIyWUZWalVQd203cURUVVhZNGpVaU9TMEEyaE1xVk5qcUM0R0sK",
       "requireSignedVersion": true,
       "windows": { "installMode": "passive" }
     }
