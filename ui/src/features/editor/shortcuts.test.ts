@@ -44,6 +44,11 @@ describe("findShortcut", () => {
     expect(findShortcut(key("S", { ctrlKey: true, shiftKey: true }))?.id).toBe("save-as");
   });
 
+  it("opens the export dialog with Ctrl+E", () => {
+    expect(findShortcut(key("e", { ctrlKey: true }))?.id).toBe("export");
+    expect(findShortcut(key("e"))).toBeUndefined();
+  });
+
   it("opens the import dialog with Ctrl+I", () => {
     expect(findShortcut(key("i", { ctrlKey: true }))?.id).toBe("import-media");
     expect(findShortcut(key("I", { ctrlKey: true, shiftKey: true }))).toBeUndefined();

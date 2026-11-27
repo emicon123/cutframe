@@ -28,7 +28,7 @@ export function startProjectSync(): () => void {
 
   void Promise.all([
     events.projectChanged.listen((event) => apply(event.payload)),
-    events.quitRequested.listen(() => void fileActions.requestClose()),
+    events.quitRequested.listen((event) => void fileActions.requestClose(event.payload.exporting)),
     events.openFileRequested.listen((event) => void fileActions.openPath(event.payload.path)),
     events.appInfoChanged.listen((event) => applyAppInfoChange(event.payload)),
     events.playbackTick.listen((event) => {

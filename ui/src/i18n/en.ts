@@ -1,5 +1,10 @@
 import {
   type BuildProfile,
+  type EncoderKind,
+  type ExportErrorKind,
+  type ExportIssue,
+  type ExportQuality,
+  type ExportResolution,
   type GpuDeviceType,
   type GpuFallback,
   type HdrTransfer,
@@ -11,7 +16,9 @@ import {
   type MediaKind,
   type MediaStatus,
   type UiLanguage,
+  type VideoCodec,
 } from "@/bindings";
+import type { PresetLabel } from "@/features/export/presets";
 
 const APP_NAME = "Cutframe";
 
@@ -53,6 +60,7 @@ export const en = {
     save: "Save",
     saveAs: "Save As…",
     importMedia: "Import Media…",
+    export: "Export…",
     projectSettings: "Project settings…",
     exit: "Exit",
     /** Name of the project file type in the native open/save dialogs. */
@@ -313,7 +321,141 @@ export const en = {
   },
   topBar: {
     export: "Export",
-    exportSoon: "Export arrives in a later stage",
+  },
+  /** Export dialog, progress card and results (export.md §2, §7). */
+  export: {
+    title: "Export video",
+    description: "An MP4 file for YouTube. You can keep editing while it exports.",
+    close: "Close",
+    preset: "Preset",
+    presets: {
+      youtube1080: "YouTube 1080p",
+      youtube4k: "YouTube 4K",
+      shorts: "YouTube Shorts (1080 × 1920)",
+      custom: "Custom",
+    } satisfies Record<PresetLabel, string>,
+    fileName: "File name",
+    extension: ".mp4",
+    folder: "Folder",
+    browse: "Browse…",
+    browseTitle: "Choose the export folder",
+    custom: "Custom settings",
+    resolution: "Resolution",
+    resolutions: {
+      project: "Project size",
+      p480: "480p",
+      p720: "720p",
+      p1080: "1080p",
+      p1440: "1440p (2K)",
+      p2160: "2160p (4K)",
+    } satisfies Record<ExportResolution, string>,
+    frameRate: "Frame rate",
+    /** E.g. "Project (29.97 fps)". */
+    projectRate: (rate: string) => `Project (${rate})`,
+    codec: "Codec",
+    codecs: { h264: "H.264", hevc: "HEVC" } satisfies Record<VideoCodec, string>,
+    hevcUnavailable: "HEVC (needs a hardware encoder)",
+    hevcHint: "The Windows player may need the HEVC Video Extensions to play this file.",
+    quality: "Quality",
+    qualities: {
+      low: "Low",
+      recommended: "Recommended",
+      high: "High",
+      custom: "Custom bitrate",
+    } satisfies Record<ExportQuality["kind"], string>,
+    customBitrate: "Bitrate (Mbps)",
+    encoder: "Encoder",
+    automatic: "Automatic",
+    /** The automatic choice with the encoder it would try first. */
+    automaticWith: (encoder: string) => `Automatic (${encoder})`,
+    probing: "Checking the video encoders of this computer…",
+    encoders: {
+      nvenc: "NVIDIA NVENC",
+      qsv: "Intel Quick Sync",
+      amf: "AMD AMF",
+      mfHardware: "Windows hardware encoder",
+      mfSoftware: "Windows software encoder",
+      openH264: "OpenH264 (software)",
+    } satisfies Record<EncoderKind, string>,
+    formErrors: {
+      name: "Enter a file name",
+      folder: "Choose a folder",
+      bitrate: "Enter the bitrate in Mbps, e.g. 12 or 7.5",
+    },
+    /** `invalidEdit` from `checkExport`: only a custom bitrate can be out of range. */
+    bitrateRange: "Enter a bitrate from 0.5 to 200 Mbps",
+    checking: "Checking…",
+    checkFailed: "The export settings could not be checked",
+    summary: {
+      separator: " · ",
+      size: (width: number, height: number) => `${width} × ${height}`,
+      video: (codec: string, bitrate: string) => `${codec} ${bitrate}`,
+      audio: (bitrate: string) => `AAC ${bitrate}`,
+      estimate: (size: string) => `about ${size}`,
+      upscaled: "upscaled",
+      free: (size: string) => `${size} free on this drive`,
+    },
+    units: {
+      kbps: (value: string) => `${value} kbps`,
+      mbps: (value: string) => `${value} Mbps`,
+    },
+    issues: {
+      emptyTimeline: "The timeline is empty",
+      invalidPath: 'This file name cannot be used. Avoid < > : " / \\ | ? * and names such as CON or NUL.',
+      folderMissing: "The folder does not exist",
+      outputIsSource: (name: string) => `“${name}” is used by this project. Choose another file name.`,
+      mediaOffline: (name: string) => `“${name}” is missing. Relink it to export.`,
+      codecUnavailable: "No encoder on this computer can export with these settings",
+      fileLocked: "The file is open in another program. Close it or choose another name.",
+      fileExists: "A file with this name exists. Exporting replaces it.",
+      lowDiskSpace: "The drive may not have enough free space for this export",
+      shortsNotVertical: "YouTube shows only vertical or square videos as Shorts",
+      shortsTooLong: "Shorts can be at most 3 minutes long",
+    } satisfies Record<ExportIssue["kind"] | "shortsNotVertical" | "shortsTooLong", unknown>,
+    relink: "Relink…",
+    unknownMedia: "A media file",
+    start: "Export",
+    cancel: "Cancel",
+    replaceQuestion: (name: string) => `“${name}” already exists. Replace it?`,
+    replace: "Replace",
+    back: "Back",
+    progress: {
+      label: "Export progress",
+      percent: (value: number) => `${value}%`,
+      estimating: "Estimating time left…",
+      etaSeconds: (n: number) => `About ${n} s left`,
+      etaMinutes: (n: number) => `About ${n} min left`,
+      etaHours: (h: number, m: number) => (m === 0 ? `About ${h} h left` : `About ${h} h ${m} min left`),
+      cancel: "Cancel",
+      cancelTip: "Cancel the export",
+      cancelling: "Cancelling…",
+    },
+    doneTitle: (fileName: string) => `Exported “${fileName}”`,
+    failedTitle: "The export failed",
+    /** `exportReport` failures keyed by `ExportErrorKind`; `detail` is never shown. */
+    failures: {
+      mediaOffline: (name: string) => `“${name}” is missing. Relink it and export again.`,
+      mediaOfflineUnknown: "A media file is missing. Relink it and export again.",
+      decodeFailed: (name: string) => `“${name}” could not be decoded.`,
+      decodeFailedUnknown: "A media file could not be decoded.",
+      noEncoder:
+        "No video encoder of this computer could export these settings. Try another resolution or encoder.",
+      encoderFailed: "The video encoder stopped with an error. Try again or choose another encoder.",
+      diskFull: "The drive is full. Free up space or choose another folder.",
+      writeFailed: "The file could not be written. Check the folder and try again.",
+      writeFailedKept: (path: string) => `The finished video could not be renamed and was kept as “${path}”.`,
+      gpu: "The graphics card stopped responding. Try again.",
+      internal: "Something went wrong.",
+    } satisfies Record<
+      ExportErrorKind | "mediaOfflineUnknown" | "decodeFailedUnknown" | "writeFailedKept",
+      unknown
+    >,
+    quit: {
+      title: "An export is running",
+      description: "Cancel the export and quit? The unfinished file is deleted.",
+      keep: "Keep exporting",
+      confirm: "Cancel export and quit",
+    },
   },
   /** Undo/redo entries keyed by the backend's `HistoryLabel`, shown as "Undo Add Track". */
   history: {

@@ -2,6 +2,7 @@ import { Download, Redo2, Undo2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { ExportProgress } from "@/features/export/ExportProgress";
 import { t } from "@/i18n";
 import { useProjectStore } from "@/stores/projectStore";
 
@@ -14,6 +15,26 @@ import {
   useActionContext,
 } from "./actions";
 import { MainMenu } from "./MainMenu";
+
+/** Opens the export dialog; disabled on an empty timeline and while an export runs. */
+function ExportButton({ ctx }: { ctx: ActionContext }) {
+  const action = getAction("export");
+  const disabled = !isEnabled(action, ctx);
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        {/* The span keeps the tooltip working while the button is disabled. */}
+        <span tabIndex={disabled ? 0 : -1}>
+          <Button size="sm" disabled={disabled} onClick={action.run}>
+            <Download className="size-4" aria-hidden />
+            {t.topBar.export}
+          </Button>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>{actionTooltip(action, ctx)}</TooltipContent>
+    </Tooltip>
+  );
+}
 
 export function TopBar() {
   const name = useProjectStore((s) => s.state?.project.name);
@@ -38,10 +59,10 @@ export function TopBar() {
         </ActionButton>
       </div>
 
-      <Button className="ml-auto" size="sm" disabled title={t.topBar.exportSoon}>
-        <Download className="size-4" aria-hidden />
-        {t.topBar.export}
-      </Button>
+      <div className="ml-auto flex items-center gap-3">
+        <ExportProgress />
+        <ExportButton ctx={ctx} />
+      </div>
     </header>
   );
 }

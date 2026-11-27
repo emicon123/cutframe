@@ -40,6 +40,7 @@ const ctx = (overrides: Partial<ActionContext> = {}): ActionContext => ({
   canPlay: true,
   playing: false,
   looping: false,
+  exporting: false,
   ...overrides,
 });
 
@@ -97,10 +98,11 @@ describe("menuModel", () => {
       [t.file.save, "Ctrl+S"],
       [t.file.saveAs, "Ctrl+Shift+S"],
       [t.file.importMedia, "Ctrl+I"],
+      [t.file.export, "Ctrl+E"],
       [t.file.projectSettings, ""],
       [t.file.exit, ""],
     ]);
-    expect(file?.items.filter((i) => i.kind === "separator")).toHaveLength(5);
+    expect(file?.items.filter((i) => i.kind === "separator")).toHaveLength(6);
   });
 
   it("names the undo and redo entries and disables them when there is nothing to do", () => {
@@ -126,7 +128,7 @@ describe("menuModel", () => {
   it("disables project actions before a project is loaded", () => {
     const file = actionItems(menuModel(ctx({ loaded: false }))[0]);
     const disabled = file.filter((i) => i.disabled).map((i) => i.id);
-    expect(disabled).toEqual(["go-home", "save", "save-as", "import-media", "project-settings"]);
+    expect(disabled).toEqual(["go-home", "save", "save-as", "import-media", "export", "project-settings"]);
   });
 
   it("checks the history panel toggle when the panel is open", () => {
@@ -231,6 +233,25 @@ describe("panel and preferences actions", () => {
   it("opens Preferences from the Edit menu with Ctrl+,", () => {
     const edit = actionItems(menuModel(ctx())[1]);
     expect(edit.at(-1)).toMatchObject({ id: "preferences", label: t.edit.preferences, shortcut: "Ctrl+," });
+  });
+});
+
+describe("export action", () => {
+  const item = (c: ActionContext) => actionItems(menuModel(c)[0]).find((i) => i.id === "export");
+
+  it("is File → Export… with Ctrl+E and opens the dialog", async () => {
+    const { useExportStore } = await import("@/features/export/exportStore");
+    expect(item(ctx())).toMatchObject({ label: t.file.export, shortcut: "Ctrl+E", disabled: false });
+    expect(getAction("export").blockDefault).toBe(true);
+    getAction("export").run();
+    expect(useExportStore.getState().dialogOpen).toBe(true);
+    useExportStore.setState({ dialogOpen: false });
+  });
+
+  it("is disabled on an empty timeline, on the home screen and while an export runs", () => {
+    expect(item(ctx({ canPlay: false }))?.disabled).toBe(true);
+    expect(item(ctx({ editorOpen: false }))?.disabled).toBe(true);
+    expect(item(ctx({ exporting: true }))?.disabled).toBe(true);
   });
 });
 

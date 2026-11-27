@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { events, mockCommands, type MockCommandHandlers, type PlaybackTick } from "@/bindings";
+import { answerCancelExport, useQuitPrompt } from "@/features/export/quitPrompt";
 import { fileActions } from "@/features/project/fileActions";
 import { recovery } from "@/features/project/recovery";
 import { playheadStore } from "@/stores/playheadStore";
@@ -114,6 +115,24 @@ describe("startProjectSync", () => {
     stop = startProjectSync();
     await vi.waitFor(() => expect(useProjectStore.getState().state?.revision).toBe(3));
     await events.quitRequested.emit({ unsaved: false, exporting: false });
+    await vi.waitFor(() => expect(calls).toContain("confirmClose"));
+  });
+
+  it("asks before closing while an export runs, even one this webview did not start", async () => {
+    const calls: string[] = [];
+    mockStartup(() => null, calls, {
+      confirmClose: () => {
+        calls.push("confirmClose");
+        return null;
+      },
+    });
+
+    stop = startProjectSync();
+    await vi.waitFor(() => expect(useProjectStore.getState().state?.revision).toBe(3));
+    await events.quitRequested.emit({ unsaved: false, exporting: true });
+    await vi.waitFor(() => expect(useQuitPrompt.getState().resolve).not.toBeNull());
+    expect(calls).not.toContain("confirmClose");
+    answerCancelExport(true);
     await vi.waitFor(() => expect(calls).toContain("confirmClose"));
   });
 

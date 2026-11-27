@@ -2,6 +2,7 @@ import { useStore } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 
 import { type ClipId, commands } from "@/bindings";
+import { openExportDialog, useExportStore } from "@/features/export/exportStore";
 import { importFromDialog } from "@/features/media-bin/importActions";
 import { openLogsFolder } from "@/features/notifications/logs";
 import { shuttle, toggleLoop, togglePlayback } from "@/features/preview/transport";
@@ -85,6 +86,8 @@ export type ActionContext = {
   playing: boolean;
   /** Loop playback is on. */
   looping: boolean;
+  /** An export is running (only one at a time). */
+  exporting: boolean;
 };
 
 /** The selection-store part of the context. */
@@ -95,6 +98,9 @@ export type ClipFlags = Pick<ActionContext, "linkToggle" | "canDetach" | "canRev
 
 /** The playhead-store part of the context. */
 export type PlaybackFlags = Pick<ActionContext, "playing" | "looping">;
+
+/** The export-store part of the context. */
+export type ExportFlags = Pick<ActionContext, "exporting">;
 
 /** The UI-store part of the context. */
 export type UiFlags = Pick<
@@ -109,6 +115,7 @@ export type ActionId =
   | "save"
   | "save-as"
   | "import-media"
+  | "export"
   | "project-settings"
   | "exit"
   | "undo"
@@ -234,6 +241,15 @@ export const ACTIONS: readonly Action[] = [
     shortcuts: [{ key: "i", ctrl: true }],
     enabled: editing,
     run: () => void importFromDialog(),
+  },
+  {
+    id: "export",
+    label: t.file.export,
+    shortcuts: [{ key: "e", ctrl: true }],
+    blockDefault: true,
+    // Something to export, and no export running yet (export.md §2, §5.4).
+    enabled: (ctx) => editing(ctx) && ctx.canPlay && !ctx.exporting,
+    run: openExportDialog,
   },
   {
     id: "project-settings",
@@ -608,6 +624,8 @@ export const MENUS: readonly Menu[] = [
       SEPARATOR,
       "import-media",
       SEPARATOR,
+      "export",
+      SEPARATOR,
       "project-settings",
       SEPARATOR,
       "exit",
@@ -699,12 +717,15 @@ const NO_CLIP_FLAGS: ClipFlags = { linkToggle: null, canDetach: false, canRevers
 
 const NO_PLAYBACK: PlaybackFlags = { playing: false, looping: false };
 
+const NO_EXPORT: ExportFlags = { exporting: false };
+
 export function actionContext(
   state: ProjectState | null,
   flags: UiFlags = NO_UI_FLAGS,
   selection: SelectionFlags = NO_SELECTION,
   clips: ClipFlags = NO_CLIP_FLAGS,
   playback: PlaybackFlags = NO_PLAYBACK,
+  exporting: ExportFlags = NO_EXPORT,
 ): ActionContext {
   const history = state?.history;
   return {
@@ -719,6 +740,7 @@ export function actionContext(
     ...selection,
     ...clips,
     ...playback,
+    ...exporting,
   };
 }
 
@@ -765,6 +787,7 @@ export function currentActionContext(): ActionContext {
     selectionFlags(selection),
     clipFlags(state, selection.clips),
     playbackFlags(playheadStore.getState()),
+    { exporting: useExportStore.getState().job !== null },
   );
 }
 
@@ -778,7 +801,8 @@ export function useActionContext(): ActionContext {
   const project = useProjectStore(useShallow((s) => actionContext(s.state)));
   // Shallow-compared too: playback ticks re-render only on play/pause and loop changes.
   const playback = useStore(playheadStore, useShallow(playbackFlags));
-  return { ...project, ...flags, ...selection, ...clips, ...playback };
+  const exporting = useExportStore((s) => s.job !== null);
+  return { ...project, ...flags, ...selection, ...clips, ...playback, exporting };
 }
 
 export function getAction(id: ActionId, actions: readonly Action[] = ACTIONS): Action {

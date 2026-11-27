@@ -1,29 +1,24 @@
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 
 import { commands, PROJECT_FILE_EXTENSION } from "@/bindings";
+import { exportRunning, stopExport } from "@/features/export/exportStore";
+import { askCancelExport } from "@/features/export/quitPrompt";
 import { type FailureContext, showErrorDialog } from "@/features/notifications/errorDialogStore";
 import { t } from "@/i18n";
 import { logError } from "@/ipc/errors";
+import { safeFileStem } from "@/lib/fileName";
 import { useAppStore } from "@/stores/appStore";
 import { useProjectStore } from "@/stores/projectStore";
 import { useUiStore, type View } from "@/stores/uiStore";
 
 import { askUnsaved, type UnsavedChoice } from "./unsavedPrompt";
 
-/** Characters Windows does not allow in file names, plus control characters. */
-// eslint-disable-next-line no-control-regex -- control characters are exactly what we replace
-const INVALID_FILE_NAME_CHARS = /[<>:"/\\|?*\u0000-\u001f]/g;
-
 /**
  * File name proposed by Save As: the project name with characters invalid on Windows replaced by
  * `_`, plus the project extension. Trailing dots and spaces are dropped (Windows strips them).
  */
 export function defaultFileName(projectName: string): string {
-  const base = projectName
-    .replace(INVALID_FILE_NAME_CHARS, "_")
-    .trim()
-    .replace(/[. ]+$/, "");
-  return `${base || t.file.untitled}.${PROJECT_FILE_EXTENSION}`;
+  return `${safeFileStem(projectName, t.file.untitled)}.${PROJECT_FILE_EXTENSION}`;
 }
 
 /**
@@ -53,6 +48,12 @@ export type FileActionDeps = {
   /** The current project, or `null` before the first state arrived. */
   current: () => { name: string; filePath: string | null; dirty: boolean } | null;
   askUnsaved: () => Promise<UnsavedChoice>;
+  /** An export is running (export.md §5.1). */
+  exportRunning: () => boolean;
+  /** "An export is running. Cancel it and quit?"; `true` to cancel it and quit. */
+  askCancelExport: () => Promise<boolean>;
+  /** Cancels the running export and waits for its `jobFinished` (at most 2 s). */
+  stopExport: () => Promise<void>;
   /** Native open dialog; `null` when cancelled. */
   pickOpenPath: () => Promise<string | null>;
   /** Native save dialog; `null` when cancelled. */
@@ -77,8 +78,13 @@ export type FileActions = {
   /** Resolves `true` when the project was written. */
   save: () => Promise<boolean>;
   saveAs: () => Promise<boolean>;
-  /** Answer to `quitRequested`: asks about unsaved changes, then closes the window. */
-  requestClose: () => Promise<void>;
+  /**
+   * Answer to `quitRequested` and File → Exit: asks about a running export (`exporting` comes
+   * from `quitRequested`; the export store is asked too) and about unsaved changes, then cancels
+   * the export, waits for it to end and closes the window. Any "stay" answer keeps everything
+   * running.
+   */
+  requestClose: (exporting?: boolean) => Promise<void>;
   /**
    * Replaces the open project with `action` behind the same unsaved-changes prompt as New/Open.
    * Resolves `true` when `action` ran; a rejection of `action` is passed on to the caller (who
@@ -175,7 +181,15 @@ export function createFileActions(deps: FileActionDeps): FileActions {
     openPath: (path) => exclusive(undefined, () => guardUnsaved(() => openInEditor(path))),
     save: () => exclusive(false, save),
     saveAs: () => exclusive(false, saveAs),
-    requestClose: () => exclusive(undefined, () => guardUnsaved(() => deps.confirmClose())),
+    requestClose: (exporting = false) =>
+      exclusive(undefined, async () => {
+        const running = exporting || deps.exportRunning();
+        if (running && !(await deps.askCancelExport())) return;
+        await guardUnsaved(async () => {
+          if (running) await deps.stopExport();
+          await deps.confirmClose();
+        });
+      }),
     replaceGuarded: (action) =>
       exclusive(false, async () => {
         if (!(await mayReplace())) return false;
@@ -206,6 +220,9 @@ export const fileActions: FileActions = createFileActions({
     return state ? { name: state.project.name, filePath: state.filePath, dirty: state.dirty } : null;
   },
   askUnsaved,
+  exportRunning,
+  askCancelExport,
+  stopExport: () => stopExport(),
   pickOpenPath: () => openDialog({ multiple: false, directory: false, filters: projectFilter() }),
   pickSavePath: (defaultPath) => saveDialog({ defaultPath, filters: projectFilter() }),
   reportError: (error) => useAppStore.getState().reportError(error),

@@ -22,6 +22,8 @@ function fake(options: {
   savePath?: string | null;
   openPath?: string | null;
   failing?: string;
+  exporting?: boolean;
+  cancelExport?: boolean;
 }): Fake {
   const calls: string[] = [];
   const step =
@@ -39,6 +41,9 @@ function fake(options: {
     confirmClose: step("confirmClose", null),
     current: () => ({ name: "Trip", filePath: options.filePath ?? null, dirty: options.dirty ?? false }),
     askUnsaved: step("askUnsaved", options.choice ?? "cancel"),
+    exportRunning: () => options.exporting ?? false,
+    askCancelExport: step("askCancelExport", options.cancelExport ?? false),
+    stopExport: step("stopExport", undefined),
     pickOpenPath: step("pickOpenPath", options.openPath === undefined ? "C:\\a.cutframe" : options.openPath),
     pickSavePath: step("pickSavePath", options.savePath === undefined ? "C:\\b.cutframe" : options.savePath),
     reportError: (error) => calls.push(`error ${String(error)}`),
@@ -104,6 +109,50 @@ describe("guardUnsaved (through newProject and requestClose)", () => {
     const deps = fake({ dirty: true, choice: "cancel" });
     await createFileActions(deps).newProject();
     expect(deps.calls).toEqual(["askUnsaved"]);
+  });
+});
+
+describe("requestClose while exporting", () => {
+  it("asks about the export first; Keep exporting stays open and keeps it running", async () => {
+    const deps = fake({ exporting: true, cancelExport: false, dirty: true });
+    await createFileActions(deps).requestClose();
+    expect(deps.calls).toEqual(["askCancelExport"]);
+  });
+
+  it("cancels the export, waits for it and closes a clean project", async () => {
+    const deps = fake({ exporting: true, cancelExport: true });
+    await createFileActions(deps).requestClose();
+    expect(deps.calls).toEqual(["askCancelExport", "stopExport", "confirmClose"]);
+  });
+
+  it("asks about unsaved changes after the export; Cancel there keeps the export running", async () => {
+    const deps = fake({ exporting: true, cancelExport: true, dirty: true, choice: "cancel" });
+    await createFileActions(deps).requestClose();
+    expect(deps.calls).toEqual(["askCancelExport", "askUnsaved"]);
+  });
+
+  it("saves, then cancels the export and closes", async () => {
+    const deps = fake({ exporting: true, cancelExport: true, dirty: true, choice: "save" });
+    await createFileActions(deps).requestClose();
+    expect(deps.calls).toEqual([
+      "askCancelExport",
+      "askUnsaved",
+      "saveProject",
+      "stopExport",
+      "confirmClose",
+    ]);
+  });
+
+  it("trusts quitRequested's exporting flag when the UI does not know the export", async () => {
+    const deps = fake({ exporting: false, cancelExport: true });
+    await createFileActions(deps).requestClose(true);
+    expect(deps.calls).toEqual(["askCancelExport", "stopExport", "confirmClose"]);
+  });
+
+  it("does not ask without an export", async () => {
+    const deps = fake({});
+    await createFileActions(deps).requestClose(false);
+    expect(deps.calls).toEqual(["confirmClose"]);
   });
 });
 
