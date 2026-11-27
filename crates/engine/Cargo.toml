@@ -30,13 +30,16 @@ wgpu.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # D3D12VA interop with wgpu's own device (`media::d3d12`, render-graph.md §5.4); COM for the
-# Media Foundation encoders (`export::encoders::ComGuard`).
+# Media Foundation encoders (`export::encoders::ComGuard`); free space on the export volume
+# (`export::output::free_space`) and sleep prevention during an export (`export::run`).
 windows = { workspace = true, features = [
   "Win32_Foundation",
   "Win32_Graphics_Direct3D12",
   "Win32_Graphics_Dxgi_Common",
   "Win32_Security",
+  "Win32_Storage_FileSystem",
   "Win32_System_Com",
+  "Win32_System_Power",
   "Win32_System_Threading",
 ] }
 

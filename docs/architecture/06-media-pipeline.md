@@ -271,10 +271,12 @@ and then `job-finished`; relinking is one undo step.
 
 ## 11. Export encoders
 
-`engine::export` holds the parts of the export pipeline that exist so far (task 0390,
-[export design](../design/export.md)): `plan` (pure: output size, frame rate, frame and sample
-counts in flicks, YouTube bitrate table, size estimate), `output` (path rules, the
-`<stem>.cutframe-partial.mp4` name, the overwrite and lock check) and `encoders`:
+`engine::export` is the export pipeline (task 0390, [export design](../design/export.md)):
+`plan` (pure: output size, frame rate, frame and sample counts in flicks, YouTube bitrate table,
+size estimate), `output` (path rules, the `<stem>.cutframe-partial.mp4` name, the overwrite and
+lock check, free space), `encoders`, `nv12` (the canvas to BT.709 limited NV12 on the GPU and the
+3-slot staging ring), `audio` (AAC-LC from the shared `mix_block`), `mux` (MP4, `+faststart`,
+colour tags, `hvc1`) and `run` (the loop, below). Encoders:
 
 - **Candidates**, best first: H.264 NVENC, Quick Sync, AMF, Media Foundation hardware MFT,
   Microsoft's Media Foundation software encoder, OpenH264; HEVC the first four. Each has a `Full`
@@ -287,18 +289,64 @@ counts in flicks, YouTube bitrate table, size estimate), `output` (path rules, t
   then `Safe`. `CUTFRAME_ENCODERS=<keys>` limits the candidates (excluded ones are not tried).
   On the reference laptop (RTX 3070 Ti + Iris Xe) all candidates except AMF pass, in about 2.6 s;
   the Media Foundation hardware MFT found is NVIDIA's.
-- **Session cache**: `src-tauri/src/export.rs` runs the probe once per session as a dedicated job
-  (`probingEncoders`) on the first `getExportCapabilities`, caches it in `AppState` and emits
-  `export-capabilities-changed` ([05](05-ipc-contract.md) §4.6).
+- **Session cache**: `src-tauri/src/export/probe.rs` runs the probe once per session as a
+  dedicated job (`probingEncoders`) on the first `getExportCapabilities` (or `checkExport`),
+  caches it in `AppState` and emits `export-capabilities-changed` ([05](05-ipc-contract.md) §4.6).
+
+### 11.1 The export loop (`engine::export::run`)
+
+```mermaid
+flowchart LR
+  snap["Arc Project snapshot (export rate applied)"] --> render["OfflineRenderer: Exact, GpuCanvas"]
+  render --> nv12["Nv12Pass: luma + chroma passes, copy into staging slot n mod 3"]
+  nv12 -->|"map_async, oldest first"| copy["copy into AVFrame (NV12 or I420)"]
+  copy --> enc["video encoder, pts = n"]
+  enc -->|"packets"| mux["Muxer: partial MP4"]
+  mix["AudioEncoder: mix_block, AAC up to (k + 1) x F"] --> mux
+  mux -->|"trailer, faststart, rename"| file["target .mp4"]
+```
+
+`run_export(gpu, ExportRequest, &dyn ExportObserver)` runs on the dedicated below-normal `export`
+thread (`src-tauri/src/export/mod.rs` starts it and implements the observer over the job context):
+
+- **Preparing:** every media file a clip uses must exist (`mediaOffline { media }`), a stale
+  partial file of the same target is deleted, free space must be at least 64 MiB, then the
+  `OfflineRenderer` (4 readers, 2 hardware, below normal), and per encoder attempt the video
+  encoder, the AAC encoder and the muxer on the partial file.
+- **Encoding**, frame by frame in order: cancel check, the playback throttle (a frame starts at
+  most every 50 ms while `TransportShared::is_playing`), `render_frame`, the NV12 pass into a free
+  slot, then every mapped slot is copied, sent to the encoder (EAGAIN drains), its packets muxed,
+  and audio encoded up to the frame's end. Free space is re-checked every 2 s.
+- **Fallback** (export.md §4.4): an encoder that fails to open, or fails before the first video
+  packet was muxed, is closed with the muxer, the partial file is deleted, and the next candidate
+  starts again from frame 0 (progress does not go back). After the first packet an encoder error
+  is `encoderFailed`; an explicitly chosen encoder never falls back.
+- **Finalizing:** drain the ring, flush both encoders, `av_write_trailer` (the faststart rewrite),
+  then `rename` over the target, retried for 2 s. Without `overwrite` a target that appeared
+  meanwhile is not replaced; then (and when the rename fails) the finished file stays under the
+  partial name (`writeFailed` with `keptPath`). Every other failure and the cancel delete it.
+- **Errors** map to `ExportErrorKind` (render errors to `mediaOffline`/`decodeFailed`/`gpu`,
+  `ENOSPC` and the floor to `diskFull`, other output errors to `writeFailed`).
+- **Timing log:** one `info` line per export (`export finished`: frames, elapsed, fps, encoder,
+  option set, restarts, ms per frame for render, read-back wait, CPU copy, encode + mux, audio,
+  throttle).
+- **Test seams** (`run_export_with`, `ExportHooks`): a video-encoder opener (fake failing
+  encoders), a free-space query, and a byte limit after which the muxer's custom I/O returns
+  `ENOSPC` (`MuxOptions::write_limit`, faststart off).
+
+Measured on the reference laptop (release, 60 s, export.md §10 status): 1080p30 with a 1080p
+H.264 main track, image overlay and music at 4.7x real time (QSV, iGPU render), 5.2x (NVENC, iGPU
+render), 3.0x (OpenH264) and 4.4x (Media Foundation software); a 4K30 HLG HEVC source to 4K H.264
+at 2.0x (NVENC) and 1.6x (QSV, iGPU); playback of 60 s 1080p30 on the iGPU while a 1080p export
+runs: 0 dropped frames.
 
 ## 12. What is not here yet
 
 The pipeline above is the **implemented** import/preview/relink path. Decode-on-demand for the
 preview (reader threads, D3D12VA hardware decode) is part of the render graph and described in
 [07](07-preview-and-render.md) §9; the `/preview/frame` route serves its composited frame. Playback
-and audio output are described in [07](07-preview-and-render.md); the export loop (render, NV12,
-mux, the job) is designed in `docs/design/export.md` and being built, and `MediaInfo` is the
-only decode result stored in the project.
+and audio output are described in [07](07-preview-and-render.md); the export loop is §11.1, and
+`MediaInfo` is the only decode result stored in the project.
 
 ## Links
 

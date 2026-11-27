@@ -1,6 +1,5 @@
-//! Export in the shell (export.md §5, §6). Today: the session's encoder probe and its cache
-//! behind `get_export_capabilities` (§4.4). `check_export` and `start_export` come next (task
-//! 0390 step 7).
+//! The session's export encoder probe and its cache behind `get_export_capabilities`
+//! (export.md §4.4).
 //!
 //! The probe runs once per session, on the first `get_export_capabilities` (the export dialog
 //! opening), never at app start: it wakes the discrete GPU of a hybrid laptop. It is a short job
@@ -77,24 +76,18 @@ impl EncoderProbe {
         None
     }
 
-    /// Starts the probe if needed and waits for its report (`start_export` before the dialog's
-    /// probe finished). `None` once `cancelled` returns true.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "start_export waits with it (task 0390 step 7)")
-    )]
-    pub fn wait(
-        self: &Arc<Self>,
-        jobs: &JobManager,
-        cancelled: impl Fn() -> bool,
-    ) -> Option<Arc<ProbeReport>> {
+    /// Waits for the report of a probe that [`Self::report_or_start`] started (the export job,
+    /// when `start_export` came before the dialog's probe finished). `None` once `cancelled`
+    /// returns true, or at once if the probe was never started.
+    pub fn wait(&self, cancelled: impl Fn() -> bool) -> Option<Arc<ProbeReport>> {
         /// How often the cancel condition is checked.
         const STEP: Duration = Duration::from_millis(50);
-        self.report_or_start(jobs);
         let mut state = lock(&self.state);
         loop {
-            if let ProbeState::Done(report) = &*state {
-                return Some(Arc::clone(report));
+            match &*state {
+                ProbeState::Done(report) => return Some(Arc::clone(report)),
+                ProbeState::NotStarted => return None,
+                ProbeState::Running => {}
             }
             if cancelled() {
                 return None;
@@ -136,7 +129,7 @@ impl EncoderProbe {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use engine::export::encoders::{EncoderKind, OptionSet};
@@ -153,7 +146,7 @@ mod tests {
     }
 
     /// OpenH264 only, after a short delay (so the probe is still running for a while).
-    fn fake_runner(filter: &EncoderFilter) -> ProbeReport {
+    pub(crate) fn fake_runner(filter: &EncoderFilter) -> ProbeReport {
         std::thread::sleep(Duration::from_millis(100));
         ProbeReport::run_with(filter, |kind, _| match kind {
             EncoderKind::OpenH264 => Ok(OptionSet::Full),
@@ -204,11 +197,13 @@ mod tests {
     }
 
     #[test]
-    fn wait_starts_the_probe_and_returns_its_report() {
+    fn wait_returns_the_report_of_the_started_probe() {
         let (host, _rx) = FakeHost::new();
         let jobs = JobManager::with_workers(host, 1);
         let probe = Arc::new(EncoderProbe::with_runner(fake_runner));
-        let report = probe.wait(&jobs, || false).expect("a report");
+        assert!(probe.wait(|| false).is_none(), "not started");
+        assert!(probe.report_or_start(&jobs).is_none());
+        let report = probe.wait(|| false).expect("a report");
         assert_eq!(
             report
                 .candidates(engine::export::plan::VideoCodec::H264, None)
@@ -216,7 +211,7 @@ mod tests {
             1
         );
         // Done: cached, no second probe.
-        assert!(probe.wait(&jobs, || true).is_some());
+        assert!(probe.wait(|| true).is_some());
     }
 
     #[test]
@@ -224,7 +219,8 @@ mod tests {
         let (host, _rx) = FakeHost::new();
         let jobs = JobManager::with_workers(host, 1);
         let probe = Arc::new(EncoderProbe::with_runner(fake_runner));
-        assert!(probe.wait(&jobs, || true).is_none());
+        probe.report_or_start(&jobs);
+        assert!(probe.wait(|| true).is_none());
     }
 
     #[test]

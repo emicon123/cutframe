@@ -20,7 +20,9 @@ cutframe/
 ├─ rust-toolchain.toml        Rust 1.100 + rustfmt + clippy
 ├─ deny.toml                  cargo-deny: licence allowlist, advisories, source policy
 ├─ crates/app-core/           project model, edit commands, undo/redo, serialization   (no GPU, no I/O)
-├─ crates/engine/             FFmpeg media pipeline, wgpu preview and rendering         (no Tauri)
+├─ crates/engine/             FFmpeg media pipeline, wgpu preview and rendering, audio,
+│                             export (`engine::export`: plan, encoders, NV12, AAC, MP4, run)
+│                                                                                       (no Tauri)
 ├─ src-tauri/                 `cutframe` crate: Tauri shell, IPC, preview window, media://
 ├─ ui/                        React 19 application (`@cutframe/ui`)
 ├─ effects/                   **Target:** data-only effects, `effect.json` + `shader.wgsl`

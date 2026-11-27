@@ -50,6 +50,7 @@ flowchart LR
   ticker["progress ticker: 10 Hz job-progress"]
   feeder["audio-feeder: cpal stream, readers, mixer"]
   audio["audio callback, real-time"]
+  export["export thread, below normal: offline render, NV12, encode, mux"]
   main -- "crossbeam messages" --> render
   handlers -- "queue a generation on a miss" --> workers
   workers -- "edit through the host lock" --> main
@@ -58,6 +59,8 @@ flowchart LR
   main -- "transport commands" --> feeder
   feeder -- "rtrb ring" --> audio
   audio -. "sample clock" .-> render
+  main -- "start_export: snapshot" --> export
+  export -- "frame_done, stage" --> ticker
 ```
 
 | Thread | Owns | Rules |
@@ -70,8 +73,9 @@ flowchart LR
 | progress ticker | `job-progress` emission | coalesces progress so a fast job cannot flood IPC |
 | `audio-feeder` | the `cpal` stream, audio readers, the mixer | may allocate and do I/O; above-normal priority ([09](09-audio-and-playback.md)) |
 | audio callback | the device buffer, the clock samples | no allocation, locks or I/O (ADR-0004); a counting-allocator test enforces it |
+| `export` (one at a time) and `encoder-probe` | the export's `OfflineRenderer`, its readers (at most 4, 2 hardware), NV12 pass, encoders, AAC, muxer; the session's encoder test encodes | dedicated job threads (`start_dedicated`); `export` runs at below-normal priority, with its readers, keeps the system awake (`SetThreadExecutionState`) and throttles to 20 frames/s while the preview plays; shares only the device and queue with the preview ([06](06-media-pipeline.md) §11) |
 
-Threads exist only for the preview, playback audio, `media://`, jobs and autosave. Everything the user does to the
+Threads exist only for the preview, playback audio, `media://`, jobs, export and autosave. Everything the user does to the
 project is a synchronous command on the main thread, applied to a clone and swapped in on success
 ([03](03-edit-model.md)).
 
@@ -196,7 +200,8 @@ exits ([05](05-ipc-contract.md) §4.5).
 | Native preview of the composed timeline at the playhead (render graph, hardware decode, HDR tone map, `seek`) | implemented (task 0320) |
 | Project files, autosave, recovery, recent list, preferences | implemented |
 | Playback with audio, transport, A/V sync | implemented (task 0330) |
-| Skimming and source preview, effects, export | **Target** (`docs/design/playback.md`, `render-graph.md`, `export.md`) |
+| Video export (MP4, H.264/HEVC, AAC; encoder probe and fallback; backend and IPC) | implemented (task 0390); the export dialog (UI) follows |
+| Skimming and source preview, effects | **Target** (`docs/design/playback.md`, `render-graph.md`) |
 | Updater: check, download, install on restart (backend, `updater.rs`) | implemented; signed artifacts + `latest.json` publishing in `release.yml` (`docs/updates.md`): implemented, untested until the first tagged release; release key: user step; update prompt (UI): task 0170. Code signing: dropped (ADR-0001 amendment) |
 
 ## Links

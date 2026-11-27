@@ -6,8 +6,9 @@ use std::path::Path;
 use app_core::command::HistoryLabel;
 use app_core::media::{FilmstripLayout, HdrTransfer, MediaAsset};
 use app_core::{
-    AudioProps, CanvasBackground, Clip, ClipId, ClipSource, Document, LinkId, MediaId, MediaKind,
-    Project, ProjectId, ProjectSettings, Rational, Time, Track, TrackId, TrackKind, VisualProps,
+    AudioProps, CanvasBackground, Clip, ClipId, ClipSource, Document, FrameRate, LinkId, MediaId,
+    MediaKind, Project, ProjectId, ProjectSettings, Rational, Time, Track, TrackId, TrackKind,
+    VisualProps,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -515,6 +516,220 @@ impl From<&engine::export::encoders::ProbeReport> for ExportCapabilities {
                 .collect(),
         }
     }
+}
+
+/// Output size of a video export: the canvas, or a short side of 480 ... 2160 px with the
+/// canvas aspect (export.md §4.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ExportResolution {
+    Project,
+    P480,
+    P720,
+    P1080,
+    P1440,
+    P2160,
+}
+
+impl From<ExportResolution> for engine::export::plan::ExportResolution {
+    fn from(resolution: ExportResolution) -> Self {
+        match resolution {
+            ExportResolution::Project => Self::Project,
+            ExportResolution::P480 => Self::P480,
+            ExportResolution::P720 => Self::P720,
+            ExportResolution::P1080 => Self::P1080,
+            ExportResolution::P1440 => Self::P1440,
+            ExportResolution::P2160 => Self::P2160,
+        }
+    }
+}
+
+/// Quality as a factor on YouTube's upload bitrate, or an explicit bitrate (500..=200000 kbps).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ExportQuality {
+    Low,
+    Recommended,
+    High,
+    Custom { kbps: u32 },
+}
+
+impl From<ExportQuality> for engine::export::plan::ExportQuality {
+    fn from(quality: ExportQuality) -> Self {
+        match quality {
+            ExportQuality::Low => Self::Low,
+            ExportQuality::Recommended => Self::Recommended,
+            ExportQuality::High => Self::High,
+            ExportQuality::Custom { kbps } => Self::Custom { kbps },
+        }
+    }
+}
+
+/// What the export dialog chose for a video export.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct VideoExportSettings {
+    pub codec: VideoCodec,
+    pub resolution: ExportResolution,
+    /// `None`: the project rate (60 fps if the project is faster). Otherwise 24, 25, 30, 50, 60
+    /// or the project rate.
+    pub frame_rate: Option<FrameRate>,
+    pub quality: ExportQuality,
+    /// `None`: automatic (the best available encoder, with fallback). `Some`: only this one.
+    pub encoder: Option<EncoderKind>,
+}
+
+impl From<VideoExportSettings> for engine::export::plan::VideoExportSettings {
+    fn from(settings: VideoExportSettings) -> Self {
+        Self {
+            codec: settings.codec.into(),
+            resolution: settings.resolution.into(),
+            frame_rate: settings.frame_rate,
+            quality: settings.quality.into(),
+            encoder: settings.encoder.map(Into::into),
+        }
+    }
+}
+
+/// What an export produces. Task 0400 adds audio-only and still-frame targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ExportTarget {
+    Video { settings: VideoExportSettings },
+}
+
+/// The settings of `checkExport` and `startExport`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportSettings {
+    /// Absolute path of the output file (folder + name); `.mp4` is appended when the name has no
+    /// extension. User data, not user-facing text.
+    pub path: String,
+    pub target: ExportTarget,
+}
+
+/// A finding of `checkExport`. All but `fileExists` and `lowDiskSpace` block the export.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ExportIssue {
+    /// Blocking: nothing on the timeline.
+    EmptyTimeline,
+    /// Blocking: not an absolute path, a reserved name or character, another extension than
+    /// `.mp4`, or a folder.
+    InvalidPath,
+    /// Blocking: the folder does not exist.
+    FolderMissing,
+    /// Blocking: the path is a media file of the project.
+    OutputIsSource { media: MediaId },
+    /// Blocking, one per media: a file the timeline uses is missing (offer Relink).
+    MediaOffline { media: MediaId },
+    /// Blocking (only after the probe): no available encoder for the codec, or the chosen
+    /// encoder is not available.
+    CodecUnavailable,
+    /// Blocking: the target file is open in another program.
+    FileLocked,
+    /// The target file exists: ask, then start with `overwrite`.
+    FileExists,
+    /// Warning: less free space than 1.2 x the estimated size.
+    LowDiskSpace,
+}
+
+impl ExportIssue {
+    /// The export cannot start while this is listed (`fileExists` needs `overwrite`).
+    pub fn is_blocking(self) -> bool {
+        !matches!(self, Self::FileExists | Self::LowDiskSpace)
+    }
+}
+
+/// The plan and the issues of `checkExport`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportCheck {
+    pub width: u32,
+    pub height: u32,
+    pub frame_rate: FrameRate,
+    /// Length of the exported video (the timeline rounded up to whole frames).
+    pub duration: Time,
+    pub frames: u32,
+    pub video_kbps: u32,
+    pub audio_kbps: u32,
+    pub sample_rate: u32,
+    /// Estimated file size in bytes, decimal string.
+    pub estimated_bytes: String,
+    /// Free bytes on the target volume (decimal string); `None` if the folder does not exist or
+    /// cannot be queried.
+    pub free_bytes: Option<String>,
+    /// The encoder automatic selection tries first (or the chosen one); `None` before the
+    /// session's probe finished or if none is available.
+    pub encoder: Option<EncoderKind>,
+    pub issues: Vec<ExportIssue>,
+    /// No blocking issue: `startExport` accepts these settings now (with `overwrite` if
+    /// `fileExists` is listed).
+    pub can_start: bool,
+}
+
+/// Why an export failed (export.md §5.3); a stable key the UI words its message from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub enum ExportErrorKind {
+    /// A source file is missing (`media` says which); the media panel shows it offline.
+    MediaOffline,
+    /// A source cannot be decoded (`media`).
+    DecodeFailed,
+    /// No encoder candidate opened at the export settings.
+    NoEncoder,
+    /// The encoder failed after the export started writing, or the chosen encoder failed.
+    EncoderFailed,
+    /// The output volume is full.
+    DiskFull,
+    /// Any other output error (access denied, folder gone, drive removed, final rename failed).
+    WriteFailed,
+    /// The GPU failed (device lost).
+    Gpu,
+    /// A bug; details are in the log.
+    Internal,
+}
+
+impl From<engine::export::run::ExportErrorKind> for ExportErrorKind {
+    fn from(kind: engine::export::run::ExportErrorKind) -> Self {
+        use engine::export::run::ExportErrorKind as Engine;
+        match kind {
+            Engine::MediaOffline => Self::MediaOffline,
+            Engine::DecodeFailed => Self::DecodeFailed,
+            Engine::NoEncoder => Self::NoEncoder,
+            Engine::EncoderFailed => Self::EncoderFailed,
+            Engine::DiskFull => Self::DiskFull,
+            Engine::WriteFailed => Self::WriteFailed,
+            Engine::Gpu => Self::Gpu,
+            Engine::Internal => Self::Internal,
+        }
+    }
+}
+
+/// How an export ended (`exportReport`); a cancelled export has no report.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ExportOutcome {
+    #[serde(rename_all = "camelCase")]
+    Done {
+        /// Absolute path of the finished file.
+        path: String,
+        /// File size in bytes, decimal string.
+        bytes: String,
+        /// The encoder that wrote the file (after any fallback).
+        encoder: EncoderKind,
+        elapsed_ms: u32,
+    },
+    #[serde(rename_all = "camelCase")]
+    Failed {
+        error: ExportErrorKind,
+        /// The media of `mediaOffline` and `decodeFailed`.
+        media: Option<MediaId>,
+        /// A finished file kept under its partial name because the final rename failed.
+        kept_path: Option<String>,
+        /// English, for the log only.
+        detail: String,
+    },
 }
 
 /// The result of one file of a media job, in the order the files were given.

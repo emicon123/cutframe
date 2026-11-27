@@ -33,8 +33,8 @@ use tauri_specta::{Builder, Event, collect_commands, collect_events};
 
 use crate::ipc::commands;
 use crate::ipc::events::{
-    AppInfoChanged, ExportCapabilitiesChanged, JobFinished, JobProgress, MediaJobReport,
-    OpenFileRequested, PlaybackTick, ProjectChanged, QuitRequested, UpdateProgress,
+    AppInfoChanged, ExportCapabilitiesChanged, ExportReport, JobFinished, JobProgress,
+    MediaJobReport, OpenFileRequested, PlaybackTick, ProjectChanged, QuitRequested, UpdateProgress,
 };
 use crate::jobs::{JobManager, Priority, TauriJobHost};
 use crate::preview::Preview;
@@ -127,6 +127,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             commands::install_update,
             commands::restart_app,
             commands::get_export_capabilities,
+            commands::check_export,
+            commands::start_export,
         ])
         .events(collect_events![
             ProjectChanged,
@@ -138,7 +140,8 @@ pub fn ipc_builder() -> Builder<tauri::Wry> {
             AppInfoChanged,
             UpdateProgress,
             PlaybackTick,
-            ExportCapabilitiesChanged
+            ExportCapabilitiesChanged,
+            ExportReport
         ])
         // The only place the UI gets the project file extension from (ADR-0002 amendment §1).
         .constant("PROJECT_FILE_EXTENSION", app_core::PROJECT_FILE_EXTENSION)
@@ -338,9 +341,10 @@ fn start_autosave(app: &AppHandle, recovery: RecoveryStore, interval: Option<Dur
     }
 }
 
-/// Closing the main window with unsaved changes is stopped and handed to the UI, which asks
-/// Save / Don't save / Cancel and calls `confirm_close`. A clean project closes right away, even if
-/// the webview does not respond.
+/// Closing the main window with unsaved changes or a running export is stopped and handed to the
+/// UI (`QuitRequested { unsaved, exporting }`), which asks, cancels the export and calls
+/// `confirm_close`. A clean project without an export closes right away, even if the webview
+/// does not respond.
 ///
 /// When the main window is gone (clean close, or `confirm_close` after Save / Don't save), the
 /// autosave thread deletes this session's recovery files.
@@ -360,10 +364,14 @@ fn on_window_event(window: &Window, event: &WindowEvent) {
     let Some(state) = window.try_state::<AppState>() else {
         return;
     };
-    if !state.is_dirty() {
+    let request = QuitRequested {
+        unsaved: state.is_dirty(),
+        exporting: state.exports.running().is_some(),
+    };
+    if !request.unsaved && !request.exporting {
         return;
     }
-    match QuitRequested.emit(window.app_handle()) {
+    match request.emit(window.app_handle()) {
         Ok(()) => api.prevent_close(),
         // Without the event nobody would ever close the window; let it close.
         Err(err) => tracing::error!(%err, "failed to ask the UI about unsaved changes"),

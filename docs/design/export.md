@@ -2,7 +2,8 @@
 
 - **Status:** Proposed (task 0380). Implemented by task 0390 (video export) and task 0400 (audio
   only, still frame, after-export actions). After implementation this file is a record, not a
-  spec.
+  spec. **0390 backend (steps 1-7) implemented 2026-11-27**; measured budgets and deviations in
+  §10.1. The export dialog (0390 frontend) follows.
 - **Date:** 2026-11-22
 - **Features:** prepares F1.86–F1.99, and F2.102 (estimated file size, shown in the dialog's
   summary line by 0390). Leaves F2.100 (range), F2.101 (saved presets), F2.104 beyond the Shorts
@@ -770,6 +771,54 @@ option set, average ms per frame for render, read-back wait, CPU copy, `send_fra
 
 If the 4K NVENC budget fails and the log shows read-back wait or CPU copy as the largest share,
 that is the trigger for the zero-copy path of §4.3 (task 0700).
+
+### 10.1 Measured (task 0390, 2026-11-27)
+
+Reference laptop (RTX 3070 Ti Laptop + Iris Xe), plugged in, release build, 60 s exports through
+`run_export` (`crates/engine/tests/export_run.rs` `export_budget`, ignored; `CUTFRAME_GPU`,
+`CUTFRAME_ENCODERS`, `CUTFRAME_EXPORT_BENCH_SOURCE`, `CUTFRAME_EXPORT_BENCH_SIZE`). Project: the
+source cut every 3 s on the main track, a PNG overlay for the whole length, a music clip per
+second; YouTube preset at Recommended. Per-frame shares from the `export finished` log line.
+
+| Scenario | Budget | Measured | Largest shares (ms per frame) |
+|---|---|---|---|
+| 1080p30 H.264 source → 1080p, QSV, render on the iGPU | ≥ 3× | **4.7×** (142 frames/s) | audio 3.4, render 1.2, encode + mux 0.6 |
+| The same, NVENC, render on the iGPU | ≥ 3× | **5.2×** (157 frames/s) | audio 3.3, render 1.1, encode + mux 1.0 |
+| The same, NVENC, render on the dGPU (not in the budget) | — | 6.5× (195 frames/s) | audio 3.2 |
+| 4K30 HEVC 10-bit HLG source → 4K H.264, NVENC (render on the dGPU) | ≥ 1× | **2.0×** (59 frames/s) | encode + mux 11.3, audio 3.2, copy 1.4 |
+| The same, QSV, render on the iGPU | ≥ 0.75× | **1.6×** (49 frames/s) | encode + mux 10.0, audio 3.2, read-back wait 2.8, copy 2.4 |
+| The same, NVENC with the iGPU rendering (not in the budget) | — | 2.0× (59 frames/s) | encode + mux 7.4, copy 2.6, read-back wait 2.0 |
+| 1080p30, Media Foundation software (`mfSoftware`) | ≥ 1× | **4.4×** (133 frames/s) | audio 3.5, encode + mux 1.6 |
+| 1080p30, OpenH264 | ≥ 1× | **3.0×** (91 frames/s) | encode + mux 5.1, audio 3.3 |
+| Playback of 60 s 1080p30 (iGPU, audio clock) while a 1080p export runs (NVENC, throttled) | 0 dropped | **0 dropped** of 1800 (vsync step avg 1.7 ms, max 6.1 ms; 0 audio underruns); the export did 1182 frames in those 60 s (19.7 frames/s) | — |
+| `cancel_job` to the loop returning, partial file gone (WARP test) | ≤ 500 ms | 2 ms | — |
+| Exported frame vs the NV12 planes of the offline render (WARP, OpenH264, High, golden scene of §11) | PSNR-Y ≥ 40 dB | **Y 51.9 dB** (worst frame 47.5), Cb 49.2, Cr 49.5 | — |
+
+Read-back is never the largest share, so the zero-copy trigger of §10 is not met. The constant
+~3.3 ms of audio per frame (the music test clips: one FLAC clip per second, a fresh reader each)
+is the biggest share at 1080p; it is not on the critical path for any budget. Not measured:
+`start_export` to the first `job-progress` with progress, the 4K export's extra GPU memory, paused
+edits during an export, a 4K portrait export on the automatic list.
+
+**Deviations from the design** (none changes a decision):
+
+- `ExportTarget::Video` carries `{ settings }` (the §6 allowance) for clearer TypeScript.
+- `start_export` and `check_export` are both `async` (the checks query the file system off the
+  main thread); the TypeScript signatures are the same.
+- `ExportRequest` has no `MediaPaths` and no `codec`: the renderer and the audio readers read the
+  assets' absolute paths from the snapshot (render-graph.md §4.5 deviation), and the candidates
+  carry the codec. It has `explicit_encoder` (no fallback, `encoderFailed`).
+- `run_export` applies the export frame rate to the snapshot itself (§4.1 says "the job").
+- Cancel is checked before every frame, while throttled and before the trailer, not in FFmpeg's
+  interrupt callback; measured cancel latency is far below 500 ms at 1080p, and a 4K frame takes
+  under 20 ms.
+- The free-space floor is also checked once before the first frame; a missing media file is
+  checked at Preparing for every clip (audio-only clips included), not only by the renderer.
+- Finishing without `overwrite` when the target appeared during the export keeps the finished
+  file under the partial name (`writeFailed` with `keptPath`) instead of replacing it.
+- Tests not built: the VFR portrait source → CFR export, the snapshot-isolation test (the job
+  only ever holds the `Arc<Project>` taken by `start_export`), the direct RGB comparison against
+  the `Rgba8` golden PNG, and the per-encoder hardware PSNR test.
 
 ## 11. Test plan
 

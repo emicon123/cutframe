@@ -131,6 +131,11 @@ impl Preview {
         self.engine.playback()
     }
 
+    /// The shared GPU context for export (ADR-0004 §6); `None` once the preview gave up.
+    pub fn gpu(&self) -> Option<Arc<engine::render::GpuContext>> {
+        self.engine.gpu()
+    }
+
     /// Moves the preview over `rect`. Shows it only if the UI has requested it; an empty `rect`
     /// hides it. Never shows a preview the UI has hidden (ADR-0005 §3).
     pub fn set_rect(&self, app: &AppHandle, rect: PreviewRect) {

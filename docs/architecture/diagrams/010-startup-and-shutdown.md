@@ -60,11 +60,12 @@ webview cannot block exit.
 ```mermaid
 stateDiagram-v2
   [*] --> Running
-  Running --> Clean: CloseRequested and !is_dirty
-  Running --> Asking: CloseRequested and is_dirty — emit quit-requested, prevent close
+  Running --> Clean: CloseRequested and !is_dirty and no export
+  Running --> Asking: CloseRequested and (is_dirty or exporting) — emit quit-requested, prevent close
   Asking --> Running: Cancel
   Asking --> Clean: Save succeeded then confirm-close
   Asking --> Clean: Don't save then confirm-close
+  Asking --> Clean: export cancelled (job-finished) then confirm-close
   Clean --> Destroyed: window destroyed
   Destroyed --> [*]: autosave thread deletes recovery envelope and lock, 2 s budget
   Running --> Crashed: process died

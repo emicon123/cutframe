@@ -377,8 +377,9 @@ export const commands = {
 	 */
 	setProjectSettings: (settings: ProjectSettings, options?: InvokeOptions) => __TAURI_INVOKE<null>("set_project_settings", { settings }, options),
 	/**
-	 *  Closes the main window without asking again. Call it after the unsaved-changes prompt that
-	 *  `quitRequested` started (Save succeeded, or Don't save).
+	 *  Closes the main window without asking again. Call it after the prompt that `quitRequested`
+	 *  started (Save succeeded, or Don't save; the running export was cancelled). A still running
+	 *  export is cancelled here too.
 	 */
 	confirmClose: (options?: InvokeOptions) => __TAURI_INVOKE<null>("confirm_close", undefined, options),
 	/**
@@ -538,12 +539,33 @@ export const commands = {
 	 *  cached result. Never blocks: call it when the export dialog opens.
 	 */
 	getExportCapabilities: (options?: InvokeOptions) => __TAURI_INVOKE<ExportCapabilities>("get_export_capabilities", undefined, options),
+	/**
+	 *  The plan and every issue of an export with `settings` (export.md §6): size, frame rate,
+	 *  duration, frame count, bitrates, estimated size, free space, the encoder automatic selection
+	 *  tries first, and `issues` (blocking ones make `canStart` false; `fileExists` needs
+	 *  `overwrite`). Checks the file system off the main thread and never changes the project.
+	 *  Starts the session's encoder probe if `getExportCapabilities` did not; until it finished,
+	 *  `encoder` is `None` and `codecUnavailable` is not reported. Errors: `invalidEdit` for a frame
+	 *  rate or custom bitrate outside the allowed values.
+	 */
+	checkExport: (settings: ExportSettings_Deserialize, options?: InvokeOptions) => __TAURI_INVOKE<ExportCheck_Serialize>("check_export", { settings }, options),
+	/**
+	 *  Starts exporting the current project with `settings` and returns the job id at once
+	 *  (export.md §5, §6). The export renders the snapshot of this moment: later edits do not
+	 *  change it. Progress arrives as `jobProgress` (stages `exportPreparing`, `exportEncoding` with
+	 *  progress = frames done / frames, `exportFinalizing`), then `exportReport` and `jobFinished`;
+	 *  `cancelJob` stops it and deletes the unfinished file. Errors: `busy` (an export is running),
+	 *  `fileExists` (the target exists and `overwrite` is false), `invalidEdit` (bad settings or a
+	 *  blocking issue of `checkExport`), `unavailable` (no GPU).
+	 */
+	startExport: (settings: ExportSettings_Deserialize, overwrite: boolean, options?: InvokeOptions) => __TAURI_INVOKE<JobId>("start_export", { settings, overwrite }, options),
 };
 
 /** Events */
 export const events = {
 	appInfoChanged: makeEvent<AppInfoChanged_Serialize, AppInfoChanged_Deserialize>("app-info-changed"),
 	exportCapabilitiesChanged: makeEvent<ExportCapabilitiesChanged, ExportCapabilitiesChanged>("export-capabilities-changed"),
+	exportReport: makeEvent<ExportReport_Serialize, ExportReport_Deserialize>("export-report"),
 	jobFinished: makeEvent<JobFinished, JobFinished>("job-finished"),
 	jobProgress: makeEvent<JobProgress_Serialize, JobProgress_Deserialize>("job-progress"),
 	mediaJobReport: makeEvent<MediaJobReport, MediaJobReport>("media-job-report"),
@@ -872,6 +894,215 @@ export type ExportCapabilities = {
  *  `getExportCapabilities`). Replaces what `getExportCapabilities` returned; `probed` is `true`.
  */
 export type ExportCapabilitiesChanged = ExportCapabilities;
+
+/**  The plan and the issues of `checkExport`. */
+export type ExportCheck = ExportCheck_Serialize | ExportCheck_Deserialize;
+
+/**  The plan and the issues of `checkExport`. */
+export type ExportCheck_Deserialize = {
+	width: number,
+	height: number,
+	frameRate: FrameRate,
+	/**  Length of the exported video (the timeline rounded up to whole frames). */
+	duration: Time,
+	frames: number,
+	videoKbps: number,
+	audioKbps: number,
+	sampleRate: number,
+	/**  Estimated file size in bytes, decimal string. */
+	estimatedBytes: string,
+	/**
+	 *  Free bytes on the target volume (decimal string); `None` if the folder does not exist or
+	 *  cannot be queried.
+	 */
+	freeBytes?: string | null,
+	/**
+	 *  The encoder automatic selection tries first (or the chosen one); `None` before the
+	 *  session's probe finished or if none is available.
+	 */
+	encoder?: EncoderKind | null,
+	issues: ExportIssue[],
+	/**
+	 *  No blocking issue: `startExport` accepts these settings now (with `overwrite` if
+	 *  `fileExists` is listed).
+	 */
+	canStart: boolean,
+};
+
+/**  The plan and the issues of `checkExport`. */
+export type ExportCheck_Serialize = {
+	width: number,
+	height: number,
+	frameRate: FrameRate,
+	/**  Length of the exported video (the timeline rounded up to whole frames). */
+	duration: Time,
+	frames: number,
+	videoKbps: number,
+	audioKbps: number,
+	sampleRate: number,
+	/**  Estimated file size in bytes, decimal string. */
+	estimatedBytes: string,
+	/**
+	 *  Free bytes on the target volume (decimal string); `None` if the folder does not exist or
+	 *  cannot be queried.
+	 */
+	freeBytes: string | null,
+	/**
+	 *  The encoder automatic selection tries first (or the chosen one); `None` before the
+	 *  session's probe finished or if none is available.
+	 */
+	encoder: EncoderKind | null,
+	issues: ExportIssue[],
+	/**
+	 *  No blocking issue: `startExport` accepts these settings now (with `overwrite` if
+	 *  `fileExists` is listed).
+	 */
+	canStart: boolean,
+};
+
+/**  Why an export failed (export.md §5.3); a stable key the UI words its message from. */
+export type ExportErrorKind = 
+/**  A source file is missing (`media` says which); the media panel shows it offline. */
+"mediaOffline" | 
+/**  A source cannot be decoded (`media`). */
+"decodeFailed" | 
+/**  No encoder candidate opened at the export settings. */
+"noEncoder" | 
+/**  The encoder failed after the export started writing, or the chosen encoder failed. */
+"encoderFailed" | 
+/**  The output volume is full. */
+"diskFull" | 
+/**  Any other output error (access denied, folder gone, drive removed, final rename failed). */
+"writeFailed" | 
+/**  The GPU failed (device lost). */
+"gpu" | 
+/**  A bug; details are in the log. */
+"internal";
+
+/**  A finding of `checkExport`. All but `fileExists` and `lowDiskSpace` block the export. */
+export type ExportIssue = 
+/**  Blocking: nothing on the timeline. */
+{ kind: "emptyTimeline" } | 
+/**
+ *  Blocking: not an absolute path, a reserved name or character, another extension than
+ *  `.mp4`, or a folder.
+ */
+{ kind: "invalidPath" } | 
+/**  Blocking: the folder does not exist. */
+{ kind: "folderMissing" } | 
+/**  Blocking: the path is a media file of the project. */
+{ kind: "outputIsSource"; media: MediaId } | 
+/**  Blocking, one per media: a file the timeline uses is missing (offer Relink). */
+{ kind: "mediaOffline"; media: MediaId } | 
+/**
+ *  Blocking (only after the probe): no available encoder for the codec, or the chosen
+ *  encoder is not available.
+ */
+{ kind: "codecUnavailable" } | 
+/**  Blocking: the target file is open in another program. */
+{ kind: "fileLocked" } | 
+/**  The target file exists: ask, then start with `overwrite`. */
+{ kind: "fileExists" } | 
+/**  Warning: less free space than 1.2 x the estimated size. */
+{ kind: "lowDiskSpace" };
+
+/**  How an export ended (`exportReport`); a cancelled export has no report. */
+export type ExportOutcome = ExportOutcome_Serialize | ExportOutcome_Deserialize;
+
+/**  How an export ended (`exportReport`); a cancelled export has no report. */
+export type ExportOutcome_Deserialize = { kind: "done"; 
+/**  Absolute path of the finished file. */
+path: string; 
+/**  File size in bytes, decimal string. */
+bytes: string; 
+/**  The encoder that wrote the file (after any fallback). */
+encoder: EncoderKind; elapsedMs: number } | { kind: "failed"; error: ExportErrorKind; 
+/**  The media of `mediaOffline` and `decodeFailed`. */
+media?: MediaId | null; 
+/**  A finished file kept under its partial name because the final rename failed. */
+keptPath?: string | null; 
+/**  English, for the log only. */
+detail: string };
+
+/**  How an export ended (`exportReport`); a cancelled export has no report. */
+export type ExportOutcome_Serialize = { kind: "done"; 
+/**  Absolute path of the finished file. */
+path: string; 
+/**  File size in bytes, decimal string. */
+bytes: string; 
+/**  The encoder that wrote the file (after any fallback). */
+encoder: EncoderKind; elapsedMs: number } | { kind: "failed"; error: ExportErrorKind; 
+/**  The media of `mediaOffline` and `decodeFailed`. */
+media: MediaId | null; 
+/**  A finished file kept under its partial name because the final rename failed. */
+keptPath: string | null; 
+/**  English, for the log only. */
+detail: string };
+
+/**  Quality as a factor on YouTube's upload bitrate, or an explicit bitrate (500..=200000 kbps). */
+export type ExportQuality = { kind: "low" } | { kind: "recommended" } | { kind: "high" } | { kind: "custom"; kbps: number };
+
+/**
+ *  How an export ended, emitted once just before the export's `job-finished`. Not emitted for a
+ *  cancelled export (its `job-finished` carries `cancelled`).
+ */
+export type ExportReport = ExportReport_Serialize | ExportReport_Deserialize;
+
+/**
+ *  How an export ended, emitted once just before the export's `job-finished`. Not emitted for a
+ *  cancelled export (its `job-finished` carries `cancelled`).
+ */
+export type ExportReport_Deserialize = {
+	jobId: JobId,
+	outcome: ExportOutcome_Deserialize,
+};
+
+/**
+ *  How an export ended, emitted once just before the export's `job-finished`. Not emitted for a
+ *  cancelled export (its `job-finished` carries `cancelled`).
+ */
+export type ExportReport_Serialize = {
+	jobId: JobId,
+	outcome: ExportOutcome_Serialize,
+};
+
+/**
+ *  Output size of a video export: the canvas, or a short side of 480 ... 2160 px with the
+ *  canvas aspect (export.md §4.1).
+ */
+export type ExportResolution = "project" | "p480" | "p720" | "p1080" | "p1440" | "p2160";
+
+/**  The settings of `checkExport` and `startExport`. */
+export type ExportSettings = ExportSettings_Serialize | ExportSettings_Deserialize;
+
+/**  The settings of `checkExport` and `startExport`. */
+export type ExportSettings_Deserialize = {
+	/**
+	 *  Absolute path of the output file (folder + name); `.mp4` is appended when the name has no
+	 *  extension. User data, not user-facing text.
+	 */
+	path: string,
+	target: ExportTarget_Deserialize,
+};
+
+/**  The settings of `checkExport` and `startExport`. */
+export type ExportSettings_Serialize = {
+	/**
+	 *  Absolute path of the output file (folder + name); `.mp4` is appended when the name has no
+	 *  extension. User data, not user-facing text.
+	 */
+	path: string,
+	target: ExportTarget_Serialize,
+};
+
+/**  What an export produces. Task 0400 adds audio-only and still-frame targets. */
+export type ExportTarget = ExportTarget_Serialize | ExportTarget_Deserialize;
+
+/**  What an export produces. Task 0400 adds audio-only and still-frame targets. */
+export type ExportTarget_Deserialize = { kind: "video"; settings: VideoExportSettings_Deserialize };
+
+/**  What an export produces. Task 0400 adds audio-only and still-frame targets. */
+export type ExportTarget_Serialize = { kind: "video"; settings: VideoExportSettings_Serialize };
 
 /**
  *  How a video's filmstrip is laid out: frame `i` shows media time `i * interval`, and tile `n`
@@ -1612,11 +1843,18 @@ export type PropertyValue =
 { property: "preservePitch"; value: boolean };
 
 /**
- *  The user tried to close the main window while the project has unsaved changes. The close was
- *  stopped: ask Save / Don't save / Cancel, then call `confirmClose` to close or do nothing to stay
- *  open. A clean project closes without this event.
+ *  The user tried to close the main window while the project has unsaved changes or an export
+ *  runs. The close was stopped: ask (Save / Don't save / Cancel; "An export is running. Cancel it
+ *  and quit?"), cancel the export with `cancelJob` and wait for its `jobFinished` (at most 2 s),
+ *  then call `confirmClose` to close, or do nothing to stay open. A clean project with no export
+ *  closes without this event.
  */
-export type QuitRequested = null;
+export type QuitRequested = {
+	/**  The project has unsaved changes. */
+	unsaved: boolean,
+	/**  An export is running. */
+	exporting: boolean,
+};
 
 /**
  *  An exact positive ratio such as a source frame rate (30000/1001), a pixel aspect (4/3) or an
@@ -1878,6 +2116,37 @@ export type VideoAccelerationView = {
 /**  Video codec of an export (export.md §6). */
 export type VideoCodec = "h264" | "hevc";
 
+/**  What the export dialog chose for a video export. */
+export type VideoExportSettings = VideoExportSettings_Serialize | VideoExportSettings_Deserialize;
+
+/**  What the export dialog chose for a video export. */
+export type VideoExportSettings_Deserialize = {
+	codec: VideoCodec,
+	resolution: ExportResolution,
+	/**
+	 *  `None`: the project rate (60 fps if the project is faster). Otherwise 24, 25, 30, 50, 60
+	 *  or the project rate.
+	 */
+	frameRate?: FrameRate | null,
+	quality: ExportQuality,
+	/**  `None`: automatic (the best available encoder, with fallback). `Some`: only this one. */
+	encoder?: EncoderKind | null,
+};
+
+/**  What the export dialog chose for a video export. */
+export type VideoExportSettings_Serialize = {
+	codec: VideoCodec,
+	resolution: ExportResolution,
+	/**
+	 *  `None`: the project rate (60 fps if the project is faster). Otherwise 24, 25, 30, 50, 60
+	 *  or the project rate.
+	 */
+	frameRate: FrameRate | null,
+	quality: ExportQuality,
+	/**  `None`: automatic (the best available encoder, with fallback). `Some`: only this one. */
+	encoder: EncoderKind | null,
+};
+
 /**  Visual properties of a clip that draws (everything on video and text tracks). */
 export type VisualProps = VisualProps_Serialize | VisualProps_Deserialize;
 
@@ -2023,6 +2292,8 @@ export type MockCommandHandlers = {
     installUpdate: () => null | Promise<null>,
     restartApp: () => null | Promise<null>,
     getExportCapabilities: () => ExportCapabilities | Promise<ExportCapabilities>,
+    checkExport: (args: { settings: ExportSettings_Deserialize }) => ExportCheck_Serialize | Promise<ExportCheck_Serialize>,
+    startExport: (args: { settings: ExportSettings_Deserialize; overwrite: boolean }) => JobId | Promise<JobId>,
 };
 
 /**
@@ -2123,6 +2394,8 @@ export function mockCommands(handlers: Partial<MockCommandHandlers> = {}): void 
             case "install_update": return mockCommandHandler(mockHandlers.installUpdate, "install_update", args);
             case "restart_app": return mockCommandHandler(mockHandlers.restartApp, "restart_app", args);
             case "get_export_capabilities": return mockCommandHandler(mockHandlers.getExportCapabilities, "get_export_capabilities", args);
+            case "check_export": return mockCommandHandler(mockHandlers.checkExport, "check_export", args);
+            case "start_export": return mockCommandHandler(mockHandlers.startExport, "start_export", args);
             default: throw new Error(`No mock handler registered for command '${cmd}'`);
         }
     }, { shouldMockEvents: true });

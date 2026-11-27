@@ -7,8 +7,8 @@ use engine::transport::PlayState;
 
 use super::IpcError;
 use super::types::{
-    AppInfo, ExportCapabilities, JobId, JobStage, MediaFileResult, PlaybackTarget, ProjectState,
-    TransportStateView,
+    AppInfo, ExportCapabilities, ExportOutcome, JobId, JobStage, MediaFileResult, PlaybackTarget,
+    ProjectState, TransportStateView,
 };
 
 /// The session's encoder probe finished (once per session, after the first
@@ -21,11 +21,28 @@ pub struct ExportCapabilitiesChanged(pub ExportCapabilities);
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type, Event)]
 pub struct ProjectChanged(pub ProjectState);
 
-/// The user tried to close the main window while the project has unsaved changes. The close was
-/// stopped: ask Save / Don't save / Cancel, then call `confirmClose` to close or do nothing to stay
-/// open. A clean project closes without this event.
-#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, Event)]
-pub struct QuitRequested;
+/// How an export ended, emitted once just before the export's `job-finished`. Not emitted for a
+/// cancelled export (its `job-finished` carries `cancelled`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type, Event)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportReport {
+    pub job_id: JobId,
+    pub outcome: ExportOutcome,
+}
+
+/// The user tried to close the main window while the project has unsaved changes or an export
+/// runs. The close was stopped: ask (Save / Don't save / Cancel; "An export is running. Cancel it
+/// and quit?"), cancel the export with `cancelJob` and wait for its `jobFinished` (at most 2 s),
+/// then call `confirmClose` to close, or do nothing to stay open. A clean project with no export
+/// closes without this event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Event)]
+#[serde(rename_all = "camelCase")]
+pub struct QuitRequested {
+    /// The project has unsaved changes.
+    pub unsaved: bool,
+    /// An export is running.
+    pub exporting: bool,
+}
 
 /// Progress of a running job, at most 10 Hz per job, only when it moved. Never emitted after the
 /// job's `job-finished`.

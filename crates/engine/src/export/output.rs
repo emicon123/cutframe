@@ -121,6 +121,32 @@ pub fn folder_exists(target: &Path) -> bool {
     target.parent().is_some_and(Path::is_dir)
 }
 
+/// Bytes the current user may still write on the volume that holds `folder`; `None` if it
+/// cannot be queried (the folder is gone, or not on Windows).
+pub fn free_space(folder: &Path) -> Option<u64> {
+    #[cfg(windows)]
+    {
+        let name = windows::core::HSTRING::from(folder);
+        let mut available = 0u64;
+        // SAFETY: `name` is a NUL-terminated wide string that outlives the call; the one out
+        // pointer is a valid `u64`, the others are null (allowed).
+        let result = unsafe {
+            windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW(
+                &name,
+                Some(&raw mut available),
+                None,
+                None,
+            )
+        };
+        result.ok().map(|()| available)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = folder;
+        None
+    }
+}
+
 /// What is at the target path now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TargetState {
@@ -325,6 +351,11 @@ mod tests {
 
         assert!(folder_exists(&target));
         assert!(!folder_exists(&dir.join("missing").join("clip.mp4")));
+        #[cfg(windows)]
+        {
+            assert!(free_space(&dir).is_some_and(|bytes| bytes > 0));
+            assert_eq!(free_space(&dir.join("missing")), None);
+        }
         assert_eq!(target_state(&target), TargetState::Free);
         assert_eq!(target_state(&dir), TargetState::NotAFile);
 

@@ -174,12 +174,34 @@ JS API has no capability; the endpoint and key are `plugins.updater` in `tauri.c
 | Command | Arguments | Returns | Notes |
 |---|---|---|---|
 | `getExportCapabilities` | — | `ExportCapabilities { probed, encoders: EncoderStatus[] }` | Never blocks. The first call of a session starts the encoder probe (a job with stage `probingEncoders`, about 1-3 s of test encodes) and returns `probed: false` with no encoders; `export-capabilities-changed` brings the result once; later calls return the cache |
+| `checkExport` | `settings: ExportSettings` | `ExportCheck` | Async, file-system queries on a blocking worker; never touches the `Document`. Starts the probe if needed; before it finished `encoder` is `null` and `codecUnavailable` is not reported. `invalidEdit` for a frame rate or custom bitrate outside the allowed values |
+| `startExport` | `settings: ExportSettings`, `overwrite: bool` | `JobId` | Async. Re-runs the check on the current snapshot and starts the export job at once. `busy` while one runs, `fileExists` when the target exists without `overwrite`, `invalidEdit` for bad settings or a blocking issue, `unavailable` without a GPU |
 
 `EncoderStatus` is `{ codec: "h264" \| "hevc", encoder, hardware, available }`, one per candidate in
 priority order, H.264 first; `encoder` is `nvenc`, `qsv`, `amf`, `mfHardware`, `mfSoftware` or
-`openH264` (the same keys as `CUTFRAME_ENCODERS`). `checkExport` and `startExport` follow with the
-rest of task 0390. Backend: `src-tauri/src/export.rs` (`EncoderProbe`, cached in `AppState`),
-`engine::export::encoders` ([06](06-media-pipeline.md) §11).
+`openH264` (the same keys as `CUTFRAME_ENCODERS`).
+
+- **`ExportSettings`** is `{ path, target: { kind: "video", settings: VideoExportSettings } }`;
+  `path` is folder + name, `.mp4` is appended when the name has no extension.
+  `VideoExportSettings` is `{ codec, resolution: "project" | "p480" | ... | "p2160", frameRate?,
+  quality: { kind: "low" | "recommended" | "high" } | { kind: "custom", kbps }, encoder? }`
+  (`encoder: null` = automatic with fallback, a value = only that encoder).
+- **`ExportCheck`** is `{ width, height, frameRate, duration, frames, videoKbps, audioKbps,
+  sampleRate, estimatedBytes, freeBytes?, encoder?, issues, canStart }`; byte counts are decimal
+  strings. `issues` lists every `ExportIssue` at once: blocking `emptyTimeline`, `invalidPath`,
+  `folderMissing`, `outputIsSource { media }`, `mediaOffline { media }` (one per media),
+  `codecUnavailable`, `fileLocked`; non-blocking `fileExists` (start with `overwrite`) and
+  `lowDiskSpace` (free < 1.2 x estimate).
+- **The export job** reports `job-progress` with the stages `exportPreparing` (probe wait,
+  encoder, muxer; `progress: null`), `exportEncoding` (`progress` = frames handed to the encoder /
+  frames; never goes back after an encoder fallback) and `exportFinalizing` (`null`). The ETA is
+  view math on that stream (export.md §5.1). It ends with `export-report` then `job-finished`
+  (below); `cancelJob` stops it within a frame and deletes the partial file (no report, result
+  `cancelled`). One export at a time (`ExportSlot`); it renders the snapshot taken by
+  `startExport`, so edits, undo and opening another project do not affect it.
+
+Backend: `src-tauri/src/export/` (`probe.rs`: `EncoderProbe`, cached in `AppState`; `mod.rs`:
+`check`, `prepare`, `start`, the job), `engine::export` ([06](06-media-pipeline.md) §11).
 
 ### 4.7 Preview placement
 
@@ -251,16 +273,26 @@ jobs are logged in `JobHandle::finish` (`warn`; `cancelled` at `info`). Log file
 | `job-finished` | `{ jobId, result: { Ok: null } \| { Err: IpcError } }` | Once per job; a cancelled job reports `Err` with kind `cancelled` |
 | `media-job-report` | `{ jobId, files: MediaFileResult[] }` | Just before `job-finished` for an import or relink; **not** for a cancelled job |
 | `open-file-requested` | `{ path }` | A second launch passed a `.cutframe` path |
-| `quit-requested` | — | Close was stopped because the project is dirty |
+| `quit-requested` | `{ unsaved, exporting }` | Close was stopped because the project is dirty or an export runs |
 | `app-info-changed` | `AppInfo` | The GPU was lost/restarted or the preview gave up |
 | `export-capabilities-changed` | `ExportCapabilities` | Once per session, when the encoder probe started by the first `getExportCapabilities` finished (before its `job-finished`) |
+| `export-report` | `{ jobId, outcome }` | Once per export, just before its `job-finished`; not for a cancelled export. `outcome` is `{ kind: "done", path, bytes, encoder, elapsedMs }` or `{ kind: "failed", error: ExportErrorKind, media?, keptPath?, detail }` |
 | `update-progress` | `{ state: "downloading", downloaded, total? }` \| `{ state: "ready" }` \| `{ state: "failed", error }` | During an `installUpdate` download, ≤ 10 Hz; byte counts are decimal strings; exactly one `ready` or `failed` per download |
 | `playback-tick` | `PlaybackTick { time, state, rate, looping, seek, droppedFrames, target }` | From the render thread: at most 60 Hz while playing, and once after every play, pause, shuttle, seek, step, loop toggle, preroll end, end of playback, project replacement and audio device loss |
 
 `quit-requested` and `confirmClose` are one protocol: the window's `CloseRequested` handler closes a
-clean project immediately and, for a dirty one, cancels the close and emits the event; the UI asks
-Save / Don't save / Cancel and calls `confirmClose` only for the first two
+clean project with no export immediately; otherwise it cancels the close and emits the event with
+`unsaved` and `exporting`. The UI asks (Save / Don't save / Cancel; "An export is running. Cancel
+it and quit?"), cancels the export with `cancelJob` and waits for its `job-finished` (at most 2 s),
+then calls `confirmClose`, which also cancels a still running export
 ([04](04-persistence-and-lifecycle.md) §11).
+
+`ExportErrorKind` keys (export.md §5.3): `mediaOffline` and `decodeFailed` (with `media`),
+`noEncoder`, `encoderFailed` (after the first packet, or the explicitly chosen encoder),
+`diskFull` (`ENOSPC` or free space below 64 MiB), `writeFailed` (with `keptPath` when the finished
+file could not be renamed), `gpu`, `internal`. A failed export's `job-finished` is `Err` with
+`io` for `diskFull` and `writeFailed`, `internal` otherwise; the UI words the error from the
+report. A `mediaOffline` failure also marks the media offline (`project-changed`).
 
 ## 7. View types
 

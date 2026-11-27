@@ -272,9 +272,10 @@ sequenceDiagram
   UI->>Rust: listRecovery() → prompt if any
   Note over UI,Rust: File → New / Open: unsaved prompt first
   UI->>Rust: close the window
-  Rust->>Rust: CloseRequested: clean? close : emit quit-requested and cancel
-  UI->>UI: Save / Don't save / Cancel
-  UI->>Rust: confirmClose() only for Save / Don't save
+  Rust->>Rust: CloseRequested: clean and no export? close : emit quit-requested { unsaved, exporting } and cancel
+  UI->>UI: Save / Don't save / Cancel; a running export: cancel it and quit?
+  UI->>Rust: cancelJob(export), wait for its job-finished (at most 2 s)
+  UI->>Rust: confirmClose() only for Save / Don't save (it also cancels a running export)
   Rust->>Rust: window destroyed → autosave Shutdown (≤ 2 s)
 ```
 
@@ -287,8 +288,8 @@ Details that are easy to break:
   file action while one is running is ignored.
 - **A double-clicked project while the app runs** arrives as `open-file-requested`; it is handled
   like File → Open, after the prompt.
-- **Quit** only needs the UI for a dirty project. A clean project closes even if the webview is
-  unresponsive.
+- **Quit** only needs the UI for a dirty project or a running export. A clean project without an
+  export closes even if the webview is unresponsive.
 - **The home screen holds a real, empty untitled project.** The model always has one document; Home
   is a view, not the absence of a project.
 - **The window title** is `*<name> - Cutframe` while dirty, `<name> - Cutframe` otherwise.

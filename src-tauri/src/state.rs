@@ -14,7 +14,7 @@ use tauri::AppHandle;
 use tauri_specta::Event;
 
 use crate::autosave::{AutosaveHandle, Msg};
-use crate::export::EncoderProbe;
+use crate::export::{EncoderProbe, ExportSlot};
 use crate::ipc::IpcError;
 use crate::ipc::events::{PlaybackTick, ProjectChanged};
 use crate::ipc::types::ProjectState;
@@ -41,7 +41,7 @@ pub struct AppState {
     recovery: RecoveryStore,
     /// Set in `setup` once the autosave thread runs; tests run without it.
     autosave: OnceLock<AutosaveHandle>,
-    /// Background work (import, previews; export later).
+    /// Background work (import, previews, the encoder probe, export).
     pub jobs: JobManager,
     /// Posters, filmstrips and waveforms for the media panel (`media://`).
     pub previews: Arc<Previews>,
@@ -56,6 +56,8 @@ pub struct AppState {
     media_check: Mutex<Option<JobId>>,
     /// The session's export encoder probe (export.md §4.4).
     pub encoder_probe: Arc<EncoderProbe>,
+    /// The running export (one at a time, export.md §5.1).
+    pub exports: Arc<ExportSlot>,
 }
 
 /// The preferences in effect and where they live (design `preferences.md` §4).
@@ -201,6 +203,7 @@ impl AppState {
             recent_lock: tauri::async_runtime::Mutex::new(()),
             media_check: Mutex::new(None),
             encoder_probe: Arc::default(),
+            exports: Arc::default(),
         }
     }
 

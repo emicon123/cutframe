@@ -9,6 +9,8 @@
 //!   encoder frames (§4.3).
 //! - [`audio`]: AAC-LC from the shared `mix_block` at the project rate (§4.5).
 //! - [`mux`]: the MP4 muxer with `+faststart`, colour tags and `hvc1` (§4.6).
+//! - [`run`]: the export loop: render, NV12, encode, mux, encoder fallback, cancel, throttle,
+//!   disk floor, partial file and rename, the error taxonomy (§4.2, §5).
 
 pub mod audio;
 pub mod encoders;
@@ -16,3 +18,4 @@ pub mod mux;
 pub mod nv12;
 pub mod output;
 pub mod plan;
+pub mod run;

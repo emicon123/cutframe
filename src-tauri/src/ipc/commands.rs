@@ -22,9 +22,11 @@ use uuid::Uuid;
 use super::IpcError;
 use super::events::PlaybackTick;
 use super::types::{
-    AboutInfo, AppInfo, BuildProfile, CacheInfo, ExportCapabilities, JobId, PreviewMode,
-    PreviewRect, ProjectState, RecentProject, RecoveryEntry, SeekMode, ShuttleKey, UpdateInfo,
+    AboutInfo, AppInfo, BuildProfile, CacheInfo, ExportCapabilities, ExportCheck, ExportSettings,
+    JobId, PreviewMode, PreviewRect, ProjectState, RecentProject, RecoveryEntry, SeekMode,
+    ShuttleKey, UpdateInfo,
 };
+use crate::export;
 use crate::import;
 use crate::logging::LogDir;
 use crate::media_paths;
@@ -1094,12 +1096,16 @@ pub async fn discard_recovery(state: State<'_, AppState>, id: Uuid) -> Result<()
         .map_err(|err| IpcError::io(&err))
 }
 
-/// Closes the main window without asking again. Call it after the unsaved-changes prompt that
-/// `quitRequested` started (Save succeeded, or Don't save).
+/// Closes the main window without asking again. Call it after the prompt that `quitRequested`
+/// started (Save succeeded, or Don't save; the running export was cancelled). A still running
+/// export is cancelled here too.
 #[tauri::command]
 #[specta::specta]
 #[tracing::instrument(skip_all, err(Debug, level = "warn"))]
 pub fn confirm_close(app: AppHandle) -> Result<(), IpcError> {
+    if let Some(state) = app.try_state::<AppState>() {
+        state.exports.cancel(&state.jobs);
+    }
     let window = app
         .get_webview_window(crate::MAIN_WINDOW)
         .ok_or_else(|| IpcError::Internal("main window not found".into()))?;
@@ -1702,4 +1708,74 @@ pub async fn restart_app(app: AppHandle) -> Result<(), IpcError> {
 #[specta::specta]
 pub fn get_export_capabilities(state: State<'_, AppState>) -> ExportCapabilities {
     state.encoder_probe.capabilities(&state.jobs)
+}
+
+/// The plan and every issue of an export with `settings` (export.md §6): size, frame rate,
+/// duration, frame count, bitrates, estimated size, free space, the encoder automatic selection
+/// tries first, and `issues` (blocking ones make `canStart` false; `fileExists` needs
+/// `overwrite`). Checks the file system off the main thread and never changes the project.
+/// Starts the session's encoder probe if `getExportCapabilities` did not; until it finished,
+/// `encoder` is `None` and `codecUnavailable` is not reported. Errors: `invalidEdit` for a frame
+/// rate or custom bitrate outside the allowed values.
+#[tauri::command]
+#[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
+pub async fn check_export(
+    state: State<'_, AppState>,
+    settings: ExportSettings,
+) -> Result<ExportCheck, IpcError> {
+    let project = state.snapshot();
+    let report = state.encoder_probe.report_or_start(&state.jobs);
+    tauri::async_runtime::spawn_blocking(move || {
+        export::check(&project, &settings, report.as_deref(), &export::free_space)
+            .map(|checked| checked.check)
+    })
+    .await?
+}
+
+/// Starts exporting the current project with `settings` and returns the job id at once
+/// (export.md §5, §6). The export renders the snapshot of this moment: later edits do not
+/// change it. Progress arrives as `jobProgress` (stages `exportPreparing`, `exportEncoding` with
+/// progress = frames done / frames, `exportFinalizing`), then `exportReport` and `jobFinished`;
+/// `cancelJob` stops it and deletes the unfinished file. Errors: `busy` (an export is running),
+/// `fileExists` (the target exists and `overwrite` is false), `invalidEdit` (bad settings or a
+/// blocking issue of `checkExport`), `unavailable` (no GPU).
+#[tauri::command]
+#[specta::specta]
+#[tracing::instrument(skip_all, err(Debug, level = "warn"))]
+pub async fn start_export(
+    state: State<'_, AppState>,
+    settings: ExportSettings,
+    overwrite: bool,
+) -> Result<JobId, IpcError> {
+    if state.exports.running().is_some() {
+        return Err(IpcError::Busy("an export is running".into()));
+    }
+    let preview = state
+        .preview
+        .as_ref()
+        .filter(|preview| preview.is_available());
+    let gpu = preview
+        .and_then(|preview| preview.gpu())
+        .ok_or_else(|| IpcError::Unavailable("no GPU for the export".into()))?;
+    let transport = preview.map(|preview| std::sync::Arc::clone(preview.playback().shared()));
+    let project = state.snapshot();
+    let report = state.encoder_probe.report_or_start(&state.jobs);
+    let prepared = tauri::async_runtime::spawn_blocking(move || {
+        export::prepare(
+            project,
+            &settings,
+            overwrite,
+            report.as_deref(),
+            &export::free_space,
+        )
+    })
+    .await??;
+    let env = export::ExportEnv {
+        gpu,
+        probe: std::sync::Arc::clone(&state.encoder_probe),
+        slot: std::sync::Arc::clone(&state.exports),
+        transport,
+    };
+    export::start(&state.jobs, env, prepared)
 }

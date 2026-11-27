@@ -18,11 +18,17 @@
 //! and `CUTFRAME_PLAYBACK_REVERSE=1` set the main clip's speed and direction
 //! (`clip-speed-audio.md` §8: 2x and 0.5x, reverse 1080p and 4K through the GOP-reverse reader).
 //! The run prints the process's working set before and its peak after.
+//!
+//! `CUTFRAME_PLAYBACK_EXPORT=1` runs a 1080p export of the same project (YouTube 1080p,
+//! Recommended, the encoders of `CUTFRAME_ENCODERS`) on a below-normal thread on the same device
+//! while playing, throttled by the transport as in the app (export.md §4.7, §10: playback keeps
+//! its budget).
 
 #![cfg(windows)]
 
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use app_core::media::MediaPath;
@@ -56,6 +62,80 @@ fn media_clip(media: MediaId, start: Time, duration: Time, source_in: Time) -> C
         source: ClipSource::media_at(media, source_in),
         ..Clip::color("V", start, duration, Rgba8::BLACK)
     }
+}
+
+/// The export observer of `CUTFRAME_PLAYBACK_EXPORT`: throttled while the transport plays,
+/// cancelled when playback ends.
+struct BackgroundExport {
+    transport: Arc<TransportShared>,
+    stop: AtomicBool,
+    frames: AtomicU32,
+}
+
+impl engine::export::run::ExportObserver for BackgroundExport {
+    fn cancelled(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
+    }
+    fn stage(&self, _: engine::export::run::ExportStage) {}
+    fn set_total(&self, _: u32) {}
+    fn frame_done(&self) {
+        self.frames.fetch_add(1, Ordering::Relaxed);
+    }
+    fn playback_active(&self) -> bool {
+        self.transport.is_playing()
+    }
+}
+
+/// Starts the export of `project` on its own below-normal thread.
+fn start_export(
+    gpu: &Arc<GpuContext>,
+    project: &Arc<Project>,
+    observer: &Arc<BackgroundExport>,
+) -> std::thread::JoinHandle<()> {
+    use engine::export::encoders::{EncoderFilter, ProbeReport};
+    use engine::export::plan::{
+        ExportQuality, ExportResolution, VideoCodec, VideoExportSettings, plan_video_export,
+    };
+    let report = ProbeReport::run(&EncoderFilter::from_env());
+    let settings = VideoExportSettings {
+        codec: VideoCodec::H264,
+        resolution: ExportResolution::P1080,
+        frame_rate: None,
+        quality: ExportQuality::Recommended,
+        encoder: None,
+    };
+    let request = engine::export::run::ExportRequest {
+        project: Arc::clone(project),
+        plan: plan_video_export(project, &settings).expect("plan"),
+        candidates: report.candidates(VideoCodec::H264, None),
+        explicit_encoder: false,
+        output: std::env::temp_dir().join(format!(
+            "cutframe-playback-export-{}.mp4",
+            std::process::id()
+        )),
+        overwrite: true,
+    };
+    eprintln!(
+        "background export with {:?}",
+        request.candidates.first().map(|c| c.kind)
+    );
+    let (gpu, observer) = (Arc::clone(gpu), Arc::clone(observer));
+    std::thread::Builder::new()
+        .name("export".into())
+        .spawn(move || {
+            engine::media::readers::lower_thread_priority();
+            let output = request.output.clone();
+            let started = Instant::now();
+            let result = engine::export::run::run_export(gpu, request, &*observer);
+            eprintln!(
+                "background export: {} frames in {:?}, {:?}",
+                observer.frames.load(Ordering::Relaxed),
+                started.elapsed(),
+                result.map(|s| s.encoder)
+            );
+            let _ = std::fs::remove_file(output);
+        })
+        .expect("spawn the export thread")
 }
 
 fn env(name: &str) -> Option<String> {
@@ -174,6 +254,18 @@ fn playback_drops_no_frames() {
         1,
     );
     let (_texture, canvas) = create_canvas(&gpu.device, size);
+
+    let export = env("CUTFRAME_PLAYBACK_EXPORT")
+        .is_some_and(|v| v == "1")
+        .then(|| {
+            let observer = Arc::new(BackgroundExport {
+                transport: Arc::clone(&transport),
+                stop: AtomicBool::new(false),
+                frames: AtomicU32::new(0),
+            });
+            let thread = start_export(&gpu, &project, &observer);
+            (observer, thread)
+        });
 
     let vsync = Duration::from_nanos(16_666_667);
     let lead = vsync * 2;
@@ -301,6 +393,14 @@ fn playback_drops_no_frames() {
         }
         busy_total += busy;
         busy_max = busy_max.max(busy);
+    }
+    if let Some((observer, thread)) = export {
+        eprintln!(
+            "background export: {} frames during playback",
+            observer.frames.load(Ordering::Relaxed)
+        );
+        observer.stop.store(true, Ordering::Relaxed);
+        thread.join().expect("the export thread");
     }
     let frames = timeline.last_frame() + 1;
     underruns = underruns.max(audio.stats().underruns);

@@ -113,7 +113,7 @@ describe("startProjectSync", () => {
 
     stop = startProjectSync();
     await vi.waitFor(() => expect(useProjectStore.getState().state?.revision).toBe(3));
-    await events.quitRequested.emit();
+    await events.quitRequested.emit({ unsaved: false, exporting: false });
     await vi.waitFor(() => expect(calls).toContain("confirmClose"));
   });
 

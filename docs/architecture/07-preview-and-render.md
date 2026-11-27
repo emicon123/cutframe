@@ -25,7 +25,7 @@ UI mirrors it from `playback-tick` (task 0330, `docs/design/playback.md`).
 | Source convert + HDR tone map | `render/convert.rs`, `shaders/convert.wgsl`, `crates/engine/src/color.rs` | implemented |
 | Video readers, hardware decode (D3D12VA zero-copy) | `crates/engine/src/media/readers/`, `media/d3d12.rs` | implemented |
 | Clip speed, reverse (GOP-reverse reader mode), freeze frames | `render/plan.rs`, `render/frames.rs` (`Pace`), `media/readers/window.rs`, `playback/scheduler.rs` | implemented (task 0370, [§9.1](#91-speed-reverse-and-freeze-frames-task-0370)) |
-| `OfflineRenderer` (export entry point) | `render/offline.rs` | implemented (no encoder yet, 0390) |
+| `OfflineRenderer` (export entry point) | `render/offline.rs` | implemented; the export loop drives it (`engine::export::run`, [06](06-media-pipeline.md) §11) |
 | Offscreen read-back | `crates/engine/src/render/offscreen.rs` | implemented |
 | Native child window | `src-tauri/src/preview/windows.rs` | implemented (Windows) |
 | Visibility rules, `frames` mode | `src-tauri/src/preview/mod.rs` | implemented |

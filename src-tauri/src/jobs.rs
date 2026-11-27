@@ -24,7 +24,9 @@ use tauri::{AppHandle, Manager};
 use tauri_specta::Event;
 
 use crate::ipc::IpcError;
-use crate::ipc::events::{ExportCapabilitiesChanged, JobFinished, JobProgress, MediaJobReport};
+use crate::ipc::events::{
+    ExportCapabilitiesChanged, ExportReport, JobFinished, JobProgress, MediaJobReport,
+};
 use crate::ipc::types::{JobId, JobStage};
 use crate::media_status::StatusUpdate;
 use crate::state::AppState;
@@ -39,6 +41,8 @@ pub trait JobHost: Send + Sync + 'static {
     fn media_job_report(&self, event: MediaJobReport);
     /// The session's encoder probe finished (export.md §4.4).
     fn export_capabilities_changed(&self, event: ExportCapabilitiesChanged);
+    /// How an export ended, just before its `job-finished` (export.md §5.1).
+    fn export_report(&self, event: ExportReport);
     /// Runs `edit` on the document like a command handler does: under the document lock,
     /// publishing the snapshot and emitting `project-changed` if `edit` returns `Ok(true)`.
     fn edit(
@@ -383,13 +387,6 @@ impl JobContext {
 
     /// Changes the stage reported by the next `job-progress` (one is sent even if the progress
     /// did not move).
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the export job sets its stages (task 0390 step 6)"
-        )
-    )]
     pub fn set_stage(&self, stage: JobStage) {
         if let Some(job) = lock(&self.inner.jobs).get_mut(&self.id)
             && job.stage != stage
@@ -533,6 +530,12 @@ impl JobHost for TauriJobHost {
         }
     }
 
+    fn export_report(&self, event: ExportReport) {
+        if let Err(err) = event.emit(&self.app) {
+            tracing::warn!(%err, "failed to emit export-report");
+        }
+    }
+
     fn edit(
         &self,
         edit: &mut dyn FnMut(&mut Document) -> Result<bool, CommandError>,
@@ -590,6 +593,7 @@ pub(crate) mod tests {
         Finished(JobFinished),
         Report(MediaJobReport),
         Capabilities(ExportCapabilitiesChanged),
+        Export(ExportReport),
     }
 
     impl FakeHost {
@@ -630,6 +634,10 @@ pub(crate) mod tests {
 
         fn export_capabilities_changed(&self, event: ExportCapabilitiesChanged) {
             lock(&self.events).push(Recorded::Capabilities(event));
+        }
+
+        fn export_report(&self, event: ExportReport) {
+            lock(&self.events).push(Recorded::Export(event));
         }
 
         fn edit(

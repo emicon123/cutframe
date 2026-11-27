@@ -10,12 +10,14 @@
 //! Threading: a [`Muxer`] lives on the export thread; FFmpeg contexts are not shared.
 
 use std::ffi::CString;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use rsmpeg::UnsafeDerefMut;
 use rsmpeg::avcodec::{AVCodecContext, AVPacket};
-use rsmpeg::avformat::AVFormatContextOutput;
-use rsmpeg::avutil::{AVDictionary, AVFrame};
+use rsmpeg::avformat::{AVFormatContextOutput, AVIOContextContainer, AVIOContextCustom};
+use rsmpeg::avutil::{AVDictionary, AVFrame, AVMem};
 use rsmpeg::error::RsmpegError;
 use rsmpeg::ffi;
 
@@ -80,6 +82,26 @@ pub fn tag_frame(frame: &mut AVFrame) {
     raw.chroma_location = CHROMA_LOCATION;
 }
 
+/// How [`Muxer::create_with`] writes the file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MuxOptions {
+    /// `movflags=+faststart`: the trailer moves `moov` before `mdat` (always on in exports).
+    pub faststart: bool,
+    /// Test fault injection (export.md §11 `diskFull`): write through a custom I/O context that
+    /// fails with `ENOSPC` once this many bytes were written. Needs `faststart: false` (the
+    /// faststart rewrite reopens the file by name).
+    pub write_limit: Option<u64>,
+}
+
+impl Default for MuxOptions {
+    fn default() -> Self {
+        Self {
+            faststart: true,
+            write_limit: None,
+        }
+    }
+}
+
 /// `MKTAG('h', 'v', 'c', '1')`.
 const HVC1: u32 = u32::from_le_bytes(*b"hvc1");
 
@@ -124,15 +146,30 @@ impl Muxer {
         video: &AVCodecContext,
         audio: &AVCodecContext,
     ) -> Result<Self, StreamError> {
+        Self::create_with(path, video, audio, MuxOptions::default())
+    }
+
+    /// [`Self::create`] with explicit [`MuxOptions`].
+    pub fn create_with(
+        path: &Path,
+        video: &AVCodecContext,
+        audio: &AVCodecContext,
+        options: MuxOptions,
+    ) -> Result<Self, StreamError> {
         let name = path
             .to_str()
             .and_then(|p| CString::new(p).ok())
             .ok_or_else(|| {
                 StreamError::WriteFailed(format!("path {} is not valid UTF-8", path.display()))
             })?;
+        let io_context = match options.write_limit {
+            Some(limit) => Some(limited_file_io(path, limit)?),
+            None => None,
+        };
         let mut output = AVFormatContextOutput::builder()
             .format_name(c"mp4")
             .filename(&name)
+            .maybe_io_context(io_context)
             .build()
             .map_err(|err| StreamError::write(&err, "create the output file"))?;
 
@@ -156,9 +193,11 @@ impl Muxer {
             }
         }
 
-        let mut options = Some(AVDictionary::new(c"movflags", c"+faststart", 0));
+        let mut header_options = options
+            .faststart
+            .then(|| AVDictionary::new(c"movflags", c"+faststart", 0));
         output
-            .write_header(&mut options)
+            .write_header(&mut header_options)
             .map_err(|err| StreamError::write(&err, "write the MP4 header"))?;
         let stream_tb = |track: &Track| output.streams()[track.index as usize].time_base;
         let video = Track {
@@ -244,6 +283,62 @@ impl Muxer {
         drop(self);
         Ok(path)
     }
+}
+
+/// A write-only I/O context on a new file at `path` that fails every write with `ENOSPC` once
+/// `limit` bytes were written (the `diskFull` test of export.md §11).
+fn limited_file_io(path: &Path, limit: u64) -> Result<AVIOContextContainer, StreamError> {
+    /// FFmpeg's `SEEK_*` and `AVSEEK_SIZE` values for the seek callback.
+    const SEEK_SET: i32 = 0;
+    const SEEK_CUR: i32 = 1;
+    const SEEK_END: i32 = 2;
+    const AVSEEK_SIZE: i32 = 0x10000;
+
+    let file = std::fs::File::create(path)
+        .map_err(|err| StreamError::WriteFailed(format!("create {}: {err}", path.display())))?;
+    // (file, bytes written so far); shared by the write and seek callbacks.
+    let shared = Arc::new(Mutex::new((file, 0u64)));
+    let writer = Arc::clone(&shared);
+    let write: rsmpeg::avformat::WritePacketCallback = Box::new(move |_, data: &[u8]| {
+        let mut guard = writer.lock().unwrap_or_else(PoisonError::into_inner);
+        let (file, written) = &mut *guard;
+        if *written + data.len() as u64 > limit {
+            return ffi::AVERROR(ffi::ENOSPC);
+        }
+        match file.write_all(data) {
+            Ok(()) => {
+                *written += data.len() as u64;
+                i32::try_from(data.len()).unwrap_or(i32::MAX)
+            }
+            Err(_) => ffi::AVERROR(ffi::EIO),
+        }
+    });
+    let seek: rsmpeg::avformat::SeekCallback = Box::new(move |_, offset: i64, whence: i32| {
+        let mut guard = shared.lock().unwrap_or_else(PoisonError::into_inner);
+        let file = &mut guard.0;
+        if whence & AVSEEK_SIZE != 0 {
+            return file
+                .metadata()
+                .map_or(i64::from(ffi::AVERROR(ffi::EIO)), |m| m.len() as i64);
+        }
+        let target = match whence & !ffi::AVSEEK_FORCE as i32 {
+            SEEK_SET => SeekFrom::Start(offset.max(0) as u64),
+            SEEK_CUR => SeekFrom::Current(offset),
+            SEEK_END => SeekFrom::End(offset),
+            _ => return i64::from(ffi::AVERROR(ffi::EINVAL)),
+        };
+        file.seek(target)
+            .map_or(i64::from(ffi::AVERROR(ffi::EIO)), |pos| pos as i64)
+    });
+    let io = AVIOContextCustom::alloc_context(
+        AVMem::new(4096),
+        true,
+        Vec::new(),
+        None,
+        Some(write),
+        Some(seek),
+    );
+    Ok(AVIOContextContainer::Custom(io))
 }
 
 /// Adds a stream with the parameters of the opened encoder `context`.
